@@ -1,0 +1,51 @@
+# Environment
+.env
+.env.local
+
+# Node
+node_modules/
+web-view/node_modules/
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+service/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Quarkus
+*-SNAPSHOT
+quarkus.log
+
+# React build
+web-view/dist/
+
+# Storage (MVP file-based)
+.changelog-composer/
+
+
+
+preview.html
+
+
+.env
+PIPELINE_FLOW.md
+guide.md
+AUTH.md
+CHATBOT-PLAN.md
+
+
+
+.claude/

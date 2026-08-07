@@ -1,0 +1,11 @@
+/* Developer audience */
+.theme-developer h1 { border-color: #2563eb; }
+.theme-developer h2 { color: #2563eb; }
+
+/* QA audience */
+.theme-qa h1 { border-color: #7c3aed; }
+.theme-qa h2 { color: #7c3aed; }
+
+/* Business audience */
+.theme-business h1 { border-color: #059669; }
+.theme-business h2 { color: #059669; }

@@ -1,0 +1,29 @@
+services:
+  app:
+    build : .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - app_data:/data/changelog-composer
+    networks:
+      - internal
+
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #   networks:
+  #     - internal
+
+networks:
+  internal:
+
+volumes:
+  app_data:

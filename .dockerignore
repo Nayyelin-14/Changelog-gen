@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/target
+**/.quinoa
+.env
+.git
+*.md
+
+service/.env
