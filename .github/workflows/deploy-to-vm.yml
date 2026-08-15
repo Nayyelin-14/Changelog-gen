@@ -57,7 +57,7 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           PKG="changelog-composer"
           VERSIONS_JSON=$(gh api -H "Accept: application/vnd.github+json" \
-            "/orgs/${OWNER}/packages/container/${PKG}/versions" --paginate 2>/dev/null | jq -s 'flatten')
+            "/users/${OWNER}/packages/container/${PKG}/versions" --paginate 2>/dev/null | jq -s 'flatten')
 
           DIGEST=$(echo "$VERSIONS_JSON" | jq -r --arg tag "$TAG" '
             .[]

@@ -33,7 +33,7 @@ jobs:
           #   .html_url
           VERSIONS_JSON=$(gh api \
             -H "Accept: application/vnd.github+json" \
-            "/orgs/${OWNER}/packages/container/${PKG}/versions" \
+            "/users/${OWNER}/packages/container/${PKG}/versions" \
             --paginate 2>/dev/null | jq -s 'flatten')
 
           # One row per candidate tag matching build.<run>-<sha7> (no semver — dev never bumps;
