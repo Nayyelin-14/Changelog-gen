@@ -136,6 +136,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           BUILD_TAG="build.${RUN_NUMBER}-${SHORT_SHA}"
           echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
+          echo "repo_lower=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -154,6 +155,6 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ lower(github.repository_owner) }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.buildtag.outputs.build_tag }}
+            ghcr.io/${{ steps.buildtag.outputs.repo_lower }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.buildtag.outputs.build_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
