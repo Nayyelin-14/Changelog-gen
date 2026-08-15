@@ -55,6 +55,18 @@ public final class PlainBullets {
         return sb.toString();
     }
 
+    /** Convenience overload for the legacy connector-owned type (identical shape) — maps onto the
+     * PrFetcher-based implementation so callers of {@code AzureDevOpsOrgConnector.fetchPullRequestDetails}
+     * keep working while the type is being moved to {@link PrFetcher}. */
+    public static String plainBullets(AzureDevOpsOrgConnector.PullRequestDetails pr) {
+        List<PrFetcher.WorkItemSummary> workItems = pr.workItems().stream()
+                .map(w -> new PrFetcher.WorkItemSummary(w.id(), w.title(), w.type(), w.description(),
+                        w.state(), w.assignedTo(), w.url()))
+                .toList();
+        return plainBullets(new PrFetcher.PullRequestDetails(
+                pr.prId(), pr.title(), pr.description(), pr.author(), pr.commitMessages(), workItems));
+    }
+
     /** Collapse line breaks in commit messages / PR descriptions — one bullet per fact. */
     private static String oneLine(String text) {
         return text.strip().replaceAll("\\s*\\R+\\s*", " ");

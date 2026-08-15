@@ -271,7 +271,8 @@ public class GitHubOrgConnector {
                     run.headSha(),
                     run.workflowName(),
                     prNumber,
-                    commitTitle);
+                    commitTitle,
+                    buildIdToVersion.get(buildId));
         }).toList();
     }
 

@@ -215,7 +215,8 @@ public class PipelineRunResource {
                 sourceVersion,
                 pipelineName,
                 null,
-                commitTitle
+                commitTitle,
+                run.version
         );
     }
 

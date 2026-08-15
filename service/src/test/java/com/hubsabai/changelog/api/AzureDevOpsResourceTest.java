@@ -20,14 +20,14 @@ class AzureDevOpsResourceTest {
                 .body("[0].label", org.hamcrest.Matchers.notNullValue());
     }
 
-    // version is required unconditionally now (also used as the cache key), not just when
-    // there's no manualText — these fail before any Azure DevOps call or cache write.
+    // version is required unconditionally unless manualText or a buildId identifies the data —
+    // a version-free manual-text preview is a deliberate dashboard flow (version is filled in at
+    // push time), but with no data source at all the request must fail before any AI/API call.
 
     @Test
-    void generateRejectsAMissingVersionEvenWithManualText() {
+    void generateRejectsAMissingVersion() {
         given()
                 .queryParam("model", "some-model")
-                .queryParam("manualText", "=== Fix bug\nsrc/Foo.java")
                 .when().post("/api/projects/proj/repos/repo/generate")
                 .then()
                 .statusCode(400)

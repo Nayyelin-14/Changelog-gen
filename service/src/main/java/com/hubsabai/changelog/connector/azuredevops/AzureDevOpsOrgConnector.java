@@ -224,7 +224,8 @@ public class AzureDevOpsOrgConnector {
                         b.sourceVersion(),
                         b.definition() != null ? b.definition().name() : null,
                         parsePrNumber(b.triggerInfo()),
-                        fetchCommitTitle(project, repository.id(), b.sourceVersion())))
+                        fetchCommitTitle(project, repository.id(), b.sourceVersion()),
+                        null))
                 .toList();
     }
 
