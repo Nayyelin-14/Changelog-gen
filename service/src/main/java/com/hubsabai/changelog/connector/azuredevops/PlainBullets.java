@@ -31,7 +31,7 @@ public final class PlainBullets {
         return sb.toString();
     }
 
-    public static String plainBullets(AzureDevOpsOrgConnector.PullRequestDetails pr) {
+    public static String plainBullets(PrFetcher.PullRequestDetails pr) {
         StringBuilder sb = new StringBuilder();
 
         String title = pr.title() != null && !pr.title().isBlank() ? oneLine(pr.title()) : "PR #" + pr.prId();
@@ -44,7 +44,7 @@ public final class PlainBullets {
             if (commitMessage == null || commitMessage.isBlank()) continue;
             sb.append("\n  - ").append(oneLine(commitMessage));
         }
-        for (AzureDevOpsOrgConnector.WorkItemSummary workItem : pr.workItems()) {
+        for (PrFetcher.WorkItemSummary workItem : pr.workItems()) {
             String type = workItem.type() != null && !workItem.type().isBlank() ? workItem.type() : "Work item";
             sb.append("\n  - ").append(type).append(" #").append(workItem.id());
             if (workItem.title() != null && !workItem.title().isBlank()) {

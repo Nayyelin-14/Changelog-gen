@@ -5,6 +5,7 @@ import { Briefcase, FileText, FolderGit2, Loader2, TestTube2 } from 'lucide-reac
 import { listProjects, listRepositoriesWithChangelog } from '@/api/client';
 import type { PreviewAudience } from '@/api/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useQuery } from '@/hooks/useQuery';
@@ -69,7 +70,7 @@ export function AudienceBrowsePage({ audience }: { audience: PreviewAudience }) 
             </SelectTrigger>
             <SelectContent>
               {projects.data.map((p) => (
-                <SelectItem key={p.id} value={p.name}>
+                <SelectItem key={p.id} value={p.id}>
                   {p.name}
                 </SelectItem>
               ))}
@@ -124,7 +125,21 @@ export function AudienceBrowsePage({ audience }: { audience: PreviewAudience }) 
                     <FileText className="size-4" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium transition-colors group-hover:text-primary">{r.name}</p>
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-xs font-medium transition-colors group-hover:text-primary">{r.name}</span>
+                      {r.visibility && (
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full border px-1.5 py-px text-[9px] font-medium capitalize",
+                            r.visibility === "private"
+                              ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+                          )}
+                        >
+                          {r.visibility}
+                        </span>
+                      )}
+                    </span>
                     <p className="truncate text-[10px] text-muted-foreground">View latest release</p>
                   </span>
                 </button>

@@ -41,10 +41,8 @@ preview.html
 
 
 .env
-PIPELINE_FLOW.md
-guide.md
-AUTH.md
-CHATBOT-PLAN.md
+# Documentation (local-only)
+QUARKUS_READING_ORDER.md
 
 # Local docs / artifacts (keep out of the repo)
 QUARKUS_READING_ORDER.md
@@ -58,3 +56,4 @@ openapi-before.json
 Untitled diagram-*.png
 
 .claude/
+.azure

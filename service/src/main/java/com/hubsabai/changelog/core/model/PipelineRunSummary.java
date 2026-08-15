@@ -18,5 +18,6 @@ public record PipelineRunSummary(
         @JsonProperty("sourceVersion") String sourceVersion,
         @JsonProperty("pipelineName") String pipelineName,
         @JsonProperty("prNumber") Integer prNumber,
-        @JsonProperty("commitTitle") String commitTitle) {
+        @JsonProperty("commitTitle") String commitTitle,
+        @JsonProperty("version") String version) {
 }

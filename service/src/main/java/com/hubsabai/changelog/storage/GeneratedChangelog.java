@@ -15,13 +15,19 @@ import java.time.OffsetDateTime;
     name = "generated_changelog",
     uniqueConstraints = @UniqueConstraint(
         name = "uq_generated_changelog",
-        columnNames = {"project", "repo", "version", "audience"})
+        columnNames = {"provider", "project", "repo", "version", "audience"})
 )
 public class GeneratedChangelog extends PanacheEntityBase {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
+
+    /** The source provider this changelog belongs to — {@code "azure"} (Azure DevOps) or
+     * {@code "github"}. Keeps a GitHub owner+repo row from colliding with an Azure DevOps
+     * project+repo that shares the same strings. */
+    @Column(length = 20)
+    public String provider = "azure";
 
     public String project;
     public String repo;
@@ -84,15 +90,23 @@ public class GeneratedChangelog extends PanacheEntityBase {
     public String pushedPullRequestUrl;
 
     public static GeneratedChangelog findEntry(String project, String repo, String version, String audience) {
-        return find("project = ?1 and repo = ?2 and version = ?3 and audience = ?4",
-                project, repo, version, audience)
+        return findEntry("azure", project, repo, version, audience);
+    }
+
+    public static GeneratedChangelog findEntry(String provider, String project, String repo, String version, String audience) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4 and audience = ?5",
+                provider, project, repo, version, audience)
             .firstResult();
     }
 
     /** All entries for one project/repo/audience, in one query — for batch reads like /history,
      * which would otherwise run one query per version. */
     public static java.util.List<GeneratedChangelog> findAllForAudience(String project, String repo, String audience) {
-        return find("project = ?1 and repo = ?2 and audience = ?3", project, repo, audience).list();
+        return findAllForAudience("azure", project, repo, audience);
+    }
+
+    public static java.util.List<GeneratedChangelog> findAllForAudience(String provider, String project, String repo, String audience) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and audience = ?4", provider, project, repo, audience).list();
     }
 
     /**
@@ -104,8 +118,12 @@ public class GeneratedChangelog extends PanacheEntityBase {
      * available on threads outside Quarkus's request-scoped context.
      */
     public static java.util.Set<String> reposWithImportCache(String project) {
+        return reposWithImportCache("azure", project);
+    }
+
+    public static java.util.Set<String> reposWithImportCache(String provider, String project) {
         java.util.List<GeneratedChangelog> rows = find(
-                "project = ?1 and audience = 'developer' and currentSource = 'import'", project).list();
+                "provider = ?1 and project = ?2 and audience = 'developer' and currentSource = 'import'", provider, project).list();
         java.util.Set<String> repos = new java.util.HashSet<>();
         for (GeneratedChangelog row : rows) {
             repos.add(row.repo);

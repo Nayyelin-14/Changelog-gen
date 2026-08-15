@@ -14,13 +14,18 @@ import java.util.List;
 @Entity
 @Table(
     name = "changelog_version",
-    uniqueConstraints = @UniqueConstraint(name = "uq_changelog_version", columnNames = {"project", "repo", "version"})
+    uniqueConstraints = @UniqueConstraint(name = "uq_changelog_version", columnNames = {"provider", "project", "repo", "version", "build_id"})
 )
 public class ChangelogVersion extends PanacheEntityBase {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
+
+    /** The source provider this version row belongs to — {@code "azure"} or {@code "github"}
+     * (see {@link com.hubsabai.changelog.storage.GeneratedChangelog#provider}). */
+    @Column(length = 20)
+    public String provider = "azure";
 
     public String project;
     public String repo;
@@ -58,7 +63,11 @@ public class ChangelogVersion extends PanacheEntityBase {
     public String pushedCommitUrl;
 
     public static ChangelogVersion findEntry(String project, String repo, String version) {
-        return find("project = ?1 and repo = ?2 and version = ?3", project, repo, version).firstResult();
+        return findEntry("azure", project, repo, version);
+    }
+
+    public static ChangelogVersion findEntry(String provider, String project, String repo, String version) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4", provider, project, repo, version).firstResult();
     }
 
     /** Finds a record by project/repo and non-null version — used by push/conflict detection. */
@@ -68,10 +77,18 @@ public class ChangelogVersion extends PanacheEntityBase {
     }
 
     public static List<ChangelogVersion> listByRepo(String project, String repo) {
-        return find("project = ?1 and repo = ?2 order by createdAt desc", project, repo).list();
+        return listByRepo("azure", project, repo);
+    }
+
+    public static List<ChangelogVersion> listByRepo(String provider, String project, String repo) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 order by createdAt desc", provider, project, repo).list();
     }
 
     public static long countByRepo(String project, String repo) {
-        return count("project = ?1 and repo = ?2", project, repo);
+        return countByRepo("azure", project, repo);
+    }
+
+    public static long countByRepo(String provider, String project, String repo) {
+        return count("provider = ?1 and project = ?2 and repo = ?3", provider, project, repo);
     }
 }

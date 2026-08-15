@@ -41,6 +41,11 @@ public class PipelineRequest {
      * of sourcing the same {@code ReleaseData}. */
     private Integer buildId;
 
+    /** {@code $(Build.BuildNumber)} or GitHub Actions run number — the pipeline's own identifier
+     * for this run (e.g. "20240115.1" or "42"). Stored alongside {@code buildId} so the
+     * dashboard's Pipeline runs list can show both the app version and the pipeline run number. */
+    private String buildNumber;
+
     public PipelineRequest() {}
 
     @JsonProperty("project")
@@ -94,4 +99,8 @@ public class PipelineRequest {
     @JsonProperty("buildId")
     public Integer getBuildId() { return buildId; }
     public void setBuildId(Integer buildId) { this.buildId = buildId; }
+
+    @JsonProperty("buildNumber")
+    public String getBuildNumber() { return buildNumber; }
+    public void setBuildNumber(String buildNumber) { this.buildNumber = buildNumber; }
 }

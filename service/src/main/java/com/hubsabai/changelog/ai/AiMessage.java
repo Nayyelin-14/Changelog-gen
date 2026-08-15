@@ -2,7 +2,6 @@ package com.hubsabai.changelog.ai;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
-
 public class AiMessage {
     private String role;
     private String content;
