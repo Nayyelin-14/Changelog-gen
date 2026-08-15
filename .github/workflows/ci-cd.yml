@@ -74,7 +74,7 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
           cache: 'maven'
-      - run: ./mvnw test -Dquarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/neondb -Dquarkus.datasource.username=test -Dquarkus.datasource.password=test
+      - run: ./mvnw test -Dquarkus.datasource.db-kind=postgresql -Dquarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/neondb -Dquarkus.datasource.username=test -Dquarkus.datasource.password=test
         env:
           QUARKUS_PROFILE: test
 
