@@ -74,9 +74,14 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
           cache: 'maven'
+      # QUARKUS_REST_PATH must be forced here: resources no longer hardcode /api in their own
+      # @Path, and quarkus.rest.path=/api in application.properties is not picked up by the
+      # Quarkus test augmentation on this runner (same reason .azure/scripts/backend-tests.sh
+      # sets it) — without it every "/api/..." test URL 404s.
       - run: ./mvnw test -Dquarkus.datasource.db-kind=postgresql -Dquarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/neondb -Dquarkus.datasource.username=test -Dquarkus.datasource.password=test
         env:
           QUARKUS_PROFILE: test
+          QUARKUS_REST_PATH: /api
 
   # ============================================================
   # CHANGELOG: Append this run's raw dev changelog entry.
