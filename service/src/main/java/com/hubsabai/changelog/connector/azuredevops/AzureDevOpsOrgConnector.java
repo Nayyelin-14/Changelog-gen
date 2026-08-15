@@ -24,6 +24,7 @@ import com.hubsabai.changelog.core.model.ProjectFetchResult;
 import com.hubsabai.changelog.core.model.ProjectSummary;
 import com.hubsabai.changelog.core.model.ReleaseData;
 import com.hubsabai.changelog.core.model.RepositorySummary;
+import com.hubsabai.changelog.generation.RunChangeContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
@@ -215,6 +216,7 @@ public class AzureDevOpsOrgConnector {
                 .map(b -> new PipelineRunSummary(
                         b.id(),
                         b.buildNumber(),
+                        String.valueOf(b.id()),
                         b.status(),
                         b.result(),
                         b.finishTime(),
@@ -517,6 +519,244 @@ public class AzureDevOpsOrgConnector {
         return data;
     }
 
+    /**
+     * Fetches both the normalized {@link ReleaseData} (for changelog generation) and the
+     * {@link RunChangeContext} (for dashboard run context) in a single coordinated fetch.
+     * This avoids duplicate provider API calls when both pieces of data are needed
+     * (e.g., during pipeline ingestion where we need to store both the run snapshot and
+     * the normalized change data for changelog generation).
+     */
+    public RunFetchResult fetchRunData(String project, String repo, int buildId) {
+        // Fetch the build metadata once
+        BuildResponse build = client.getBuild(org, project, buildId, AzureDevOpsRestClient.API_VERSION);
+        List<BuildChange> changes = client.getBuildChanges(org, project, buildId, 500, AzureDevOpsRestClient.API_VERSION).valueOrEmpty();
+        List<WiqlResult.WorkItemReference> workItemRefs =
+                client.getBuildWorkItems(org, project, buildId, 500, AzureDevOpsRestClient.API_VERSION).valueOrEmpty();
+
+        Set<String> prIds = new LinkedHashSet<>();
+        Map<String, String> mergeCommitToPr = new HashMap<>();
+        List<BuildChange> unresolvedChanges = new ArrayList<>();
+        for (BuildChange change : changes) {
+            String prId = PrReference.extractId(change.message());
+            if (prId != null) {
+                prIds.add(prId);
+                mergeCommitToPr.put(change.id(), prId);
+            } else {
+                unresolvedChanges.add(change);
+            }
+        }
+
+        Map<String, PullRequestResponse> prByMergeCommitId = unresolvedChanges.isEmpty()
+                ? Map.of()
+                : findCompletedPrsByMergeCommit(project, repo, build.sourceBranch(),
+                        unresolvedChanges.stream().map(BuildChange::id).collect(Collectors.toSet()));
+
+        List<ChangeItem> items = new ArrayList<>();
+        List<String> commitIdsForPaths = new ArrayList<>();
+        for (BuildChange change : unresolvedChanges) {
+            PullRequestResponse matched = prByMergeCommitId.get(change.id());
+            if (matched != null) {
+                String matchedPrId = String.valueOf(matched.pullRequestId());
+                prIds.add(matchedPrId);
+                mergeCommitToPr.put(change.id(), matchedPrId);
+                continue;
+            }
+            ChangeItem item = new ChangeItem();
+            item.setType(ChangeItem.ItemType.COMMIT);
+            item.setId(change.id());
+            item.setTitle(change.message());
+            item.setDescription(change.message());
+            item.setCategory(ChangeCategoryClassifier.fromText(change.message()));
+            item.setAuthor(change.author() != null ? change.author().displayName() : null);
+            item.setProject(project);
+            item.setRepo(repo);
+            item.setLinks(change.displayUri() != null ? List.of(change.displayUri()) : List.of());
+            items.add(item);
+            commitIdsForPaths.add(change.id());
+        }
+        if (!commitIdsForPaths.isEmpty()) {
+            Map<String, List<String>> pathCache = new ConcurrentHashMap<>();
+            commitIdsForPaths.forEach(id ->
+                    pathCache.put(id, fetchCommitFilePaths(project, repo, id)));
+            for (ChangeItem item : items) {
+                List<String> paths = pathCache.get(item.getId());
+                if (paths != null) item.setFilePaths(paths);
+            }
+        }
+
+        String triggeredPr = build.triggerInfo() != null ? build.triggerInfo().get("pr.number") : null;
+        if (triggeredPr != null && !triggeredPr.isBlank()) {
+            prIds.add(triggeredPr);
+        }
+
+        String ownPrId = mergeCommitToPr.get(build.sourceVersion());
+        if (ownPrId != null && prIds.size() > 1 && build.definition() != null
+                && previousBuildWasCanceled(project, build.definition().id(), build.id())) {
+            prIds = new LinkedHashSet<>(Set.of(ownPrId));
+        }
+
+        Set<Integer> workItemIds = workItemRefs.stream()
+                .map(WiqlResult.WorkItemReference::id)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        for (String prId : prIds) {
+            try {
+                int id = Integer.parseInt(prId);
+                PullRequestResponse pr = client.getPullRequestById(org, id, AzureDevOpsRestClient.API_VERSION);
+                items.add(toChangeItem(project, repo, pr));
+                client.getPullRequestWorkItems(org, project, repo, id, AzureDevOpsRestClient.API_VERSION)
+                        .valueOrEmpty()
+                        .forEach(ref -> workItemIds.add(ref.id()));
+            } catch (NumberFormatException | WebApplicationException e) {
+                LOG.warning("Failed to resolve PR " + prId + " from build " + buildId + " changes: " + e);
+            }
+        }
+
+        if (!workItemIds.isEmpty()) {
+            String idsParam = workItemIds.stream().map(String::valueOf).collect(Collectors.joining(","));
+            AzureDevOpsListResponse<WorkItemResponse> batch =
+                    client.getWorkItemsBatch(org, project, idsParam, AzureDevOpsRestClient.API_VERSION);
+            for (WorkItemResponse wi : batch.valueOrEmpty()) {
+                items.add(toChangeItem(project, wi));
+            }
+        }
+
+        dedupeMergeCommits(items, project, repo);
+
+        String branch = build.sourceBranch();
+        if (branch != null && branch.startsWith("refs/heads/")) {
+            branch = branch.substring("refs/heads/".length());
+        }
+
+        // Build ReleaseData
+        ReleaseData releaseData = new ReleaseData();
+        releaseData.setRelease(buildMeta(project, repo, branch));
+        releaseData.setItems(items);
+
+        // Build RunChangeContext from the same data (reusing the already-fetched items)
+        RunChangeContext context = new RunChangeContext();
+        RunChangeContext.RunInfo run = new RunChangeContext.RunInfo();
+        run.setRunId(String.valueOf(buildId));
+        run.setRunNumber(build.buildNumber());
+        run.setPipelineName(build.definition() != null ? build.definition().name() : null);
+        run.setStatus(build.status());
+        run.setResult(build.result());
+        if (branch != null && branch.startsWith("refs/heads/")) {
+            branch = branch.substring("refs/heads/".length());
+        }
+        run.setBranch(branch);
+        run.setHeadSha(build.sourceVersion());
+        run.setFinishedAt(build.finishTime());
+        context.setRun(run);
+
+        List<RunChangeContext.CommitInfo> commits = new ArrayList<>();
+        for (ChangeItem item : items) {
+            switch (item.getType()) {
+                case COMMIT -> {
+                    RunChangeContext.CommitInfo commit = new RunChangeContext.CommitInfo();
+                    commit.setSha(item.getId());
+                    commit.setMessage(item.getDescription() != null ? item.getDescription() : item.getTitle());
+                    commit.setAuthor(item.getAuthor());
+                    commit.setDate(item.getDate());
+                    commit.setFilePaths(item.getFilePaths());
+                    commits.add(commit);
+                }
+                case PULL_REQUEST -> {
+                    RunChangeContext.PrInfo pr = new RunChangeContext.PrInfo();
+                    pr.setId(item.getId());
+                    pr.setTitle(item.getTitle());
+                    pr.setDescription(item.getDescription());
+                    pr.setAuthor(item.getAuthor());
+                    pr.setUrl(item.getLinks() != null && !item.getLinks().isEmpty()
+                            ? item.getLinks().get(0) : null);
+                    pr.setUpdatedAt(item.getDate());
+                    context.getPrs().add(pr);
+                }
+                case WORK_ITEM -> {
+                    RunChangeContext.WorkItemInfo wi = new RunChangeContext.WorkItemInfo();
+                    wi.setId(item.getId());
+                    wi.setTitle(item.getTitle());
+                    wi.setDescription(item.getDescription());
+                    wi.setUrl(item.getLinks() != null && !item.getLinks().isEmpty()
+                            ? item.getLinks().get(0) : null);
+                    if (context.getWorkItems() == null) {
+                        context.setWorkItems(new ArrayList<>());
+                    }
+                    context.getWorkItems().add(wi);
+                }
+            }
+        }
+        context.setCommits(commits);
+
+        return new RunFetchResult(releaseData, context);
+    }
+
+    /** Provider-normalized view of one build for the run-context flow. Reuses the same raw data
+     * gathering as {@link #fetchRunChanges} (commits, PR, work items, file paths) so the shape both
+     * methods emit from a single build never drifts apart. */
+    public RunChangeContext fetchRunContext(String project, String repo, int buildId) {
+        ReleaseData data = fetchRunChanges(project, repo, buildId);
+        BuildResponse build = client.getBuild(org, project, buildId, AzureDevOpsRestClient.API_VERSION);
+
+        RunChangeContext context = new RunChangeContext();
+        RunChangeContext.RunInfo run = new RunChangeContext.RunInfo();
+        run.setRunId(String.valueOf(buildId));
+        run.setRunNumber(build.buildNumber());
+        run.setPipelineName(build.definition() != null ? build.definition().name() : null);
+        run.setStatus(build.status());
+        run.setResult(build.result());
+        String branch = build.sourceBranch();
+        if (branch != null && branch.startsWith("refs/heads/")) {
+            branch = branch.substring("refs/heads/".length());
+        }
+        run.setBranch(branch);
+        run.setHeadSha(build.sourceVersion());
+        run.setFinishedAt(build.finishTime());
+        context.setRun(run);
+
+        List<RunChangeContext.CommitInfo> commits = new ArrayList<>();
+        for (ChangeItem item : data.getItems()) {
+            switch (item.getType()) {
+                case COMMIT -> {
+                    RunChangeContext.CommitInfo commit = new RunChangeContext.CommitInfo();
+                    commit.setSha(item.getId());
+                    commit.setMessage(item.getDescription() != null ? item.getDescription() : item.getTitle());
+                    commit.setAuthor(item.getAuthor());
+                    commit.setDate(item.getDate());
+                    commit.setFilePaths(item.getFilePaths());
+                    commits.add(commit);
+                }
+                case PULL_REQUEST -> {
+                    if (context.getPr() == null) {
+                        RunChangeContext.PrInfo pr = new RunChangeContext.PrInfo();
+                        pr.setId(item.getId());
+                        pr.setTitle(item.getTitle());
+                        pr.setDescription(item.getDescription());
+                        pr.setAuthor(item.getAuthor());
+                        pr.setUrl(item.getLinks() != null && !item.getLinks().isEmpty()
+                                ? item.getLinks().get(0) : null);
+                        pr.setUpdatedAt(item.getDate());
+                        context.setPr(pr);
+                    }
+                }
+                case WORK_ITEM -> {
+                    RunChangeContext.WorkItemInfo wi = new RunChangeContext.WorkItemInfo();
+                    wi.setId(item.getId());
+                    wi.setTitle(item.getTitle());
+                    wi.setDescription(item.getDescription());
+                    wi.setUrl(item.getLinks() != null && !item.getLinks().isEmpty()
+                            ? item.getLinks().get(0) : null);
+                    if (context.getWorkItems() == null) {
+                        context.setWorkItems(new ArrayList<>());
+                    }
+                    context.getWorkItems().add(wi);
+                }
+            }
+        }
+        context.setCommits(commits);
+        return context;
+    }
+
     /** True when the build immediately preceding {@code buildId} in this same pipeline definition
      * was canceled — that's the specific condition under which Azure's "changes since previous
      * build" computes against an OLDER checkpoint than the Pipeline runs table implies (see the
@@ -703,7 +943,7 @@ public class AzureDevOpsOrgConnector {
     }
 
     /** Resolves the branch tip (HEAD commit SHA) for a given branch. */
-    private String resolveBranchHead(String project, String repo, String branch) {
+    public String resolveBranchHead(String project, String repo, String branch) {
         // Fetch the latest commit on the branch — Azure DevOps commit list with $top=1 and no from/to returns the tip
         AzureDevOpsListResponse<CommitResponse> resp = client.listCommitsByRange(
                 org, project, repo, 1, 0, null, null, branch, null, AzureDevOpsRestClient.API_VERSION);

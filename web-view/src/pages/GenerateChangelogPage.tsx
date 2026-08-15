@@ -11,6 +11,7 @@ import {
   GitBranch,
   History,
   Loader2,
+  Lock,
   Pencil,
   Rocket,
   RotateCcw,
@@ -23,7 +24,7 @@ import {
 import {
   fetchRepoChanges,
   getChangelogRepoText,
-  getRepoBuilds,
+  getRecordedRuns,
   hasChangelog,
   listHistory,
   listRepositories,
@@ -57,6 +58,7 @@ import { useChangelogEditor, type EditableTab } from "@/hooks/useChangelogEditor
 import { useQuery } from "@/hooks/useQuery";
 import { isBotAuthor } from "@/lib/bots";
 import { DEVELOPER_TAB, formatTimestamp, GENERATED_TABS, sourceLabel } from "@/lib/historyTabs";
+import { getStoredProvider } from "@/lib/provider";
 import { getStoredRole, roleHome } from "@/lib/role";
 import { cn } from "@/lib/utils";
 
@@ -205,11 +207,11 @@ export function GenerateChangelogPage() {
   const data = history.status === "success" ? history.data.entries : [];
   const selectedEntry = effectiveEntryId ? data.find((e) => e.id === effectiveEntryId) : undefined;
 
-  // Real Azure DevOps pipeline runs for the dashboard's "Pipeline runs" table — separate from
-  // the PR-based "no changelog yet" list, since a run is a CI execution (there can be several per
-  // PR, or none), not a stand-in for one.
+  // Recorded pipeline runs for the dashboard's "Pipeline runs" table — uses stored run data
+  // as primary source, with live provider fetch as fallback. This eliminates duplicate
+  // provider API calls when the pipeline has already reported the run.
   const builds = useQuery(
-    useCallback(() => (project && repo ? getRepoBuilds(project, repo, 50) : Promise.resolve([])), [project, repo]),
+    useCallback(() => (project && repo ? getRecordedRuns(project, repo, getStoredProvider()) : Promise.resolve([])), [project, repo]),
     [project, repo],
     { cacheKey: 'builds' },
   );
@@ -237,19 +239,27 @@ export function GenerateChangelogPage() {
       const query = params.toString();
       return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/generate${query ? `?${query}` : ""}`;
     }
+    // A saved-but-unversioned draft (the Save action's artifact) is keyed on its pipeline run
+    // ("run-<buildId>") — no history detail exists for it yet, so go to the generate page for
+    // that run to review/push instead of a version-detail page.
+    if (entry.id.startsWith("run-")) {
+      const buildId = entry.id.slice("run-".length);
+      if (buildId) params.set("buildId", buildId);
+      const query = params.toString();
+      return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/generate${query ? `?${query}` : ""}`;
+    }
     const query = params.toString();
     return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/history/${encodeURIComponent(entry.id)}${query ? `?${query}` : ""}`;
   }
 
-  function buildHref(buildId: number, buildNumber?: string | null) {
+  function buildHref(buildId: number, runNumber?: string | null) {
     const params = new URLSearchParams();
     if (selectedBranch) params.set("branch", selectedBranch);
     params.set("buildId", String(buildId));
-    // buildNumber is the pipeline's own version tag for this run, verbatim — whatever that
-    // pipeline reports (e.g. "1.0.4" or "1.0.4-build2200") is what prefills the version field.
-    // Each run is its own distinct version; collapsing "-buildN" away made two different runs
-    // (e.g. a PreRelease build and the Release build that follows it) collide on one version.
-    if (buildNumber) params.set("version", buildNumber);
+    // The pipeline run number (e.g. GitHub run #9, Azure build #9) — passed as a separate param
+    // so the generate page can display it as "Pipeline run number: #9" rather than confusing it
+    // with the semantic release version (e.g. "1.4.30").
+    if (runNumber) params.set("runNumber", runNumber);
     return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/generate?${params.toString()}`;
   }
 
@@ -504,6 +514,19 @@ export function GenerateChangelogPage() {
                         >
                           <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
                           <span className="min-w-0 flex-1 truncate">{highlightMatch(r.name, repoQuery)}</span>
+                          {r.visibility && (
+                            <span
+                              className={cn(
+                                "flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                                r.visibility === "private"
+                                  ? "border-border/60 text-muted-foreground"
+                                  : "border-primary/30 text-primary",
+                              )}
+                            >
+                              <Lock className="size-2.5" />
+                              {r.visibility === "private" ? "Private" : "Public"}
+                            </span>
+                          )}
                           {r.defaultBranch && (
                             <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground/70">
                               <GitBranch className="size-3" />
@@ -1092,7 +1115,7 @@ export function GenerateChangelogPage() {
                   <PipelineRunsTable
                     className="min-h-0 min-w-0 flex-1"
                     items={pagedBuildRuns}
-                    onSelect={(run) => navigate(buildHref(run.buildId, run.buildNumber))}
+                    onSelect={(run) => navigate(buildHref(run.buildId, run.runNumber))}
                     page={buildCurrentPage}
                     onPageChange={setBuildPage}
                     pageSize={BUILD_PAGE_SIZE}

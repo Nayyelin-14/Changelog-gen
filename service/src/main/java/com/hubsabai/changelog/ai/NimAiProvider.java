@@ -356,13 +356,13 @@ public class NimAiProvider implements AiProvider {
                     .header("Authorization", "Bearer " + apiKey)
                     .get();
             NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-            return response.dataOrEmpty().stream()
-                    .map(NvidiaModelsResponse.NvidiaModel::id)
+return response.dataOrEmpty().stream()
+                    .map(NvidiaModelsResponse.NvidiaModel::getId)
                     .filter(NimAiProvider::looksLikeChatModel)
                     .filter(id -> !EXCLUDED_MODELS.contains(id))
                     .map(id -> new AiModelOption(id, prettifyModelId(id), isRecommended(id)))
                     .sorted(Comparator.<AiModelOption, Boolean>comparing(m -> m.id().equals(model), Comparator.reverseOrder())
-                            .thenComparing(AiModelOption::recommended, Comparator.reverseOrder())
+                            .thenComparingInt(m -> recommendedRank(m.id()))
                             .thenComparing(AiModelOption::label))
                     .toList();
         } catch (WebApplicationException e) {
@@ -392,7 +392,7 @@ public class NimAiProvider implements AiProvider {
         "microsoft/phi-3-vision-128k-instruct", "microsoft/phi-3.5-moe-instruct",
         "google/recurrentgemma-2b", "aisingapore/sea-lion-7b-instruct",
         "bigcode/starcoder2-15b", "01-ai/yi-large", "zyphra/zamba2-7b-instruct",
-        "deepseek-ai/deepseek-v4-flash", "mistralai/mistral-nemotron",
+        "deepseek-ai/deepseek-v4-flash",
         "microsoft/phi-4-multimodal-instruct", "minimaxai/minimax-m3",
         "z-ai/glm-5.2", "qwen/qwen3.5-397b-a17b", "google/gemma-3n-e2b-it",
         "google/gemma-3n-e4b-it", "nvidia/llama-3.1-nemotron-nano-8b-v1",
@@ -403,14 +403,22 @@ public class NimAiProvider implements AiProvider {
         "qwen/qwen3-next-80b-a3b-instruct", "stepfun-ai/step-3.7-flash"
     );
 
-    private static final Set<String> RECOMMENDED_MODELS = Set.of(
-        "meta/llama-3.1-8b-instruct", "google/gemma-2-2b-it",
-        "mistralai/mistral-small-4-119b-2603", "poolside/laguna-xs-2.1",
-        "nvidia/nemotron-mini-4b-instruct"
+    private static final List<String> RECOMMENDED_MODELS = List.of(
+        "meta/llama-3.1-8b-instruct",
+        "poolside/laguna-xs-2.1",
+        "mistralai/mistral-nemotron",
+        "meta/llama-3.1-70b-instruct",
+        "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
     );
 
     private static boolean isRecommended(String id) {
         return RECOMMENDED_MODELS.contains(id);
+    }
+
+    // Rank order puts the top-5 at the top of the dropdown; non-recommended models sort after all of them by label.
+    private static int recommendedRank(String id) {
+        int rank = RECOMMENDED_MODELS.indexOf(id);
+        return rank < 0 ? Integer.MAX_VALUE : rank;
     }
 
     private static boolean looksLikeChatModel(String id) {

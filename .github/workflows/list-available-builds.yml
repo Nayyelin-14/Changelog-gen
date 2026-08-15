@@ -1,0 +1,66 @@
+name: List Deployable Builds
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max builds to show'
+        required: false
+        type: string
+        default: '20'
+
+jobs:
+  list-builds:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+      contents: read
+    steps:
+      - name: Query GHCR candidate builds and render table
+        id: query
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${{ github.repository_owner }}"
+          PKG="changelog-composer"
+
+          # gh api returns a stream of package versions. Each version has:
+          #   .metadata.container.tags  -> array of tag strings
+          #   .name                     -> sha256:<digest>
+          #   .created_at
+          #   .html_url
+          VERSIONS_JSON=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${OWNER}/packages/container/${PKG}/versions" \
+            --paginate 2>/dev/null | jq -s 'flatten')
+
+          # One row per candidate tag matching build.<run>-<sha7> (no semver — dev never bumps;
+          # versions are assigned only on promotion), sorted newest first.
+          ROWS=$(echo "$VERSIONS_JSON" | jq -r '
+            def version_re: "^build\\.[0-9]+-[a-f0-9]{7}$";
+            .[]
+            | select(.metadata.container.tags != null)
+            | .metadata.container.tags[] as $tag
+            | select($tag | test(version_re))
+            | "\(.created_at)\t\(.name)\t\($tag)"
+          ')
+
+          SELECTED=$(printf '%s\n' "$ROWS" | grep -v '^$' | sort -r | head -n "${LIMIT:-20}")
+
+          {
+            echo "### Available candidate builds for $OWNER/$PKG"
+            echo ""
+            echo "| Tag | Digest | Created (UTC) |"
+            echo "|-----|--------|---------------|"
+            if [ -z "$SELECTED" ]; then
+              echo "_No candidate builds found. Run a dev build first._"
+            else
+              printf '%s\n' "$SELECTED" | while IFS=$'\t' read -r CREATED NAME TAG; do
+                echo "| \`$TAG\` | \`$NAME\` | $CREATED |"
+              done
+            fi
+            echo ""
+            echo "To deploy, run the **Deploy to VM (promote build)** workflow with \`image_tag\` set to the chosen tag (and \`digest\` optionally set to its digest)."
+          } >> "$GITHUB_STEP_SUMMARY"

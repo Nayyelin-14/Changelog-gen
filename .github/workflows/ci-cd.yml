@@ -1,8 +1,11 @@
-name: CI/CD Pipeline
+name: CI Pipeline (dev)
+
+# dev = integration: tests + self-changelog + Docker image push. Production is NOT here — it's
+# the manual `deploy-to-vm` workflow (promote an existing image; nothing is ever rebuilt there).
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
     paths-ignore:
       - 'CHANGELOG.md'
       - 'CHATBOT-PLAN.md'
@@ -11,7 +14,7 @@ on:
       - 'service/README.md'
       - 'web-view/README.md'
   pull_request:
-    branches: [main, dev]
+    branches: [dev]
     paths-ignore:
       - 'CHANGELOG.md'
       - 'CHATBOT-PLAN.md'
@@ -23,7 +26,6 @@ on:
 env:
   IMAGE_REPOSITORY: changelog-composer
   REGISTRY_HOST: ghcr.io
-  CHANGELOG_SERVICE_URL: ${{ secrets.CHANGELOG_SERVICE_URL }}
 
 jobs:
   # ============================================================
@@ -77,34 +79,36 @@ jobs:
           QUARKUS_PROFILE: test
 
   # ============================================================
-  # CHANGELOG: Bump version + generate changelog for this repo
-  # Only on push to dev (not PR). Mirrors Azure "Changelog" stage.
+  # CHANGELOG: Append this run's raw dev changelog entry.
+  # Only on push to dev (not PR). No version bump — semver changes
+  # only on successful production promotion.
   # ============================================================
   generate-changelog:
-    name: Bump version + generate changelog
+    name: Append dev changelog entry
     needs: [frontend-checks, backend-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # for committing CHANGELOG.md + version bump
+      contents: write  # for committing CHANGELOG.md
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump version + generate changelog
+      - name: Append dev changelog entry
         id: changelog
         env:
           CHANGELOG_SERVICE_URL: ${{ secrets.CHANGELOG_SERVICE_URL }}
           CHANGELOG_API_KEY: ${{ secrets.CHANGELOG_API_KEY }}
           GIT_PUSH_PAT: ${{ secrets.GIT_PUSH_PAT }}
         run: |
-          bash .azure/scripts/generate-own-changelog.sh
+          bash .github/scripts/generate-own-changelog.sh
 
   # ============================================================
-  # PUBLISH IMAGE: Build and push image to GHCR
-  # Only on push to dev (after changelog). Mirrors Azure "PublishImage".
+  # PUBLISH IMAGE: Build and push image to GHCR with an immutable
+  # per-run tag `build.{run}-{sha}` (no semver — dev never bumps).
+  # Only on push to dev (after changelog).
   # ============================================================
   publish-image:
     name: Build & push image to GHCR
@@ -120,21 +124,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from pom.xml
-        id: version
-        run: |
-          VERSION=$(grep -m1 -oP '<version>\K[^<]+' service/pom.xml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
       - name: Compute build tag
         id: buildtag
         run: |
-          APP_VERSION=${{ steps.version.outputs.version }}
           RUN_NUMBER=${{ github.run_number }}
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          BUILD_TAG="${APP_VERSION}-build.${RUN_NUMBER}-${SHORT_SHA}"
+          BUILD_TAG="build.${RUN_NUMBER}-${SHORT_SHA}"
           echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
-          echo "app_version=$APP_VERSION" >> $GITHUB_OUTPUT
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -151,58 +147,5 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.buildtag.outputs.build_tag }}
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.buildtag.outputs.build_tag }}-dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ============================================================
-  # DEPLOY: Deploy to VM on merge to main
-  # Mirrors Azure "DeployToVm" stage.
-  # ============================================================
-  deploy-to-vm:
-    name: Deploy to VM
-    needs: [frontend-checks, backend-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Extract version from pom.xml
-        id: version
-        run: |
-          VERSION=$(grep -m1 -oP '<version>\K[^<]+' service/pom.xml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Deploy to VM
-        env:
-          REGISTRY_HOST: ghcr.io
-          IMAGE_REPOSITORY: ${{ github.repository_owner }}/${{ env.IMAGE_REPOSITORY }}
-          VM_HOST: ${{ secrets.VM_HOST }}
-          VM_USER: ${{ secrets.VM_USER }}
-          VM_COMPOSE_DIR: ${{ secrets.VM_COMPOSE_DIR }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-
-          VERSION=${{ steps.version.outputs.version }}
-          IMAGE="${REGISTRY_HOST}/${IMAGE_REPOSITORY}:${VERSION}"
-          echo "Deploying ${IMAGE} (from pom.xml version ${VERSION})"
-
-          # Write SSH key to a temp file with correct permissions
-          SSH_KEY=$(mktemp)
-          echo "${SSH_PRIVATE_KEY}" > "$SSH_KEY"
-          chmod 600 "$SSH_KEY"
-          trap 'rm -f "$SSH_KEY"' EXIT
-
-          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
-            "${VM_USER}@${VM_HOST}" \
-            "cd ${VM_COMPOSE_DIR} && \
-             echo 'Pinning image to ${IMAGE}' && \
-             sed -i 's|image: .*/changelog-composer:.*|image: ${IMAGE}|' docker-compose.yml && \
-             echo 'Pulling ${IMAGE}' && \
-             docker compose pull && \
-             echo 'Restarting containers' && \
-             docker compose down && \
-             docker compose up -d"

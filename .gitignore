@@ -46,6 +46,15 @@ guide.md
 AUTH.md
 CHATBOT-PLAN.md
 
+# Local docs / artifacts (keep out of the repo)
+QUARKUS_READING_ORDER.md
+.azure/
 
+# Logs & analysis artifacts
+service/*.log
+service/*.log.*
+service/model-benchmark-results.*
+openapi-before.json
+Untitled diagram-*.png
 
 .claude/

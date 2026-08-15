@@ -14,12 +14,17 @@ public class GenerateStreamRequest {
     private String branch;
     private String manualText;
     private boolean force;
+    private Long buildId;
 
     public GenerateStreamRequest() {}
 
     @JsonProperty("model")
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
+
+    @JsonProperty("buildId")
+    public Long getBuildId() { return buildId; }
+    public void setBuildId(Long buildId) { this.buildId = buildId; }
 
     @JsonProperty("fromVersion")
     public String getFromVersion() { return fromVersion; }

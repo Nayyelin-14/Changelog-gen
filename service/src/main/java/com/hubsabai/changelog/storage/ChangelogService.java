@@ -29,12 +29,13 @@ public class ChangelogService {
 
     @Transactional
     public ChangelogVersion getOrCreateVersion(String project, String repo, String version,
-                                                Integer buildId, String buildNumber,
-                                                String stage, String branch) {
+                                                 Integer buildId, String buildNumber,
+                                                 String pipelineRunNumber, String stage, String branch) {
         ChangelogVersion existing = ChangelogVersion.findEntry(project, repo, version);
         if (existing != null) {
             if (buildId != null) existing.buildId = buildId;
             if (buildNumber != null) existing.buildNumber = buildNumber;
+            if (pipelineRunNumber != null) existing.pipelineRunNumber = pipelineRunNumber;
             if (stage != null) existing.stage = stage;
             if (branch != null) existing.branch = branch;
             existing.persist();
@@ -46,6 +47,7 @@ public class ChangelogService {
         v.version = version;
         v.buildId = buildId;
         v.buildNumber = buildNumber;
+        v.pipelineRunNumber = pipelineRunNumber;
         v.stage = stage;
         v.branch = branch;
         v.createdAt = OffsetDateTime.now();
@@ -55,7 +57,14 @@ public class ChangelogService {
 
     @Transactional
     public ChangelogVersion findOrCreate(String project, String repo, String version) {
-        return getOrCreateVersion(project, repo, version, null, null, null, null);
+        return getOrCreateVersion(project, repo, version, null, null, null, null, null);
+    }
+
+    /** Creates or updates without a pipeline run number — same as the 8-arg overload but keeps
+     * backward callers working after the signature change. */
+    @Transactional
+    public ChangelogVersion findOrCreateWithRun(String project, String repo, String version, String pipelineRunNumber) {
+        return getOrCreateVersion(project, repo, version, null, null, pipelineRunNumber, null, null);
     }
 
     @Transactional
@@ -282,7 +291,7 @@ public class ChangelogService {
     @Transactional
     public void ingestRelease(String project, String repo, String branch, String version,
                                String stage, String itemsJson, Set<Integer> prIds) {
-        ChangelogVersion cv = getOrCreateVersion(project, repo, version, null, null, stage, branch);
+        ChangelogVersion cv = getOrCreateVersion(project, repo, version, null, null, null, stage, branch);
         cv.rawItems = itemsJson;
         cv.persist();
 

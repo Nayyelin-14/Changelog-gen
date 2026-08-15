@@ -1,0 +1,139 @@
+name: Deploy to VM (promote build)
+
+# Production promotion. NEVER rebuilds the app — the selected image already exists in GHCR (built
+# by the dev pipeline). This workflow only: (1) verifies the image + digest, (2) pulls it on the
+# VM, (3) health-checks, and only THEN (4) bumps semver + commits the release to main.
+#
+# Semver changes here and nowhere else. dev never bumps. A failed deploy leaves main untouched.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Build to promote, e.g. build.152-a8f92c1 (see list-available-builds workflow)'
+        required: true
+        type: string
+      digest:
+        description: 'Optional exact image digest to pin, e.g. sha256:abc... (preferred — tag is friendly, digest is exact)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy-to-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Verify, deploy, release
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------------------
+      # 1. Verify the selected image exists (and digest matches) BEFORE touching the VM.
+      # ------------------------------------------------------------
+      - name: Verify image exists + resolve digest
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ inputs.image_tag }}"
+          if [[ ! "$TAG" =~ ^build\.[0-9]+-[a-f0-9]{7}$ ]]; then
+            echo "image_tag must look like build.<run>-<sha7>, got: $TAG" >&2
+            exit 1
+          fi
+          RUN_NUMBER=$(echo "$TAG" | cut -d. -f2 | cut -d- -f1)
+
+          OWNER="${{ github.repository_owner }}"
+          PKG="changelog-composer"
+          VERSIONS_JSON=$(gh api -H "Accept: application/vnd.github+json" \
+            "/orgs/${OWNER}/packages/container/${PKG}/versions" --paginate 2>/dev/null | jq -s 'flatten')
+
+          DIGEST=$(echo "$VERSIONS_JSON" | jq -r --arg tag "$TAG" '
+            .[]
+            | select(.metadata.container.tags != null)
+            | select(.metadata.container.tags | index($tag))
+            | .name
+            | select(startswith("sha256:"))
+          ' | head -1)
+
+          if [ -z "$DIGEST" ]; then
+            echo "Image $TAG not found in GHCR — run the dev CI first (or check list-available-builds)." >&2
+            exit 1
+          fi
+
+          INPUT_DIGEST="${{ inputs.digest }}"
+          if [ -n "$INPUT_DIGEST" ] && [ "$INPUT_DIGEST" != "$DIGEST" ]; then
+            echo "Provided digest $INPUT_DIGEST does not match the tag's digest $DIGEST." >&2
+            exit 1
+          fi
+
+          echo "Verified: $TAG -> $DIGEST"
+          echo "image_ref=ghcr.io/${OWNER}/${PKG}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "run_number=${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # 2. Pull the raw dev changelog entry for that run from origin/dev's CHANGELOG.md,
+      #    so the release entry carries the same content the dev entry already captured.
+      # ------------------------------------------------------------
+      - name: Extract dev changelog entry for promoted run
+        id: changelog
+        env:
+          RUN_NUMBER: ${{ steps.verify.outputs.run_number }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin dev --depth=1
+          DEV_CHANGELOG=$(git show origin/dev:CHANGELOG.md 2>/dev/null || true)
+
+          BODY=$(printf '%s' "$DEV_CHANGELOG" | awk -v r="$RUN_NUMBER" '
+            $0 ~ "dev \\(run " r "\\)" { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ')
+
+          if [ -z "$BODY" ]; then
+            echo "No dev changelog entry found for run $RUN_NUMBER — release entry will carry no body (changelog was likely skipped when the service was unreachable)." >&2
+          fi
+
+          # GITHUB_OUTPUT can't hold multi-line reliably; write to a file.
+          printf '%s\n' "$BODY" > dev-entry.md
+          echo "body_file=dev-entry.md" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # 3. Deploy to the VM (pull selected image + compose up + healthcheck).
+      #    Failure here stops the workflow — no release is created.
+      # ------------------------------------------------------------
+      - name: Deploy to VM
+        env:
+          IMAGE_REF: ${{ steps.verify.outputs.image_ref }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_COMPOSE_DIR: ${{ secrets.VM_COMPOSE_DIR }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          VM_GHCR_USER: ${{ secrets.VM_GHCR_USER }}
+          VM_GHCR_TOKEN: ${{ secrets.VM_GHCR_TOKEN }}
+        run: |
+          bash .github/scripts/deploy-to-vm.sh
+
+      # ------------------------------------------------------------
+      # 4. SUCCESS reached this far: bump semver + commit the release to main.
+      # ------------------------------------------------------------
+      - name: Bump version + commit release to main
+        env:
+          RUN_NUMBER: ${{ steps.verify.outputs.run_number }}
+          GIT_PUSH_PAT: ${{ secrets.GIT_PUSH_PAT }}
+          BODY_FILE: ${{ steps.changelog.outputs.body_file }}
+        run: |
+          export RELEASE_BODY="$(cat "$BODY_FILE" 2>/dev/null || true)"
+          bash .github/scripts/release-main.sh

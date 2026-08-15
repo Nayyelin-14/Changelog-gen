@@ -9,6 +9,8 @@ export interface RepositorySummary {
   name: string;
   project: string;
   defaultBranch: string | null;
+  /** "public" | "private" — GitHub provider only; null for Azure. */
+  visibility: string | null;
 }
 
 /** One repo's status at a glance for the Dev dashboard's repo table. needsReviewCount is capped
@@ -26,6 +28,9 @@ export interface RepoOverview {
 export interface PipelineRunSummary {
   buildId: number;
   buildNumber: string | null;
+  /** The CI system's pipeline run number (e.g. GitHub run #9, Azure build number). Separate from
+   * buildNumber because buildNumber often tracks the app version, not the run. */
+  runNumber: string | null;
   status: string | null;
   result: string | null;
   finishTime: string | null;
@@ -67,6 +72,65 @@ export interface ReleaseMeta {
 export interface ReleaseData {
   release: ReleaseMeta;
   items: ChangeItem[];
+}
+
+/** Provider-normalized snapshot of a single pipeline/workflow run (see backend
+ * {@code RunChangeContext}) — what the run-context inspect endpoint returns before a generate. */
+export interface RunChangeContext {
+  run?: {
+    runId: string | null;
+    runNumber: string | null;
+    pipelineName: string | null;
+    status: string | null;
+    result: string | null;
+    branch: string | null;
+    headSha: string | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+    triggerUrl: string | null;
+    providerCommitMessage: string | null;
+  };
+  pr?: {
+    id: string | null;
+    title: string | null;
+    description: string | null;
+    author: string | null;
+    state: string | null;
+    url: string | null;
+    updatedAt: string | null;
+  };
+  commits?: Array<{
+    sha: string | null;
+    message: string | null;
+    author: string | null;
+    date: string | null;
+    filePaths: string[] | null;
+  }>;
+  workItems?: Array<{
+    id: string | null;
+    title: string | null;
+    type: string | null;
+    state: string | null;
+    url: string | null;
+    description: string | null;
+  }>;
+  files?: Array<{
+    path: string | null;
+    status: string | null;
+    additions: number;
+    deletions: number;
+  }>;
+}
+
+/** Response from the release-version resolution endpoint — tells the UI what to pre-fill
+ * for a new changelog generation: the latest version in the changelog, the suggested next
+ * version, and the current branch HEAD SHA. */
+export interface ReleaseVersionResolution {
+  latestVersion: string | null;
+  suggestedNextVersion: string | null;
+  currentBranchSha: string | null;
+  changelogExists: boolean;
+  requiresInitialVersion: boolean;
 }
 
 export interface GenerateResult {
@@ -193,6 +257,8 @@ export interface PullRequestDetails {
   commitMessages: string[];
   workItems: PullRequestWorkItemSummary[];
 }
+
+export type ChangelogAudience = 'developer' | 'qa' | 'business';
 
 /** One turn of a changelog Q&A conversation — the browser is the only place a conversation is
  * kept (see ChangelogChatWidget's localStorage persistence), so every request resends the

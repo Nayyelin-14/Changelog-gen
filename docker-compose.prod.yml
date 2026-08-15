@@ -1,0 +1,49 @@
+# Production compose for the VM. Differs from docker-compose.yml (dev: `build: .`) in one key way:
+# production NEVER builds the app. It consumes an already-published image referenced by the
+# `IMAGE` env var, which the deploy-to-vm workflow supplies (docker-compose interpolation reads
+# the exported IMAGE on the VM).
+#
+# Two services:
+#   - app:     the changelog service itself, from the selected immutable image.
+#              Kept published on :8080 so the deploy healthcheck (localhost:8080/q/health) and
+#              the Dockerfile HEALTHCHECK keep working unchanged.
+#   - caddy:   TLS reverse proxy so the service is reachable at https://<domain>/api.
+#              Certificates are handled automatically by Caddy (Let's Encrypt via :80/443).
+#
+# The VM keeps this file alongside a Caddyfile + a `.env` (real secrets AND the DOMAIN) in
+# VM_COMPOSE_DIR. Nothing secret lives in this file or the repo. Requires GHCR credentials on the
+# VM (docker login) for private images.
+services:
+  app:
+    image: ${IMAGE}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - app_data:/data/changelog-composer
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

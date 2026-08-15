@@ -15,13 +15,20 @@ import com.hubsabai.changelog.chat.ChangelogChatPromptBuilder;
 import com.hubsabai.changelog.chat.ChangelogChatRequest;
 import com.hubsabai.changelog.chat.ChatTurn;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector;
+import com.hubsabai.changelog.connector.azuredevops.ChangelogFileManager;
+import com.hubsabai.changelog.connector.azuredevops.dto.CommitResponse;
+import com.hubsabai.changelog.connector.github.ChangelogMarkdown;
 import com.hubsabai.changelog.core.model.ChangeItem;
+import com.hubsabai.changelog.util.VersionUtils;
 import com.hubsabai.changelog.core.model.OrgFetchResult;
 import com.hubsabai.changelog.core.model.PipelineRunSummary;
 import com.hubsabai.changelog.core.model.ProjectSummary;
 import com.hubsabai.changelog.core.model.ReleaseData;
 import com.hubsabai.changelog.core.model.RepositorySummary;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector.ChangelogEntry;
+import com.hubsabai.changelog.generation.ChangelogGenerationService;
+import com.hubsabai.changelog.generation.RunChangeContext;
+import com.hubsabai.changelog.generation.RunChangeDataReader;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector.ChangelogEnrichment;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector.ChangelogFile;
 import com.hubsabai.changelog.storage.ChangelogCacheService;
@@ -32,6 +39,8 @@ import com.hubsabai.changelog.storage.GeneratedChangelog;
 import com.hubsabai.changelog.storage.InputHash;
 import com.hubsabai.changelog.storage.RawRelease;
 import com.hubsabai.changelog.storage.RawReleaseService;
+import com.hubsabai.changelog.storage.RecordedPipelineRun;
+import com.hubsabai.changelog.storage.RecordedRunService;
 import com.hubsabai.changelog.storage.ReleasePr;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -96,6 +105,9 @@ public class AzureDevOpsResource {
     }
 
     @Inject
+    RecordedRunService recordedRunService;
+
+    @Inject
     AiProvider aiProvider;
 
     @Inject
@@ -106,6 +118,12 @@ public class AzureDevOpsResource {
 
     @Inject
     RawReleaseService rawReleaseService;
+
+    @Inject
+    ChangelogGenerationService generationService;
+
+    @Inject
+    RunChangeDataReader runChangeDataReader;
 
     @GET
     @Path("/projects")
@@ -200,6 +218,59 @@ public class AzureDevOpsResource {
     }
 
     @GET
+    @Path("/projects/{project}/repos/{repo}/release-version")
+    public Response resolveReleaseVersion(
+            @PathParam("project") String project,
+            @PathParam("repo") String repo,
+            @QueryParam("branch") String branch) {
+        String resolvedBranch = resolveBranch(project, repo, branch);
+        String headSha = resolveHeadSha(project, repo, resolvedBranch);
+
+        List<String> versions = collectSemanticVersions(project, repo, resolvedBranch);
+        String latestVersion = VersionUtils.findLatestVersion(versions);
+        String suggestedNext = latestVersion != null
+                ? VersionUtils.incrementPatch(latestVersion)
+                : "1.0.0";
+
+        boolean changelogExists = latestVersion != null;
+        boolean requiresInitial = !changelogExists;
+
+        ReleaseVersionResolution resolution = new ReleaseVersionResolution(
+                latestVersion,
+                suggestedNext,
+                headSha,
+                changelogExists,
+                requiresInitial
+        );
+        return Response.ok(resolution).build();
+    }
+
+    private String resolveHeadSha(String project, String repo, String branch) {
+        try {
+            return orgConnector.resolveBranchHead(project, repo, branch);
+        } catch (Exception e) {
+            LOG.warning("resolveHeadSha failed for " + project + "/" + repo + ": " + e);
+            return null;
+        }
+    }
+
+    private List<String> collectSemanticVersions(String project, String repo, String branch) {
+        List<String> versions = new ArrayList<>();
+
+        com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector.ChangelogFile file =
+                orgConnector.fetchChangelogFileCached(project, repo, branch);
+        if (file != null && file.content() != null) {
+            List<ChangelogEntry> entries = orgConnector.parseChangelogEntries(file.content());
+            for (ChangelogEntry entry : entries) {
+                if (entry.version() != null && !entry.version().isBlank()) {
+                    versions.add(entry.version());
+                }
+            }
+        }
+        return versions;
+    }
+
+    @GET
     @Path("/projects/{project}/work-items")
     public List<ChangeItem> listWorkItems(@PathParam("project") String project) {
         return orgConnector.fetchProjectWorkItems(project);
@@ -250,13 +321,15 @@ public class AzureDevOpsResource {
             @QueryParam("manualText") String manualText,
             @QueryParam("audience") String audience,
             @QueryParam("force") boolean force,
+            @QueryParam("buildId") int buildId,
             // Dashboard preview flow: commit=false runs AI but leaves generated_changelog
             // untouched — the user confirms via /generate-commit before anything changes.
             @QueryParam("commit") @DefaultValue("true") boolean commit) {
         boolean hasManualText = manualText != null && !manualText.isBlank();
-        if (version == null || version.isBlank()) {
-            // Always required — version is the cache key and generated_changelog.version is NOT
-            // NULL; a blank value would surface as a raw persistence error instead of this.
+        if ((version == null || version.isBlank()) && !hasManualText && buildId <= 0) {
+            // Always required unless a build or manual text identifies the data — version is the
+            // cache key and generated_changelog.version is NOT NULL; a blank value would surface
+            // as a raw persistence error instead of this.
             throw new AiException("A version is required to generate a changelog.");
         }
         if (model == null || model.isBlank()) {
@@ -266,6 +339,16 @@ public class AzureDevOpsResource {
         ReleaseData data;
         if (hasManualText) {
             data = buildReleaseDataFromManual(project, repo, branch, version, manualText);
+        } else if (buildId > 0) {
+            // Use stored recorded run data as primary source; fall back to live fetch
+            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+            if (storedContext.isPresent()) {
+                data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai", storedContext.get());
+            } else {
+                // Fallback: live fetch
+                data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai",
+                        orgConnector.fetchRunContext(project, repo, buildId));
+            }
         } else {
             data = orgConnector.fetchRepoChanges(project, repo, fromVersion, version, branch);
             if (data.getItems().isEmpty()) {
@@ -292,12 +375,16 @@ public class AzureDevOpsResource {
         }
         long start = System.currentTimeMillis();
         String inputHash = InputHash.of(ReleaseNotePreparer.prepare(data.getItems()));
+        // A version-free preview can never commit — generated_changelog is keyed on a non-null
+        // version. Version is only ever filled in later, at push time, by the human in the modal.
+        boolean effectiveCommit = commit && version != null && !version.isBlank();
 
         if (audience != null && !audience.isBlank()) {
             // Single-audience request. ensureAudienceText handles the chain (dev→qa→business)
             // transparently. force=true = "Regenerate": skip cache and always call the AI.
-            boolean wasCached = !force && cacheService.getCurrent(project, repo, version, audience, inputHash).isPresent();
-            AiResult result = ensureAudienceText(project, repo, version, audience, model, true, data, inputHash, force, commit, new HashMap<>());
+            boolean wasCached = !force && version != null && !version.isBlank()
+                    && cacheService.getCurrent(project, repo, version, audience, inputHash).isPresent();
+            AiResult result = generationService.ensureAudience(project, repo, version, audience, model, true, data, inputHash, force, effectiveCommit, new HashMap<>());
             long durationMs = System.currentTimeMillis() - start;
             return new GenerateResponse(
                     "developer".equals(audience) ? result.getText() : null,
@@ -310,9 +397,9 @@ public class AzureDevOpsResource {
         // Share one `computed` map across all three so qa/business's own internal dependency
         // lookups reuse developer/qa's result in-memory instead of recomputing them.
         Map<String, AiResult> computed = new HashMap<>();
-        AiResult developerResult = ensureAudienceText(project, repo, version, "developer", model, true, data, inputHash, false, true, computed);
-        AiResult qaResult = ensureAudienceText(project, repo, version, "qa", model, true, data, inputHash, false, true, computed);
-        AiResult businessResult = ensureAudienceText(project, repo, version, "business", model, true, data, inputHash, false, true, computed);
+        AiResult developerResult = generationService.ensureAudience(project, repo, version, "developer", model, true, data, inputHash, false, true, computed);
+        AiResult qaResult = generationService.ensureAudience(project, repo, version, "qa", model, true, data, inputHash, false, true, computed);
+        AiResult businessResult = generationService.ensureAudience(project, repo, version, "business", model, true, data, inputHash, false, true, computed);
 
         long durationMs = System.currentTimeMillis() - start;
         List<AiUsage> usage = Stream.of(developerResult, qaResult, businessResult)
@@ -366,8 +453,9 @@ public class AzureDevOpsResource {
         String branch = request.getBranch();
         String manualText = request.getManualText();
         boolean force = request.isForce();
+        int buildId = request.getBuildId() != null ? request.getBuildId().intValue() : 0;
         boolean hasManualText = manualText != null && !manualText.isBlank();
-        if (version == null || version.isBlank()) {
+        if ((version == null || version.isBlank()) && !hasManualText && buildId <= 0) {
             throw new AiException("A version is required to generate a changelog.");
         }
         if (model == null || model.isBlank()) {
@@ -377,6 +465,16 @@ public class AzureDevOpsResource {
         ReleaseData data;
         if (hasManualText) {
             data = buildReleaseDataFromManual(project, repo, branch, version, manualText);
+        } else if (buildId > 0) {
+            // Use stored recorded run data as primary source; fall back to live fetch
+            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+            if (storedContext.isPresent()) {
+                data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai", storedContext.get());
+            } else {
+                // Fallback: live fetch
+                data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai",
+                        orgConnector.fetchRunContext(project, repo, buildId));
+            }
         } else {
             data = orgConnector.fetchRepoChanges(project, repo, fromVersion, version, branch);
             if (data.getItems().isEmpty()) {
@@ -412,7 +510,7 @@ public class AzureDevOpsResource {
                 try {
                     // commit=false: this is a preview the user reviews before choosing to push —
                     // see /changelog-push, which is the only place a generation gets persisted now.
-                    AiResult result = ensureAudienceText(project, repo, version, audience, model, true, finalData, inputHash, force, false, computed);
+                    AiResult result = generationService.ensureAudience(project, repo, version, audience, model, true, finalData, inputHash, force, false, computed);
                     AiUsage usage = result.getUsage();
                     if (usage != null) {
                         totalTokens += usage.getTotalTokens();
@@ -477,7 +575,8 @@ public class AzureDevOpsResource {
 
         // If we have DB data for this repo, build response from DB only — skip git entirely
         if (!dbByVersion.isEmpty()) {
-            return buildHistoryFromDb(project, repo, resolvedBranch, page, limit, dbByVersion);
+            return withDrafts(project, repo, resolvedBranch, page,
+                    buildHistoryFromDb(project, repo, resolvedBranch, page, limit, dbByVersion));
         }
 
         // No DB data — try git as fallback
@@ -526,7 +625,7 @@ public class AzureDevOpsResource {
         int total = sortedVersions.size();
         int from = page * limit;
         if (from >= total) {
-            return new HistoryResponse(List.of(), total);
+            return withDrafts(project, repo, resolvedBranch, page, new HistoryResponse(List.of(), total));
         }
         int to = Math.min(from + limit, total);
         List<String> pageVersions = sortedVersions.subList(from, to);
@@ -578,7 +677,8 @@ public class AzureDevOpsResource {
             }
         }
 
-        return withUngeneratedPrs(project, repo, resolvedBranch, page, entries, total);
+        return withDrafts(project, repo, resolvedBranch, page,
+                withUngeneratedPrs(project, repo, resolvedBranch, page, entries, total));
     }
 
     private HistoryResponse buildHistoryFromDb(String project, String repo, String branch,
@@ -602,7 +702,9 @@ public class AzureDevOpsResource {
 
         int total = sorted.size();
         int from = page * limit;
-        if (from >= total) return new HistoryResponse(List.of(), total);
+        if (from >= total) {
+            return withDrafts(project, repo, branch, page, new HistoryResponse(List.of(), total));
+        }
         int to = Math.min(from + limit, total);
         List<String> pageVersions = sorted.subList(from, to);
 
@@ -647,6 +749,35 @@ public class AzureDevOpsResource {
     // Only the most recently merged PRs are worth checking against release_pr, so this only runs
     // for page 0 — older un-generated PRs would just push the real history further down the list.
     private static final int UNGENERATED_PR_LIMIT = 10;
+
+    /** Prepends saved (version-free) AI drafts — the Save action's artifact — to the first history
+     * page so a saved draft shows up on the dashboard even before it has a version. Each becomes a
+     * generated entry keyed on its pipeline run id ("run-<buildId>"), sourced "raw" (pending
+     * review), with the draft text as the developer body. Clicking it opens the generate page for
+     * that run so it can be reviewed and pushed. */
+    private HistoryResponse withDrafts(String project, String repo, String branch, int page,
+            HistoryResponse response) {
+        if (page != 0) {
+            return response;
+        }
+        List<RecordedPipelineRun> drafts = recordedRunService.listDraftRuns("azure", project, repo);
+        if (drafts.isEmpty()) {
+            return response;
+        }
+        List<HistoryEntry> draftEntries = new ArrayList<>();
+        for (RecordedPipelineRun run : drafts) {
+            String title = run.displayTitle();
+            HistoryEntry entry = new HistoryEntry(
+                    "run-" + run.buildId, project, repo, branch, null,
+                    List.of(), run.aiDraftAt != null ? run.aiDraftAt.toString() : null,
+                    title != null ? title : run.aiDraftText);
+            entry.setSource("raw");
+            draftEntries.add(entry);
+        }
+        List<HistoryEntry> merged = new ArrayList<>(draftEntries);
+        merged.addAll(response.getEntries());
+        return new HistoryResponse(merged, response.getTotal() + draftEntries.size());
+    }
 
     private HistoryResponse withUngeneratedPrs(
             String project, String repo, String branch, int page, List<HistoryEntry> entries, int total) {
@@ -762,14 +893,34 @@ public class AzureDevOpsResource {
 
     /** Same commits/PRs/work-items fetch the pipeline-run intake path uses (see
      * {@link AzureDevOpsOrgConnector#fetchRunChanges}), exposed read-only for a human picking a
-     * run from the dashboard's "Pipeline runs" list instead of the pipeline calling it itself. */
+     * run from the dashboard's "Pipeline runs" list instead of the pipeline calling it itself.
+     * Uses stored run data as primary source; falls back to live Azure DevOps fetch if not recorded. */
     @GET
     @Path("/projects/{project}/repos/{repo}/builds/{buildId}/changes")
     public ReleaseData buildChanges(
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             @PathParam("buildId") int buildId) {
+        Optional<ReleaseData> stored = recordedRunService.getRecordedRunData("azure", project, repo, (long) buildId);
+        if (stored.isPresent()) {
+            return stored.get();
+        }
+        // Fallback: live fetch
         return orgConnector.fetchRunChanges(project, repo, buildId);
+    }
+
+    @GET
+    @Path("/projects/{project}/repos/{repo}/builds/{buildId}/run-context")
+    public RunChangeContext runContext(
+            @PathParam("project") String project,
+            @PathParam("repo") String repo,
+            @PathParam("buildId") int buildId) {
+        Optional<RunChangeContext> stored = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+        if (stored.isPresent()) {
+            return stored.get();
+        }
+        // Fallback: live fetch
+        return orgConnector.fetchRunContext(project, repo, buildId);
     }
 
     /**
@@ -1008,80 +1159,6 @@ public class AzureDevOpsResource {
         item.setProject(project);
         item.setRepo(repo);
         return item;
-    }
-
-    /**
-     * Returns {@code audience}'s text for this version, generating and caching it along with any
-     * dependencies. Developer is generated from raw items; QA uses developer + raw items as
-     * context; Business uses developer + QA + raw items. The pipeline only ever produces Developer
-     * (see PipelineResource); QA/Business are exclusively triggered from the dashboard.
-     *
-     * <p>{@code strict} = dashboard generation (model is a deliberate choice, never substituted);
-     * non-strict = read-only previews (provider fallback chain, no model exposed to the viewer).
-     *
-     * <p>{@code force} = "Regenerate": skip current text (AI or human) and call the AI again,
-     * pushing the old text into history. Passive callers always pass {@code false}.
-     *
-     * <p>{@code commit} gates only the final write for {@code audience} itself; dependency
-     * lookups propagate the same {@code commit}, so a preview (commit=false) never persists
-     * anything through the back door of computing developer/qa as context for qa/business.
-     *
-     * <p>{@code computed} is this call chain's own in-memory scratch — a dependency already
-     * computed earlier in the SAME request (e.g. developer, before qa needs it) is reused from
-     * here instead of hitting the AI again, regardless of whether {@code commit} left it
-     * uncached in the DB. Callers that only ever fetch one audience can pass a fresh empty map.
-     */
-    private AiResult ensureAudienceText(String project, String repo, String version, String audience,
-            String model, boolean strict, ReleaseData data, String inputHash, boolean force, boolean commit,
-            Map<String, AiResult> computed) {
-        AiResult already = computed.get(audience);
-        if (already != null) {
-            return already;
-        }
-        if (!force) {
-            Optional<String> current = cacheService.getCurrent(project, repo, version, audience, inputHash);
-            if (current.isPresent()) {
-                AiResult cached = new AiResult(current.get(), null);
-                computed.put(audience, cached);
-                return cached;
-            }
-        }
-
-        List<ChangeItem> items = data.getItems();
-        if (!"developer".equals(audience)) {
-            AiResult developer = ensureAudienceText(project, repo, version, "developer", model, strict, data, inputHash, false, commit, computed);
-            items = withPriorContext(items, project, repo, "developer", developer.getText());
-        }
-        if ("business".equals(audience)) {
-            AiResult qa = ensureAudienceText(project, repo, version, "qa", model, strict, data, inputHash, false, commit, computed);
-            items = withPriorContext(items, project, repo, "qa", qa.getText());
-        }
-
-        AiResult result = strict
-                ? aiProvider.generateForAudienceStrict(items, data.getRelease(), audience, model)
-                : aiProvider.generateForAudience(items, data.getRelease(), audience, model, null);
-        if (commit) {
-            cacheService.put(project, repo, version, audience, strict ? model : "auto", result.getText(), inputHash);
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
-            changelogService.createSnapshot(vid, audience, result.getText(), "ai", strict ? model : "auto",
-                    result.getUsage() != null ? result.getUsage().getTotalTokens() : 0, 0, null);
-        }
-        computed.put(audience, result);
-        return result;
-    }
-
-    /** Prepends a synthetic item carrying an already-generated prior audience's text as context,
-     * clearly labeled so the model builds on it rather than treating it as one more raw change to
-     * re-list (or, worse, echoing it back verbatim). */
-    private static List<ChangeItem> withPriorContext(List<ChangeItem> items, String project, String repo,
-            String priorAudience, String priorText) {
-        String label = "developer".equals(priorAudience)
-                ? "ALREADY-PUBLISHED developer changelog — use as source of truth, do not repeat verbatim"
-                : "ALREADY-GENERATED " + priorAudience + " changelog — build on this, do not repeat verbatim";
-        List<ChangeItem> withContext = new ArrayList<>(items.size() + 1);
-        withContext.add(buildChangeItem(project, repo, label, priorText, List.of()));
-        withContext.addAll(items);
-        return withContext;
     }
 
     /**
@@ -1595,7 +1672,7 @@ public class AzureDevOpsResource {
         String version = request.getVersion();
 
         cacheService.saveEdit(project, repo, version, audience, request.getText(), request.getEditedBy());
-        long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
+        long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
         changelogService.createSnapshot(vid, audience, request.getText(), "edit", null, null, null, request.getEditedBy());
 
         String developerText = "developer".equals(audience) ? request.getText() : null;
@@ -1623,9 +1700,6 @@ public class AzureDevOpsResource {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
-        if (request.getVersion() == null || request.getVersion().isBlank()) {
-            throw new AiException("A version is required to commit a changelog generation.");
-        }
         if (request.getText() == null || request.getText().isBlank()) {
             throw new AiException("Generated text must not be blank.");
         }
@@ -1633,6 +1707,18 @@ public class AzureDevOpsResource {
             throw new AiException("A model is required to commit a changelog generation.");
         }
         String version = request.getVersion();
+        Long buildId = request.getBuildId();
+        boolean hasVersion = version != null && !version.isBlank();
+        // A manual dashboard generation has no version yet — the human decides it in the push
+        // modal. Such a save must be keyed on the pipeline run it came from instead.
+        if (!hasVersion && (buildId == null || buildId <= 0)) {
+            throw new AiException("A version or a pipeline build ID is required to save a changelog generation.");
+        }
+        if (!hasVersion) {
+            recordedRunService.saveAiDraft("azure", project, repo, buildId, audience,
+                    request.getModel(), request.getText(), request.getTokens(), request.getDurationMs());
+            return new GenerateResponse(null, null, null, List.of(), 0, true);
+        }
 
         // inputHash is only ever used later as a cache-freshness fingerprint (see
         // ChangelogCacheService#getCurrent) — never required for the save itself. A version fresh
@@ -1650,7 +1736,7 @@ public class AzureDevOpsResource {
                     + " while committing a changelog generation — saving without an input hash: " + e.getMessage());
         }
         cacheService.put(project, repo, version, audience, request.getModel(), request.getText(), inputHash);
-        long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
+        long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
         changelogService.createSnapshot(vid, audience, request.getText(), "ai", request.getModel(),
                 request.getTokens(), request.getDurationMs(), null);
 
@@ -1679,6 +1765,7 @@ public class AzureDevOpsResource {
         String audience = request.getAudience();
         String version = request.getVersion();
         String branch = request.getBranch();
+        Long buildId = request.getBuildId();
         if (!"developer".equals(audience)) {
             throw new AiException("Pushing to the repo is only supported for the developer view right now.");
         }
@@ -1722,10 +1809,16 @@ public class AzureDevOpsResource {
             }
             String model = request.getModel() != null && !request.getModel().isBlank() ? request.getModel() : "unknown";
             cacheService.put(project, repo, version, "developer", model, text, inputHash);
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
+            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
             changelogService.createSnapshot(vid, "developer", text, "ai", model, 0, 0, null);
         }
         cacheService.markPushed(project, repo, version, "developer", text, commitUrl);
+
+        // Version-free save → push-modal flow: fill the human-chosen version into the recorded
+        // run the draft was saved against, and clear the now-obsolete draft.
+        if (buildId != null && buildId > 0) {
+            recordedRunService.applyPushedVersion("azure", project, repo, buildId, version);
+        }
 
         Map<String, String> response = new LinkedHashMap<>();
         response.put("commitUrl", commitUrl);

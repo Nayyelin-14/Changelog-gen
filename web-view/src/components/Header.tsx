@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Briefcase, ChevronRight, Moon, Sparkles, Sun, Terminal } from 'lucide-react';
+import { Briefcase, ChevronRight, GitBranch, Moon, Sparkles, Sun, Terminal } from 'lucide-react';
 
 import { getStoredRole, setStoredRole, type Role } from '@/lib/role';
+import { getStoredProvider, setStoredProvider, type Provider } from '@/lib/provider';
 import { cn } from '@/lib/utils';
 
 function useTheme() {
@@ -37,6 +38,7 @@ export function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { dark, toggle } = useTheme();
+  const [provider, setProvider] = useState<Provider>(() => getStoredProvider());
 
   // The URL is the actual source of truth for which role is active (see App.tsx's /dev, /qa,
   // /business route prefixes) — re-derived on every navigation via `location.pathname` as a dep,
@@ -53,6 +55,12 @@ export function Header() {
     setStoredRole(next);
     const path = next === 'dev' ? '/dev' : `/${next}`;
     navigate(path, { replace: true });
+  }
+
+function handleProviderClick(next: Provider) {
+    setStoredProvider(next);
+    setProvider(next);
+    navigate(location.pathname, { replace: true });
   }
 
   return (
@@ -73,7 +81,9 @@ export function Header() {
           </div>
           <div className="hidden leading-tight sm:block">
             <p className="text-xs font-semibold tracking-tight">Changelog Composer</p>
-            <p className="text-[10px] text-muted-foreground">Azure DevOps · datasabai</p>
+            <p className="text-[10px] text-muted-foreground">
+              {provider === 'github' ? 'GitHub' : 'Azure DevOps · datasabai'}
+            </p>
           </div>
         </a>
 
@@ -132,6 +142,16 @@ export function Header() {
             })}
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={() => handleProviderClick(provider === 'github' ? 'azure' : 'github')}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          aria-label={provider === 'github' ? 'Switch to Azure DevOps' : 'Switch to GitHub'}
+        >
+          {provider === 'github' ? <GitBranch className="size-4" /> : <Terminal className="size-4" />}
+          <span className="hidden sm:inline">{provider === 'github' ? 'GitHub' : 'Azure'}</span>
+        </button>
 
         <button
           type="button"

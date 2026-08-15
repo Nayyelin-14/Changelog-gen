@@ -34,6 +34,11 @@ public class ChangelogVersion extends PanacheEntityBase {
     @Column(name = "build_number", length = 100)
     public String buildNumber;
 
+    /** The pipeline run number from CI (e.g. '9', '12'). Separate from {@link #version}, which is
+     * the canonical semantic release version. May be null when only a release version is known. */
+    @Column(name = "pipeline_run_number", length = 100)
+    public String pipelineRunNumber;
+
     @Column(length = 20)
     public String stage;
 
@@ -54,6 +59,12 @@ public class ChangelogVersion extends PanacheEntityBase {
 
     public static ChangelogVersion findEntry(String project, String repo, String version) {
         return find("project = ?1 and repo = ?2 and version = ?3", project, repo, version).firstResult();
+    }
+
+    /** Finds a record by project/repo and non-null version — used by push/conflict detection. */
+    public static ChangelogVersion findEntryNotNullVersion(String project, String repo, String version) {
+        if (version == null || version.isBlank()) return null;
+        return findEntry(project, repo, version);
     }
 
     public static List<ChangelogVersion> listByRepo(String project, String repo) {

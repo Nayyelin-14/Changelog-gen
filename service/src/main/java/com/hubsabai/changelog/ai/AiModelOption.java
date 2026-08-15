@@ -8,7 +8,7 @@ public record AiModelOption(
         @JsonProperty("label") String label,
         @JsonProperty("recommended") boolean recommended) {
 
-    public AiModelOption(String id, String label) {
-        this(id, label, false);
+    public static AiModelOption of(String id, String label) {
+        return new AiModelOption(id, label, false);
     }
 }

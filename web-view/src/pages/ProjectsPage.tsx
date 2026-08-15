@@ -86,7 +86,7 @@ export function ProjectsPage() {
   // time — waits for it to succeed rather than re-requesting the same data independently.
   const loadAllRepos = useCallback(async () => {
     if (!projectsData) return [];
-    const results = await Promise.allSettled(projectsData.map((p) => listRepositories(p.name)));
+    const results = await Promise.allSettled(projectsData.map((p) => listRepositories(p.id)));
     return results.map((r, i) => ({
       project: projectsData[i].name,
       // null (not []) marks a failed fetch, distinct from a project that genuinely has zero repos.
@@ -137,14 +137,14 @@ export function ProjectsPage() {
           <span className="text-[10px] font-medium text-muted-foreground">Jump to a project</span>
           {projects.status === 'loading' && <Skeleton className="h-9 w-full max-w-56" />}
           {projects.status === 'success' && (
-            <Select onValueChange={(value) => navigate(`${base}/projects/${encodeURIComponent(value)}`)}>
+            <Select onValueChange={(v) => navigate(`${base}/projects/${encodeURIComponent(v)}`)}>
               <SelectTrigger className="h-9 w-full max-w-56 gap-2 rounded-xl border-border/60 bg-card px-3.5 text-xs shadow-sm transition-colors hover:border-primary/40 focus:ring-1 focus:ring-ring">
                 <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
                 <SelectValue placeholder="Select a project…" />
               </SelectTrigger>
               <SelectContent align="end">
                 {projects.data.map((p) => (
-                  <SelectItem key={p.id} value={p.name}>
+                  <SelectItem key={p.id} value={p.id}>
                     {p.name}
                   </SelectItem>
                 ))}
@@ -215,7 +215,7 @@ export function ProjectsPage() {
             {recentProjects.map((p, i) => (
               <button
                 key={p.id}
-                onClick={() => navigate(`${base}/projects/${encodeURIComponent(p.name)}`)}
+                onClick={() => navigate(`${base}/projects/${encodeURIComponent(p.id)}`)}
                 className="group animate-in fade-in slide-in-from-bottom-4 fill-mode-both relative overflow-hidden rounded-xl border border-border/60 bg-card p-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/10"
                 style={{ animationDelay: `${300 + i * 60}ms` }}
               >

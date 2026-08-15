@@ -3,12 +3,15 @@
 All endpoints are JAX-RS (Quarkus/RESTEasy Reactive) resources under `com.hubsabai.changelog.api`.
 Unless noted otherwise, requests/responses are JSON (`application/json`).
 
-Three resource classes, three purposes:
+Five resource classes, five purposes:
 
 | Class | Base path | Who calls it |
 |---|---|---|
-| `AzureDevOpsResource` | `/api` | The web dashboard (Dev/QA/Business pages) |
-| `PipelineResource` | `/api/pipeline` | CI/CD release pipelines (bearer-token auth) |
+| `AzureDevOpsResource` | `/api` | The web dashboard (Dev/QA/Business pages), Azure DevOps provider |
+| `GitHubResource` | `/api/github` | The web dashboard (Dev/QA/Business pages), GitHub provider — same surface as Azure, mounted under `/github` so the two providers' routes never collide |
+| `PipelineResource` | `/api/pipeline` | Azure DevOps CI/CD release pipelines (bearer-token auth) |
+| `GitHubPipelineResource` | `/api/github/pipeline` | GitHub Actions workflows (bearer-token auth) |
+| `PipelineRunResource` | `/api/pipeline/runs` | Recorded run snapshots for **both** providers — lives at the root so it's provider-agnostic (`provider` is a query param, not a path segment) |
 | `AiBenchmarkResource` | `/api/ai/models/bench` | Manual/ad-hoc model reliability testing |
 
 Errors are JSON `{"error": "..."}` (sometimes with an extra `"hint"` field), mapped from exceptions:
@@ -16,9 +19,9 @@ Errors are JSON `{"error": "..."}` (sometimes with an extra `"hint"` field), map
 | Exception | HTTP status | When |
 |---|---|---|
 | `AiException` | 400 Bad Request | Invalid input (missing version, bad audience, etc.) or the AI call itself failed |
-| `IllegalStateException` | 502 Bad Gateway | Azure DevOps returned something unusable (expired PAT, HTML instead of JSON) |
-| `WebApplicationException` (404 upstream) | 404 Not Found | Project/repo/branch doesn't exist on Azure DevOps |
-| `WebApplicationException` (other upstream) | 502 Bad Gateway | Any other Azure DevOps HTTP failure |
+| `IllegalStateException` | 502 Bad Gateway | A provider returned something unusable (expired PAT/token, HTML instead of JSON) or a GitHub push failed |
+| `WebApplicationException` (404 upstream) | 404 Not Found | Project/repo/branch doesn't exist on Azure DevOps or GitHub |
+| `WebApplicationException` (other upstream) | 502 Bad Gateway | Any other Azure DevOps / GitHub HTTP failure |
 | Anything else | 500 Internal Server Error | Unexpected bug — logged server-side, message hidden from the client |
 
 ---
@@ -165,6 +168,162 @@ generate/edit/restore/push changelogs for a version.
 
 ---
 
+## `GitHubResource` (`/api/github`)
+
+GitHub mirror of the dashboard API. Everything except the underlying connector is shared with
+Azure — the same Postgres cache, the same AI provider, the same edit/restore/push semantics. The
+two structural differences:
+
+- A GitHub **"project" is the configured owner** (an org or personal account) — GitHub has no
+  per-account project tier, so `listProjects()` returns exactly one entry and the project level
+  collapses to that owner everywhere else.
+- GitHub **"builds" are Actions workflow runs**, and `buildId` is a `long` (GitHub run IDs exceed
+  `int` range — see `PipelineRunSummary`).
+- **Push is a branch + PR** (`pushChangelogEdit` opens a PR back into the source branch), unlike
+  Azure's direct single-commit push — GitHub has no direct-commit API for a foreign file.
+
+The frontend picks the provider and swaps its API base between `/api` and `/api/github`
+(`web-view/src/lib/provider.ts`). No auth on any of these endpoints (same as Azure).
+
+### `GET /api/github/projects`
+- **For:** populating the project picker — always the single configured owner (`github.owner`).
+- **Response:** `ProjectSummary[]` with one entry — `{ id, name, description }`.
+
+### `GET /api/github/projects/{project}/repos`
+- **For:** listing a repo owner's repositories.
+- **Request:** path param `project` (the owner).
+- **Response:** `RepositorySummary[]` — `{ id, name, project, defaultBranch, visibility }`.
+  `visibility` is `"public"`/`"private"` (Azure returns `null`).
+
+### `GET /api/github/projects/{project}/work-items`
+- **Response:** always `[]` — GitHub has no work-item tier (kept for surface parity with Azure).
+
+### `GET /api/github/projects/{project}/repos-with-changelog`
+- **For:** QA/Business browse — repos that have a `CHANGELOG.md`/`changelog.md` on the default branch.
+- **Response:** `RepositorySummary[]` filtered by `hasChangelogFileSafely` (best-effort; a fetch
+  failure filters the repo out rather than failing the whole call).
+
+### `GET /api/github/projects/{project}/repos-overview`
+- **For:** the Dev dashboard's repo table.
+- **Response:** `RepoOverview[]` — `{ name, defaultBranch, latestVersion, latestVersionAt, needsReviewCount }`.
+
+### `GET /api/github/projects/{project}/repos/{repo}/release-version`
+- **For:** pre-filling the "new changelog" form.
+- **Response:** `ReleaseVersionResolution` — `{ latestVersion, suggestedNextVersion, currentBranchSha, changelogExists, requiresInitialVersion }`. `suggestedNextVersion` is `latestVersion`'s patch bumped, or `"1.0.0"` when no changelog exists yet.
+
+### `GET /api/github/projects/{project}/repos/{repo}/branches`
+- **Response:** `string[]` of branch short names.
+
+### `GET /api/github/projects/{project}/repos/{repo}/changes`
+- **For:** raw commits + PRs for a repo, either unbounded or scoped to a version range.
+- **Request:** query params `fromVersion`, `toVersion`, `branch` (optional). Version ranges resolve
+  against git tags + the Compare API instead of Azure's commit-scan heuristics.
+- **Response:** `ReleaseData`.
+
+### `GET /api/github/projects/{project}/repos/{repo}/commit-count`
+- **Response:** `int` — commit count in a version's range (`0` if the version/tag can't be resolved).
+
+### `GET /api/github/projects/{project}/repos/{repo}/builds`
+- **For:** the repo's recent GitHub Actions workflow runs, mapped to the same `PipelineRunSummary`
+  shape Azure's builds use.
+- **Request:** query param `top` (default `20`).
+- **Response:** `PipelineRunSummary[]` — `{ buildId, buildNumber, pipelineRunNumber, status, result, finishTime, sourceBranch, sourceVersion, pipelineName, prNumber, commitTitle }`.
+
+### `GET /api/github/projects/{project}/repos/{repo}/builds/{buildId}/changes`
+- **For:** a single workflow run's change items.
+- **Request:** path params `project`, `repo`, `buildId`.
+- **Response:** `ReleaseData`.
+- **Notes:** **stored-first** — reads the recorded snapshot from `recorded_pipeline_run`
+  (`provider=github`) if one exists; on a miss it performs a lazy capture
+  (`getOrCaptureGitHubRun`) that persists the snapshot so the dashboard never re-fetches GitHub.
+
+### `GET /api/github/projects/{project}/repos/{repo}/builds/{buildId}/run-context`
+- **For:** the run-context inspect view — run + PR + commits + files.
+- **Response:** `RunChangeContext`. Same stored-first behavior as `/builds/{buildId}/changes`.
+
+### `GET /api/github/projects/{project}/repos/{repo}/pull-requests/{prId}/details`
+- **For:** one PR's title/description/commits — live from the GitHub PR API.
+- **Response:** `PullRequestDetails` — `{ prId, title, description, author, commitMessages, workItems }` (`workItems` is always empty for GitHub).
+
+### `GET /api/github/projects/{project}/repos/{repo}/has-changelog`
+- **Response:** `boolean` — whether `CHANGELOG.md`/`changelog.md` exists on the (default) branch.
+
+### `GET /api/github/projects/{project}/repos/{repo}/pull-requests/{prId}/changelog-location`
+- **For:** resolving which release (if any) a PR shipped in — direct indexed lookup against `release_pr`.
+- **Response:** `ChangelogLocationResponse` — `{ status, version, stage }`, `status` = `released`|`prerelease`|`not_found`.
+
+### `GET /api/github/projects/{project}/repos/{repo}/history`
+- **For:** the version list in Dev/QA/Business.
+- **Request:** query params `branch`, `page`, `limit` (defaults `0`/`10`).
+- **Response:** `HistoryResponse` — `{ entries, total }`. Prefers Postgres-stored developer text
+  over parsing CHANGELOG.md (same fallback chain as Azure); ungenerated merged PRs are surfaced
+  as `generated: false` entries on page 0.
+
+### `POST /api/github/projects/{project}/repos/{repo}/generate`
+- **For:** the dashboard's Generate button.
+- **Request:** same query params as Azure's `/generate` — `version` + `model` required, plus
+  `fromVersion`, `branch`, `manualText`, `audience`, `force`, and GitHub-specific `buildId`
+  (when > 0, release data comes from the recorded run snapshot, lazy-captured on a miss — never
+  a live GitHub re-fetch).
+- **Response:** `GenerateResponse` — `{ developer, qa, business, usage, durationMs, saved }`.
+
+### `POST /api/github/projects/{project}/repos/{repo}/generate-stream`
+- **For:** same as `/generate`, streamed as SSE (Developer only, emitted as `audience`/`done`/`error` events).
+- **Request:** JSON body `GenerateStreamRequest` — `{ model, fromVersion, version, branch, manualText, force, buildId }`.
+
+### Read/edit/restore/push (mirrors Azure)
+Identical semantics to the Azure equivalents, mounted under `/api/github`:
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/projects/{p}/repos/{r}/changelog-text` | Saved text for version+audience, no provider round-trip |
+| `GET` | `/projects/{p}/repos/{r}/changelog-meta` | Provenance + push status; includes `tokens`/`durationMs` from the latest revision |
+| `GET` | `/projects/{p}/repos/{r}/changelog-preview` | Read-only QA/Business view |
+| `GET` | `/projects/{p}/repos/{r}/changelog-repo-text` | Developer entry body exactly as it exists in the repo right now |
+| `PUT` | `/projects/{p}/repos/{r}/changelog-edit` | Save a human edit (`ChangelogEditRequest`) |
+| `PUT` | `/projects/{p}/repos/{r}/changelog-restore` | Roll back to `previous_*` |
+| `PUT` | `/projects/{p}/repos/{r}/changelog-restore-pushed` | Developer-only — roll back to last pushed |
+| `PUT` | `/projects/{p}/repos/{r}/changelog-revision-restore` | Roll back to an arbitrary revision (`sequence`) |
+| `PUT` | `/projects/{p}/repos/{r}/generate-commit` | Persist a reviewed AI candidate (`GenerateCommitRequest`) |
+| `POST` | `/projects/{p}/repos/{r}/changelog-push` | **Branch + PR** — returns `{ pullRequestUrl, commitUrl }` (both set to the PR's URL) |
+| `DELETE` | `/projects/{p}/repos/{r}/changelog-revision` | Delete one shared revision (`version` + `sequence`) |
+| `GET` | `/ai/models` | Live model list (shared with Azure) |
+
+### `GET /api/github/fetch-all`
+- **For:** the bulk "fetch everything" view.
+- **Response:** `OrgFetchResult` — walks the configured owner's repos (best-effort, virtual threads).
+
+---
+
+## `PipelineRunResource` (`/api/pipeline/runs`)
+
+Provider-agnostic read API over the recorded-run snapshot store (`recorded_pipeline_run`). Lives
+at the root (not under `/github`) because the same store backs both providers — `provider` is a
+query param. The frontend pins these calls to `/api` via `rootApiClient`
+(`web-view/src/api/client.ts`) so GitHub mode doesn't rewrite them into `/api/github/...`.
+
+### `GET /api/pipeline/runs`
+- **For:** the Dev dashboard's "Pipeline runs" list.
+- **Request:** query params `provider` (default `"azure"`), `project`, `repo`.
+- **Response:** `PipelineRunSummary[]`. If nothing is recorded for that repo, falls back to live
+  provider runs — `githubConnector.listWorkflowRuns` for GitHub, `azureConnector.listRecentBuilds` for Azure.
+
+### `GET /api/pipeline/runs/{runId}`
+- **Request:** query params `provider`, `project`, `repo`; path param `runId`.
+- **Response:** `RecordedRunDetail` — `{ id, provider, project, repo, buildId, version, stage, branch, runMetadata, changeItems, createdAt, updatedAt }`, or `null` if not recorded.
+
+### `GET /api/pipeline/runs/{runId}/changes`
+- **For:** one recorded run's change items.
+- **Response:** `ReleaseData`. Stored-first; on a miss GitHub performs a **lazy capture** that
+  persists the snapshot (`getOrCaptureGitHubRun`) so the dashboard never re-fetches GitHub;
+  Azure falls back to a live `fetchRunChanges`.
+
+### `GET /api/pipeline/runs/{runId}/run-context`
+- **For:** one recorded run's context (run + PR + commits + files).
+- **Response:** `RunChangeContext`. Same stored-first / lazy-capture behavior as `/changes`.
+
+---
+
 ## `PipelineResource` (`/api/pipeline`)
 
 Called by CI/CD release pipelines, not the dashboard. **Requires** `Authorization: Bearer <key>`
@@ -187,6 +346,47 @@ checked with a constant-time comparison. No keys configured means **nothing** ca
   - Bundled ingestion is idempotent: re-ingesting the same project/repo/version overwrites the stored raw facts in place, no duplicate rows. Every PR found among the items is upserted into a `project/repo/pr_id → version, stage` index. A PR already recorded at `release` is never regressed back to `prerelease` by a later report.
   - Raw init is also safe to re-run (pipeline retries) — it never overwrites an entry a human has already generated with AI or edited; it only ever writes when nothing more deliberate exists yet (source `"ai"`/`"edit"`), storing its own draft under source `"raw"`.
   - Raw init works even if the AI provider (NIM) is unavailable or a configured model is removed — this path never calls it, by construction.
+
+---
+
+## `GitHubPipelineResource` (`/api/github/pipeline`)
+
+The GitHub Actions counterpart of `PipelineResource`. Called by a **workflow in another repo** at
+run time (e.g. on merge to `main`) to capture that run's raw, non-AI changelog snapshot. Same
+`@PipelineAuth` bearer-token gate, same fail-closed behavior as Azure's pipeline endpoint.
+
+### `POST /api/github/pipeline/generate`
+- **For:** eager workflow-run intake — the Composer fetches the run's own commits/PRs from the
+  GitHub API (run ID alone is not enough; GitHub requires owner + repo), builds a plain non-AI
+  Developer draft, and persists the snapshot onto `recorded_pipeline_run` keyed by
+  `(provider='github', project, repo, build_id)`.
+- **Request:** body `GitHubPipelineRequest` — `{ runId, project, repo, version, branch }`.
+  `runId` is the GitHub Actions workflow run ID (`github.run_id` in the workflow YAML); `project`
+  is the owner; `repo` is the repository name. `version`/`branch` optional (raw capture is
+  version-free).
+- **Response:** `GitHubPipelineIngestResponse` — `{ runId, project, repo, version, branch, prCount, changelog }`.
+  The calling workflow can commit `changelog` straight into its own `CHANGELOG.md`. AI-generated
+  text only ever comes from the dashboard and overrides this raw draft.
+- **Errors:** 400 if `runId`/`project`/`repo` missing, or the workflow run isn't found/unreachable
+  on that owner/repo (bad run ID or a token without `actions:read` access). 401 without a valid
+  bearer token. A run with no commits/PRs still returns **200** with an empty `changelog` (the
+  snapshot is recorded; a server warning is logged).
+- **Notes:**
+  - **Idempotent:** re-POSTing the same `runId` upserts the stored snapshot (unique constraint
+    `(provider, project, repo, build_id)`), never duplicates it.
+  - **No AI call** — the raw draft is a starting Developer draft, version-free, stored for the
+    dashboard's stored-first reads (`/api/github/projects/{p}/repos/{r}/builds/{id}/changes`).
+  - The workflow does **not** need its own GitHub token — the Composer fetches the run with its
+    own `github.token`. The caller only needs the run ID + owner + repo + a pipeline API key.
+  - Requires the service's `github.token` to have `repo` + `actions:read` scopes.
+
+Example call from a workflow:
+```bash
+curl -s -X POST "$CHANGELOG_SERVICE_URL/api/github/pipeline/generate" \
+  -H "Authorization: Bearer $CHANGELOG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"runId": 1234567890, "project": "my-org", "repo": "my-repo", "branch": "main"}'
+```
 
 ---
 

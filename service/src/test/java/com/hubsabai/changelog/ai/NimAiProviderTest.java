@@ -316,7 +316,7 @@ class NimAiProviderTest {
     void modelsEndpointMarksRecommendedModels() {
         String modelsResponse = """
                 {"data":[
-                    {"id":"mistralai/mistral-small-4-119b-2603"},
+                    {"id":"meta/llama-3.1-8b-instruct"},
                     {"id":"unknown/model"}
                 ]}
                 """;
@@ -325,7 +325,7 @@ class NimAiProviderTest {
 
         List<AiModelOption> models = provider.listModels();
 
-        assertTrue(models.stream().filter(m -> m.id().equals("mistralai/mistral-small-4-119b-2603")).findFirst().get().recommended());
+        assertTrue(models.stream().filter(m -> m.id().equals("meta/llama-3.1-8b-instruct")).findFirst().get().recommended());
         assertFalse(models.stream().filter(m -> m.id().equals("unknown/model")).findFirst().get().recommended());
     }
 

@@ -28,18 +28,48 @@ import {
   PictureInPicture,
 } from "lucide-react";
 
-import { commitChangelog, fetchRepoChanges, generateChangelogStream, getBuildChanges, getChangelogRepoText, getPullRequestDetails, listAiModels, listBranches, listHistory, pushChangelog, saveChangelogEdit } from "@/api/client";
-import type { ChangeItem, PullRequestDetails as PRDetails, PullRequestWorkItemSummary } from "@/api/types";
+import {
+  commitChangelog,
+  fetchRepoChanges,
+  generateChangelogStream,
+  getAiDraft,
+  getChangelogRepoText,
+  getPullRequestDetails,
+  getRecordedRunChanges,
+  listAiModels,
+  listBranches,
+  listHistory,
+  pushChangelog,
+  saveChangelogEdit,
+} from "@/api/client";
+import type {
+  ChangeItem,
+  PullRequestDetails as PRDetails,
+  PullRequestWorkItemSummary,
+} from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { ChangelogBody } from "@/components/ChangelogBody";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@/hooks/useQuery";
 import { isBotAuthor } from "@/lib/bots";
+import { getStoredProvider } from "@/lib/provider";
 import { getStoredRole, roleHome } from "@/lib/role";
 import { cn } from "@/lib/utils";
 
@@ -52,28 +82,77 @@ type Audience = (typeof AUDIENCE_TABS)[number]["key"];
 // This page (reached from a pipeline run or "+ Generate new") only ever generates the Developer
 // entry — QA/Business generation lives in the history panel's own per-audience flow instead. Kept
 // as a filter (not a hardcoded single-item array) so it stays in sync with AUDIENCE_TABS above.
-const GENERATED_AUDIENCES = AUDIENCE_TABS.filter((tab) => tab.key === "developer");
+const GENERATED_AUDIENCES = AUDIENCE_TABS.filter(
+  (tab) => tab.key === "developer",
+);
 
 function stripHtml(html: string | null): string {
   if (!html) return "";
-  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Builds ChangeItem[] AND the {@code ===} transport text for a PR's data, so both the
  * columns (source data) and the "Raw data sent to AI" popup see the same items. */
-function formatPullRequestMessages(pr: PRDetails): { items: ChangeItem[]; text: string } {
+function formatPullRequestMessages(pr: PRDetails): {
+  items: ChangeItem[];
+  text: string;
+} {
   const items: ChangeItem[] = [];
   const blocks: string[] = [];
   const prDesc = stripHtml(pr.description);
-  items.push({ type: "PULL_REQUEST", id: String(pr.prId), title: pr.title ?? "(no title)", author: pr.author ?? null, category: null, description: prDesc || null, filePaths: [], links: [], project: null, repo: null, date: null });
-  blocks.push(prDesc ? `=== [PULL_REQUEST|${pr.prId}|${pr.author ?? ""}|] ${pr.title ?? "(no title)"}\n${prDesc}` : `=== [PULL_REQUEST|${pr.prId}|${pr.author ?? ""}|] ${pr.title ?? "(no title)"}`);
+  items.push({
+    type: "PULL_REQUEST",
+    id: String(pr.prId),
+    title: pr.title ?? "(no title)",
+    author: pr.author ?? null,
+    category: null,
+    description: prDesc || null,
+    filePaths: [],
+    links: [],
+    project: null,
+    repo: null,
+    date: null,
+  });
+  blocks.push(
+    prDesc
+      ? `=== [PULL_REQUEST|${pr.prId}|${pr.author ?? ""}|] ${pr.title ?? "(no title)"}\n${prDesc}`
+      : `=== [PULL_REQUEST|${pr.prId}|${pr.author ?? ""}|] ${pr.title ?? "(no title)"}`,
+  );
   for (const m of pr.commitMessages) {
-    items.push({ type: "COMMIT", id: null, title: m, author: null, category: null, description: null, filePaths: [], links: [], project: null, repo: null, date: null });
+    items.push({
+      type: "COMMIT",
+      id: null,
+      title: m,
+      author: null,
+      category: null,
+      description: null,
+      filePaths: [],
+      links: [],
+      project: null,
+      repo: null,
+      date: null,
+    });
     blocks.push(`=== [COMMIT||||] ${m}`);
   }
   for (const w of pr.workItems) {
     const wiDesc = stripHtml(w.description);
-    items.push({ type: "WORK_ITEM", id: String(w.id), title: `${w.type ?? "Work item"} #${w.id}: ${w.title ?? ""}`, author: w.assignedTo ?? null, category: null, description: wiDesc || null, filePaths: [], links: w.url ? [w.url] : [], project: null, repo: null, date: null });
+    items.push({
+      type: "WORK_ITEM",
+      id: String(w.id),
+      title: `${w.type ?? "Work item"} #${w.id}: ${w.title ?? ""}`,
+      author: w.assignedTo ?? null,
+      category: null,
+      description: wiDesc || null,
+      filePaths: [],
+      links: w.url ? [w.url] : [],
+      project: null,
+      repo: null,
+      date: null,
+    });
     const h = `=== [WORK_ITEM|${w.id}|${w.assignedTo ?? ""}|] ${w.type ?? "Work item"} #${w.id}: ${w.title ?? ""}`;
     blocks.push(wiDesc ? `${h}\n${wiDesc}` : h);
   }
@@ -86,7 +165,10 @@ function formatPullRequestMessages(pr: PRDetails): { items: ChangeItem[]; text: 
  * separate derivations (this function's dedup vs. the page's own unfiltered display lists), which
  * could show e.g. "Commits 1" in the source-data panel while the raw-data breakdown said "0
  * commits" for the exact same load — a real discrepancy, not a rendering glitch. */
-function computeRawChanges(items: ChangeItem[]): { items: ChangeItem[]; text: string } {
+function computeRawChanges(items: ChangeItem[]): {
+  items: ChangeItem[];
+  text: string;
+} {
   // No title-based exclusion: a commit is never hidden just because it happens to share its
   // title with a PR — every commit always shows and is always sent, even if its content ends up
   // duplicating a PR block word-for-word. Only an exact rendered-block duplicate (see seenBlocks
@@ -115,7 +197,12 @@ function computeRawChanges(items: ChangeItem[]): { items: ChangeItem[]; text: st
  * exactly what the model receives — numbered items with project context, type refs, authors,
  * descriptions, and file paths — not the internal {@code ===} transport format. */
 function formatAsAiPrompt(items: ChangeItem[], project: string): string {
-  const lines = [`Project: "${project}"`, `Release date: ${new Date().toISOString().slice(0, 10)}`, "", "Items:"];
+  const lines = [
+    `Project: "${project}"`,
+    `Release date: ${new Date().toISOString().slice(0, 10)}`,
+    "",
+    "Items:",
+  ];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     let ref = "";
@@ -123,21 +210,15 @@ function formatAsAiPrompt(items: ChangeItem[], project: string): string {
     else if (item.type === "WORK_ITEM" && item.id) ref = `#${item.id} `;
     const cats = item.category ? `[${item.category}] ` : "";
     const author = item.author ? ` (${item.author})` : "";
-    lines.push(`${i + 1}. ${cats}${ref}${item.title ?? "(no message)"}${author}`);
+    lines.push(
+      `${i + 1}. ${cats}${ref}${item.title ?? "(no message)"}${author}`,
+    );
     const desc = stripHtml(item.description);
     if (desc && desc !== item.title) lines.push(`   ${desc}`);
-    if (item.filePaths.length > 0) lines.push(...item.filePaths.map((p) => `   ${p}`));
+    if (item.filePaths.length > 0)
+      lines.push(...item.filePaths.map((p) => `   ${p}`));
   }
   return lines.join("\n");
-}
-
-function bumpPatchVersion(version: string | null | undefined): string {
-  if (!version) return "";
-  const match = version.match(/^(.*?)(\d+)$/);
-  if (!match) return version;
-  const [, prefix, digits] = match;
-  const bumped = String(Number(digits) + 1).padStart(digits.length, "0");
-  return `${prefix}${bumped}`;
 }
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -163,13 +244,20 @@ function WorkItemCard({ wi }: { wi: PullRequestWorkItemSummary }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="text-[10px] font-medium px-1.5 py-0">
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium px-1.5 py-0"
+            >
               {wi.type ?? "Work item"}
             </Badge>
             <span className="font-semibold text-foreground/80">#{wi.id}</span>
-            {wi.state && <span className="text-muted-foreground/50">· {wi.state}</span>}
+            {wi.state && (
+              <span className="text-muted-foreground/50">· {wi.state}</span>
+            )}
           </div>
-          <p className="break-words text-sm font-medium text-foreground/90">{wi.title ?? ""}</p>
+          <p className="break-words text-sm font-medium text-foreground/90">
+            {wi.title ?? ""}
+          </p>
           {wi.assignedTo && (
             <div className="flex items-center gap-1 text-muted-foreground">
               <User className="size-3" />
@@ -225,39 +313,59 @@ function SourceDataSection({
           type="button"
           className="flex w-full items-center gap-2.5 rounded-xl border border-border/40 bg-card px-4 py-3 text-left transition-colors hover:border-border/60 hover:bg-muted/30"
         >
-          <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-lg", iconBgClass)}>
+          <div
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-lg",
+              iconBgClass,
+            )}
+          >
             <Icon className={cn("size-3.5", iconColorClass)} />
           </div>
-          <span className="text-sm font-semibold text-foreground/85">{title}</span>
+          <span className="text-sm font-semibold text-foreground/85">
+            {title}
+          </span>
           <span className="text-xs text-muted-foreground/50">{count}</span>
-            <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
+          <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
         </button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[80vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b border-border/30 px-5 py-4">
           <DialogTitle className="flex items-center gap-2">
-            <div className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", iconBgClass)}>
+            <div
+              className={cn(
+                "flex size-6 shrink-0 items-center justify-center rounded-md",
+                iconBgClass,
+              )}
+            >
               <Icon className={cn("size-3.5", iconColorClass)} />
             </div>
             {title}
-            <span className="text-xs font-normal text-muted-foreground/50">{count}</span>
+            <span className="text-xs font-normal text-muted-foreground/50">
+              {count}
+            </span>
           </DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-5">{children}</div>
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-5">
+          {children}
+        </div>
       </DialogContent>
     </Dialog>
   );
 }
 
 const typeColors: Record<string, string> = {
-  COMMIT: "bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-400 dark:border-sky-800",
-  PULL_REQUEST: "bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-950 dark:text-violet-400 dark:border-violet-800",
-  WORK_ITEM: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800",
+  COMMIT:
+    "bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-400 dark:border-sky-800",
+  PULL_REQUEST:
+    "bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-950 dark:text-violet-400 dark:border-violet-800",
+  WORK_ITEM:
+    "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800",
 };
 const catColors: Record<string, string> = {
   fix: "bg-red-100 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-800",
   feat: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-800",
-  chore: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-950 dark:text-slate-400 dark:border-slate-800",
+  chore:
+    "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-950 dark:text-slate-400 dark:border-slate-800",
 };
 
 export function GenerateNewChangelogPage() {
@@ -266,16 +374,22 @@ export function GenerateNewChangelogPage() {
   const branchParam = searchParams.get("branch") ?? undefined;
   const prIdParam = searchParams.get("prId") ?? undefined;
   const buildIdParam = searchParams.get("buildId") ?? undefined;
-  // Set by GenerateChangelogPage.buildHref from the selected pipeline run's own buildNumber —
-  // that run already IS a specific version, so use it directly instead of guessing from history.
+  // The pipeline run number (e.g. GitHub run #9, Azure build #9) — separate from the release version.
+  const runNumberParam = searchParams.get("runNumber") ?? undefined;
+  // The semantic version (e.g. "1.4.30") — set explicitly by the user or derived from CHANGELOG history.
   const versionParam = searchParams.get("version") ?? undefined;
   const navigate = useNavigate();
 
   const [version, setVersion] = useState("");
+  const [runNumber, setRunNumber] = useState<string | undefined>(undefined);
   const [model, setModel] = useState<string | undefined>(undefined);
   const [status, setStatus] = useState<Status>("idle");
-  const [audienceTexts, setAudienceTexts] = useState<Partial<Record<Audience, string>>>({});
-  const [audienceLoading, setAudienceLoading] = useState<Set<Audience>>(new Set());
+  const [audienceTexts, setAudienceTexts] = useState<
+    Partial<Record<Audience, string>>
+  >({});
+  const [audienceLoading, setAudienceLoading] = useState<Set<Audience>>(
+    new Set(),
+  );
   const [streamDuration, setStreamDuration] = useState(0);
   const [streamTokens, setStreamTokens] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -309,6 +423,9 @@ export function GenerateNewChangelogPage() {
   // push dialog — a version can need pushing to a branch other than the one its source data came
   // from (e.g. the page's branch has no CHANGELOG.md entry for this version at all).
   const [pushBranch, setPushBranch] = useState<string | undefined>(undefined);
+  // The version is chosen by the human here in the push modal — never auto-resolved by the
+  // dashboard. Pre-seeded from a pipeline-supplied version (versionParam) when one exists.
+  const [pushVersion, setPushVersion] = useState("");
   // The model that actually produced the text currently on screen — captured at the moment a
   // generate call fires, not read live off `model`, so switching the dropdown after a result is
   // shown (without regenerating) can't make the banner claim a model that never actually ran.
@@ -335,19 +452,178 @@ export function GenerateNewChangelogPage() {
 
   const history = useQuery(
     useCallback(
-      () => (project && repo ? listHistory(project, repo, branchParam, 0, 999) : Promise.resolve({ entries: [], total: 0 })),
+      () =>
+        project && repo
+          ? listHistory(project, repo, branchParam, 0, 999)
+          : Promise.resolve({ entries: [], total: 0 }),
       [project, repo, branchParam],
     ),
     [project, repo, branchParam],
     { cacheKey: "generate-page-history" },
   );
+
+  /** Detect the push mode based on whether the version already has an entry in CHANGELOG.md.
+   * Returns "UPDATE_EXISTING", "CREATE_NEW", or "CREATE_INITIAL". */
+  const detectPushMode = useCallback(async () => {
+    if (!project || !repo || !pushVersion) return "CREATE_INITIAL";
+    // Check if any history entry has this version and is generated
+    const entriesWithVersion =
+      history.status === "success"
+        ? history.data.entries.filter(
+            (e) => e.version === pushVersion && e.generated !== false,
+          )
+        : [];
+    if (entriesWithVersion.length > 0) {
+      return "UPDATE_EXISTING"; // version already has an entry
+    }
+    // Check if CHANGELOG.md exists (has at least some content)
+    try {
+      await listHistory(project, repo, branchParam, 0, 1);
+      // If we got here without throwing, CHANGELOG.md exists but version isn't in it
+      return "CREATE_NEW";
+    } catch {
+      return "CREATE_INITIAL"; // no CHANGELOG.md at all
+    }
+  }, [project, repo, pushVersion, history, branchParam]);
+
+  async function handlePush() {
+    if (!project || !repo || !pushVersion || !pushBranch) return;
+    setPushLoading(true);
+    setPushError(null);
+    // Detect push mode based on whether version already has a CHANGELOG.md entry
+    const mode = await detectPushMode();
+    try {
+      // Generate no longer auto-saves (see /generate-stream) — the on-screen preview text is
+      // sent along directly so the backend can cache it itself, but only after the repo write
+      // actually succeeds, never before.
+      const previewText = audienceTexts[activeAudience];
+      const result = await pushChangelog(
+        project,
+        repo,
+        pushVersion,
+        pushBranch,
+        activeAudience as any,
+        previewText ? { text: previewText, model: resultModel } : undefined,
+        buildIdParam ? Number(buildIdParam) : undefined,
+      );
+      setPushResult(result.commitUrl);
+      setPushConfirmOpen(false);
+      toast.success(`Pushed v${pushVersion} to ${pushBranch}`, {
+        description: `Committed directly — no PR needed.`,
+        action: {
+          label: "View commit",
+          onClick: () => window.open(result.commitUrl, "_blank", "noreferrer"),
+        },
+      });
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "Failed to push changelog.";
+      // Check for SHA conflict (stale base commit) — if the branch moved since we fetched
+      // the CHANGELOG.md, we need to handle this differently based on push mode.
+      if (
+        message.includes("stale") ||
+        message.includes("base commit") ||
+        message.includes("conflict")
+      ) {
+        if (mode === "UPDATE_EXISTING") {
+          // For UPDATE_EXISTING: do NOT auto-retry. Stop and show conflict message,
+          // requiring the user to manually refresh and confirm before retrying.
+          setPushRepoTextLoading(true);
+          try {
+            const freshText = await getChangelogRepoText(
+              project,
+              repo,
+              pushVersion,
+              pushBranch,
+            );
+            setPushRepoText(freshText ?? "");
+            setPushError(
+              `SHA conflict detected — the branch "${pushBranch}" has moved since the CHANGELOG.md was fetched. ` +
+                `The current CHANGELOG.md content has been loaded. Please review the diff below, ` +
+                `adjust the on-screen text if needed, and click "Push" again to retry.`,
+            );
+          } catch (fetchError) {
+            setPushError(
+              `SHA conflict detected, but could not refresh CHANGELOG.md: ${fetchError instanceof Error ? fetchError.message : "unknown error"}`,
+            );
+          } finally {
+            setPushRepoTextLoading(false);
+          }
+          // Do NOT attempt auto-retry — leave it to the user to click Push again
+          return;
+        }
+
+        // For CREATE_NEW/CREATE_INITIAL: auto-refetch and retry
+        setPushRepoTextLoading(true);
+        try {
+          const freshText = await getChangelogRepoText(
+            project,
+            repo,
+            pushVersion,
+            pushBranch,
+          );
+          setPushRepoText(freshText ?? "");
+          // Update the preview text to match what's currently in the repo
+          if (freshText && activeAudience) {
+            setAudienceTexts((prev) => ({
+              ...prev,
+              [activeAudience]: freshText,
+            }));
+          }
+          // Re-attempt the push with fresh content
+          const result = await pushChangelog(
+            project,
+            repo,
+            pushVersion,
+            pushBranch,
+            activeAudience as any,
+            freshText ? { text: freshText, model: resultModel } : undefined,
+            buildIdParam ? Number(buildIdParam) : undefined,
+          );
+          setPushResult(result.commitUrl);
+          setPushConfirmOpen(false);
+          toast.success(
+            `Pushed v${pushVersion} to ${pushBranch} (retry after refresh)`,
+            {
+              description: `Committed directly — no PR needed.`,
+              action: {
+                label: "View commit",
+                onClick: () =>
+                  window.open(result.commitUrl, "_blank", "noreferrer"),
+              },
+            },
+          );
+        } catch (retryError) {
+          const retryMessage =
+            retryError instanceof Error
+              ? retryError.message
+              : "Failed to push changelog on retry";
+          setPushError(retryMessage);
+        } finally {
+          setPushRepoTextLoading(false);
+        }
+      } else {
+        // Non-SHA-conflict error — show inline in the dialog
+        setPushError(message);
+      }
+    } finally {
+      setPushLoading(false);
+    }
+  }
+  // When a pipeline run is selected (buildIdParam), version is deliberately NOT resolved
+  // automatically — the design keeps the dashboard version-free: the version is only ever chosen
+  // by a human in the push modal, or supplied by the pipeline itself (versionParam).
   const models = useQuery(
     useCallback(() => listAiModels(), []),
     [],
     { cacheKey: "ai-models", ttlMs: 5 * 60_000 },
   );
   const branches = useQuery(
-    useCallback(() => (project && repo ? listBranches(project, repo) : Promise.resolve([])), [project, repo]),
+    useCallback(
+      () =>
+        project && repo ? listBranches(project, repo) : Promise.resolve([]),
+      [project, repo],
+    ),
     [project, repo],
     { cacheKey: "generate-page-branches", ttlMs: 5 * 60_000 },
   );
@@ -356,14 +632,12 @@ export function GenerateNewChangelogPage() {
     if (versionParam && !version) setVersion(versionParam);
   }, [versionParam, version]);
 
+  // Set the runNumber from the URL param when present — this is the CI pipeline run number
+  // (e.g. GitHub run #9, Azure build #9), displayed separately from the release version.
   useEffect(() => {
-    // A specific pipeline run always carries its own version (see versionParam above) — never
-    // override it with a generic "bump the last one" guess from unrelated history.
-    if (buildIdParam) return;
-    if (history.status !== "success") return;
-    const latest = history.data.entries.find((e) => e.generated !== false && e.version);
-    if (latest && !version) setVersion(bumpPatchVersion(latest.version));
-  }, [history.status, history, version, buildIdParam]);
+    if (runNumberParam) setRunNumber(runNumberParam);
+    else setRunNumber(undefined);
+  }, [runNumberParam]);
 
   useEffect(() => {
     if (!project || !repo || !prIdParam) return;
@@ -403,11 +677,14 @@ export function GenerateNewChangelogPage() {
     let cancelled = false;
     setLoadingCommits(true);
     setPrDetails(null);
-    getBuildChanges(project, repo, buildId)
+    getRecordedRunChanges(project, repo, buildId, getStoredProvider())
       .then((release) => {
         if (cancelled) return;
         const filtered = release.items.filter(
-          (i) => i.type === "COMMIT" || i.type === "PULL_REQUEST" || i.type === "WORK_ITEM",
+          (i) =>
+            i.type === "COMMIT" ||
+            i.type === "PULL_REQUEST" ||
+            i.type === "WORK_ITEM",
         );
         setChangeItems(filtered);
         const result = computeRawChanges(filtered);
@@ -420,6 +697,28 @@ export function GenerateNewChangelogPage() {
       .finally(() => {
         if (!cancelled) setLoadingCommits(false);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, repo, buildIdParam]);
+
+  // Restore a saved (version-free) AI draft when reopening a run that was saved earlier — shows
+  // the exact text the user reviewed so they can push it (or regenerate) rather than starting blank.
+  useEffect(() => {
+    if (!project || !repo || !buildIdParam) return;
+    const buildId = Number(buildIdParam);
+    if (!Number.isFinite(buildId)) return;
+    let cancelled = false;
+    getAiDraft(project, repo, buildId, getStoredProvider())
+      .then((draft) => {
+        if (cancelled || !draft.text) return;
+        setAudienceTexts({ [draft.audience ?? "developer"]: draft.text });
+        if (draft.model) setResultModel(draft.model);
+        if (draft.tokens != null) setStreamTokens(draft.tokens);
+        if (draft.durationMs != null) setStreamDuration(draft.durationMs);
+        setStatus("success");
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -442,14 +741,28 @@ export function GenerateNewChangelogPage() {
 
   useEffect(() => {
     if (status === "loading" || status === "success") {
-      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+      setTimeout(
+        () =>
+          resultRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          }),
+        150,
+      );
     }
   }, [status]);
 
   const changes = useQuery(
     useCallback(() => {
-      if (!project || !repo || !version.trim() || prIdParam || buildIdParam) return Promise.resolve(null);
-      return fetchRepoChanges(project, repo, version.trim(), undefined, branchParam);
+      if (!project || !repo || !version.trim() || prIdParam || buildIdParam)
+        return Promise.resolve(null);
+      return fetchRepoChanges(
+        project,
+        repo,
+        version.trim(),
+        undefined,
+        branchParam,
+      );
     }, [project, repo, version, branchParam, prIdParam, buildIdParam]),
     [project, repo, version, branchParam, prIdParam, buildIdParam],
   );
@@ -458,7 +771,10 @@ export function GenerateNewChangelogPage() {
     if (prIdParam || buildIdParam) return;
     if (changes.status !== "success" || !changes.data) return;
     const filtered = changes.data.items.filter(
-      (i) => i.type === "COMMIT" || i.type === "PULL_REQUEST" || i.type === "WORK_ITEM",
+      (i) =>
+        i.type === "COMMIT" ||
+        i.type === "PULL_REQUEST" ||
+        i.type === "WORK_ITEM",
     );
     setChangeItems(filtered);
     const result = computeRawChanges(filtered);
@@ -468,7 +784,9 @@ export function GenerateNewChangelogPage() {
 
   const base = roleHome(getStoredRole() ?? "dev");
   const backHref = `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}${branchParam ? `?branch=${encodeURIComponent(branchParam)}` : ""}`;
-  const canSubmit = status !== "loading" && version.trim() !== "" && commitText.trim().length > 0;
+  const canSubmit =
+    status !== "loading" &&
+    commitText.trim().length > 0;
   const hasPrData = !!(prDetails && prDetails.commitMessages.length > 0);
   const hasSourceData = hasPrData || changeItems.length > 0;
   const commitCount = prDetails?.commitMessages.length ?? 0;
@@ -477,16 +795,29 @@ export function GenerateNewChangelogPage() {
   // The exact same dedup computeRawChanges applies to commitText (see the two effects above) —
   // so "Source data" below can never show a count that disagrees with "Raw data sent to AI".
   const dedupedChanges = useMemo(() => {
-    const source = changes.status === "success" && changes.data
-      ? changes.data.items.filter((i) => i.type === "COMMIT" || i.type === "PULL_REQUEST" || i.type === "WORK_ITEM")
-      : changeItems;
+    const source =
+      changes.status === "success" && changes.data
+        ? changes.data.items.filter(
+            (i) =>
+              i.type === "COMMIT" ||
+              i.type === "PULL_REQUEST" ||
+              i.type === "WORK_ITEM",
+          )
+        : changeItems;
     return computeRawChanges(source).items;
   }, [changes, changeItems]);
 
-  const commitsForDisplay = useMemo(() => dedupedChanges.filter((i) => i.type === "COMMIT"), [dedupedChanges]);
-  const prsForDisplay = useMemo(() => dedupedChanges.filter((i) => i.type === "PULL_REQUEST"), [dedupedChanges]);
+  const commitsForDisplay = useMemo(
+    () => dedupedChanges.filter((i) => i.type === "COMMIT"),
+    [dedupedChanges],
+  );
+  const prsForDisplay = useMemo(
+    () => dedupedChanges.filter((i) => i.type === "PULL_REQUEST"),
+    [dedupedChanges],
+  );
   const buildWorkItems = useMemo(
-    () => (prDetails ? [] : dedupedChanges.filter((i) => i.type === "WORK_ITEM")),
+    () =>
+      prDetails ? [] : dedupedChanges.filter((i) => i.type === "WORK_ITEM"),
     [prDetails, dedupedChanges],
   );
 
@@ -501,7 +832,8 @@ export function GenerateNewChangelogPage() {
   // (with its own inline loading state) instead of swapping to the full "generating" card, which
   // only makes sense the first time there's nothing to show yet.
   const hasResult = Object.keys(audienceTexts).length > 0;
-  const showResultPanel = status === "success" || (status === "loading" && hasResult);
+  const showResultPanel =
+    status === "success" || (status === "loading" && hasResult);
 
   if (!project || !repo) return null;
 
@@ -557,10 +889,13 @@ export function GenerateNewChangelogPage() {
         commitText || undefined,
         force,
         controller.signal,
+        buildIdParam ? Number(buildIdParam) : undefined,
       );
     } catch (e) {
       if (controller.signal.aborted) return;
-      setError(e instanceof Error ? e.message : "Failed to generate changelog.");
+      setError(
+        e instanceof Error ? e.message : "Failed to generate changelog.",
+      );
       setStatus("error");
     }
   }
@@ -592,13 +927,41 @@ export function GenerateNewChangelogPage() {
     setEditSaving(true);
     setEditSaveError(null);
     try {
-      await saveChangelogEdit(project, repo, version, editingTab, editText, getStoredRole() ?? undefined, branchParam);
+      if (version) {
+        await saveChangelogEdit(
+          project,
+          repo,
+          version,
+          editingTab,
+          editText,
+          getStoredRole() ?? undefined,
+          branchParam,
+        );
+      } else {
+        // Version-free manual flow: the edit persists as the draft keyed on the pipeline run,
+        // version gets chosen later in the push modal — same lifecycle as the Save button.
+        const buildId = buildIdParam ? Number(buildIdParam) : undefined;
+        await commitChangelog(
+          project,
+          repo,
+          "",
+          editingTab,
+          resultModel ?? model ?? "",
+          editText,
+          branchParam,
+          0,
+          0,
+          buildId,
+        );
+      }
       setAudienceTexts((prev) => ({ ...prev, [editingTab]: editText }));
       setSaved(true);
       setEditingTab(null);
       setEditText("");
       setEditSaveConfirmOpen(false);
-      toast.success("Developer changelog edit saved", { description: "Saved to the database." });
+      toast.success("Developer changelog edit saved", {
+        description: "Saved to the database.",
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to save edit.";
       setEditSaveError(message);
@@ -621,19 +984,39 @@ export function GenerateNewChangelogPage() {
   }
 
   /** Persists the on-screen AI generation exactly as previewed — no new AI call. Required before
-   * Push becomes available, same DB-only lifecycle as the history view's Generate/commit flow. */
+   * Push becomes available, same DB-only lifecycle as the history view's Generate/commit flow.
+   * A manual dashboard generation is version-free: `version` is only sent when a pipeline supplied
+   * one (versionParam); otherwise the save is keyed on the pipeline run (buildId) instead and the
+   * version gets chosen later in the push modal. */
   async function handleSaveGenerated() {
     const text = audienceTexts.developer;
     if (!project || !repo || !text) return;
     setSaving(true);
     setSaveError(null);
+    const buildId = buildIdParam ? Number(buildIdParam) : undefined;
     try {
-      await commitChangelog(project, repo, version, "developer", resultModel ?? model ?? "", text, branchParam, streamTokens, streamDuration);
+      await commitChangelog(
+        project,
+        repo,
+        version || "",
+        "developer",
+        resultModel ?? model ?? "",
+        text,
+        branchParam,
+        streamTokens,
+        streamDuration,
+        buildId,
+      );
       setSaved(true);
       setSaveConfirmOpen(false);
-      toast.success("Developer changelog saved", { description: "Saved to the database." });
+      toast.success("Developer changelog saved", {
+        description: "Saved to the database.",
+      });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to save the generated changelog.";
+      const message =
+        e instanceof Error
+          ? e.message
+          : "Failed to save the generated changelog.";
       setSaveError(message);
       toast.error("Failed to save changelog", { description: message });
     } finally {
@@ -642,19 +1025,30 @@ export function GenerateNewChangelogPage() {
   }
 
   // Opens the confirm modal — fetches the repo's CURRENT CHANGELOG.md text first so the dialog
-  // can show a real before/after diff, not just a description of what's about to happen.
+  // can show a real before/after diff, not just a description of what's about to happen. The
+  // version is chosen here (seeded from a pipeline-supplied versionParam when one exists), not
+  // auto-resolved by the dashboard.
   async function requestPush() {
-    if (!project || !repo || !version || !branchParam) return;
+    if (!project || !repo || !branchParam) return;
     setPushError(null);
     setPushRepoTextLoading(true);
     setPushBranch(branchParam);
+    setPushVersion(version || "");
+    const pushVer = version || "";
     try {
-      const repoText = await getChangelogRepoText(project, repo, version, branchParam);
+      const repoText = pushVer
+        ? await getChangelogRepoText(project, repo, pushVer, branchParam)
+        : "";
       setPushRepoText(repoText ?? "");
       setPushConfirmOpen(true);
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to load the repo's current changelog.";
-      toast.error("Failed to check the repo's current changelog", { description: message });
+      const message =
+        e instanceof Error
+          ? e.message
+          : "Failed to load the repo's current changelog.";
+      toast.error("Failed to check the repo's current changelog", {
+        description: message,
+      });
     } finally {
       setPushRepoTextLoading(false);
     }
@@ -665,50 +1059,44 @@ export function GenerateNewChangelogPage() {
   // CHANGELOG.md" case), so the diff shown must always match the branch about to be pushed to.
   async function handlePushBranchChange(newBranch: string) {
     setPushBranch(newBranch);
-    if (!project || !repo || !version) return;
+    if (!project || !repo) return;
     setPushError(null);
     setPushRepoTextLoading(true);
     try {
-      const repoText = await getChangelogRepoText(project, repo, version, newBranch);
+      const repoText = pushVersion
+        ? await getChangelogRepoText(project, repo, pushVersion, newBranch)
+        : "";
       setPushRepoText(repoText ?? "");
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to load the repo's current changelog.";
-      toast.error("Failed to check the repo's current changelog", { description: message });
+      const message =
+        e instanceof Error
+          ? e.message
+          : "Failed to load the repo's current changelog.";
+      toast.error("Failed to check the repo's current changelog", {
+        description: message,
+      });
     } finally {
       setPushRepoTextLoading(false);
     }
   }
 
-  async function handlePush() {
-    if (!project || !repo || !version || !pushBranch) return;
-    setPushLoading(true);
+  // Re-checks the diff's "Current" side when the user edits the version in the push modal —
+  // the repo's CHANGELOG.md content differs per version, so the before-side must track it.
+  async function handlePushVersionChange(newVersion: string) {
+    setPushVersion(newVersion);
+    if (!project || !repo) return;
     setPushError(null);
+    setPushRepoTextLoading(true);
     try {
-      // Generate no longer auto-saves (see /generate-stream) — the on-screen preview text is
-      // sent along directly so the backend can cache it itself, but only after the repo write
-      // actually succeeds, never before.
-      const previewText = audienceTexts[activeAudience];
-      const result = await pushChangelog(
-        project,
-        repo,
-        version,
-        pushBranch,
-        activeAudience as any,
-        previewText ? { text: previewText, model: resultModel } : undefined,
-      );
-      setPushResult(result.commitUrl);
-      setPushConfirmOpen(false);
-      toast.success(`Pushed v${version} to ${pushBranch}`, {
-        description: `Committed directly — no PR needed.`,
-        action: { label: "View commit", onClick: () => window.open(result.commitUrl, "_blank", "noreferrer") },
-      });
-    } catch (e) {
-      // Shown inline in the still-open dialog (below the diff) — a toast on top of it would just
-      // duplicate the same message while visually overlapping the dialog's own Cancel/Push buttons.
-      const message = e instanceof Error ? e.message : "Failed to push changelog.";
-      setPushError(message);
+      const repoText = newVersion.trim()
+        ? await getChangelogRepoText(project, repo, newVersion.trim(), pushBranch)
+        : "";
+      setPushRepoText(repoText ?? "");
+    } catch {
+      // A version with no CHANGELOG.md entry yet is the normal "first push" case — not an error.
+      setPushRepoText("");
     } finally {
-      setPushLoading(false);
+      setPushRepoTextLoading(false);
     }
   }
 
@@ -717,7 +1105,6 @@ export function GenerateNewChangelogPage() {
   /* ──────────────────────────────────────────────── */
   return (
     <div className="flex flex-col gap-6 pb-10">
-
       {/* ═══════════ HEADER ═══════════ */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
@@ -734,36 +1121,54 @@ export function GenerateNewChangelogPage() {
           </h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="secondary" className="gap-1.5 text-[10px] font-normal whitespace-nowrap">
+          <Badge
+            variant="secondary"
+            className="gap-1.5 text-[10px] font-normal whitespace-nowrap"
+          >
             <BookOpen className="size-2.5" />
-            {history.status === "success" ? `${history.data.entries.length} saved` : "—"}
+            {history.status === "success"
+              ? `${history.data.entries.length} saved`
+              : "—"}
           </Badge>
           {branchParam && (
-            <Badge variant="outline" className="text-[10px] font-mono font-normal">
+            <Badge
+              variant="outline"
+              className="text-[10px] font-mono font-normal"
+            >
               {branchParam}
             </Badge>
           )}
           {buildIdParam && (
-            <Badge variant="outline" className="gap-1 text-[10px] font-mono font-normal" title="Pipeline run that produced this source data">
+            <Badge
+              variant="outline"
+              className="gap-1 text-[10px] font-mono font-normal"
+              title="Pipeline run that produced this source data"
+            >
               <Hash className="size-2.5" />
               Run {buildIdParam}
             </Badge>
           )}
-          <label className="flex items-center gap-1.5">
-            <span className="text-[10px] font-medium whitespace-nowrap text-muted-foreground">Version</span>
+          {runNumber && (
+            <Badge
+              variant="secondary"
+              className="gap-1 text-[10px] font-mono font-normal"
+            >
+              Pipeline run number: #{runNumber}
+            </Badge>
+          )}
+          {/* <label className="flex items-center gap-1.5">
             <span className="flex items-center rounded-md border border-input bg-background pl-2 shadow-xs focus-within:ring-1 focus-within:ring-ring">
-              <span className="text-xs font-mono font-medium text-muted-foreground">v</span>
               <Input
                 value={version}
                 onChange={(e) => setVersion(e.target.value)}
                 disabled={status === "loading"}
                 placeholder="e.g. 1.0.5"
-                title="Version to generate the changelog for — auto-filled from history, editable"
+                title="Semantic release version to generate the changelog for — auto-filled from history or CHANGELOG.md"
                 size={Math.max(8, version.length + 1)}
                 className="h-7 border-0 bg-transparent px-1 py-0 text-xs font-mono font-medium shadow-none focus-visible:ring-0"
               />
             </span>
-          </label>
+          </label> */}
         </div>
       </div>
 
@@ -777,7 +1182,8 @@ export function GenerateNewChangelogPage() {
               <p className="mt-0.5 text-xs text-muted-foreground">{error}</p>
               {!commitText && (
                 <p className="mt-1.5 text-xs text-muted-foreground/70">
-                  No source data for this version — open this page from a pipeline run in the dashboard's Pipeline runs table.
+                  No source data for this version — open this page from a
+                  pipeline run in the dashboard's Pipeline runs table.
                 </p>
               )}
             </div>
@@ -794,16 +1200,22 @@ export function GenerateNewChangelogPage() {
             </div>
             <div className="min-w-0 flex-1 space-y-1.5">
               <div className="flex items-center gap-2 text-sm">
-                <Badge variant="secondary" className="text-[10px] font-medium px-1.5 py-0">
+                <Badge
+                  variant="secondary"
+                  className="text-[10px] font-medium px-1.5 py-0"
+                >
                   PR #{prDetails.prId}
                 </Badge>
-                <span className="truncate font-semibold text-foreground/90">{prDetails.title ?? ""}</span>
+                <span className="truncate font-semibold text-foreground/90">
+                  {prDetails.title ?? ""}
+                </span>
               </div>
-              {prDetails.description && prDetails.description !== prDetails.title && (
-                <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                  {stripHtml(prDetails.description)}
-                </p>
-              )}
+              {prDetails.description &&
+                prDetails.description !== prDetails.title && (
+                  <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                    {stripHtml(prDetails.description)}
+                  </p>
+                )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 {prDetails.author && (
                   <span className="inline-flex items-center gap-1">
@@ -829,7 +1241,6 @@ export function GenerateNewChangelogPage() {
 
       {/* ═══════════ MAIN CONTENT ═══════════ */}
       <div className="flex flex-col gap-6">
-
         {/* ── Source data ── */}
         {(hasSourceData || loadingCommits) && (
           <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3">
@@ -837,13 +1248,15 @@ export function GenerateNewChangelogPage() {
               <div className="flex size-6 items-center justify-center rounded-md bg-primary/10">
                 <Layers className="size-3.5 text-primary" />
               </div>
-              <span className="text-xs font-semibold text-foreground/80">Source data</span>
+              <span className="text-xs font-semibold text-foreground/80">
+                Source data
+              </span>
               {hasSourceData && (
                 <span className="text-[10px] text-muted-foreground/60">
-                  — {prDetails
+                  —{" "}
+                  {prDetails
                     ? `PR #${prDetails.prId} — ${commitCount} commit${commitCount !== 1 ? "s" : ""}${workItemCount > 0 ? ` + ${workItemCount} work item${workItemCount !== 1 ? "s" : ""}` : ""}`
-                    : `${rawBreakdown.commits} commit${rawBreakdown.commits !== 1 ? "s" : ""}, ${rawBreakdown.prs} PR${rawBreakdown.prs !== 1 ? "s" : ""}${rawBreakdown.workItems > 0 ? `, ${rawBreakdown.workItems} work item${rawBreakdown.workItems !== 1 ? "s" : ""}` : ""}`
-                  }
+                    : `${rawBreakdown.commits} commit${rawBreakdown.commits !== 1 ? "s" : ""}, ${rawBreakdown.prs} PR${rawBreakdown.prs !== 1 ? "s" : ""}${rawBreakdown.workItems > 0 ? `, ${rawBreakdown.workItems} work item${rawBreakdown.workItems !== 1 ? "s" : ""}` : ""}`}
                 </span>
               )}
               {loadingCommits && (
@@ -855,7 +1268,9 @@ export function GenerateNewChangelogPage() {
               <div className="flex items-center justify-center gap-3 rounded-xl border border-dashed border-border/40 py-12">
                 <Loader2 className="size-5 animate-spin text-muted-foreground/30" />
                 <span className="text-xs text-muted-foreground/50">
-                  {buildIdParam ? "Loading pipeline run details…" : "Loading PR details…"}
+                  {buildIdParam
+                    ? "Loading pipeline run details…"
+                    : "Loading PR details…"}
                 </span>
               </div>
             ) : (
@@ -880,7 +1295,9 @@ export function GenerateNewChangelogPage() {
                             key={idx}
                             className={cn(
                               "rounded-lg border border-border/30 transition-all duration-200",
-                              isExpanded ? "bg-muted/40" : "bg-card hover:bg-muted/20",
+                              isExpanded
+                                ? "bg-muted/40"
+                                : "bg-card hover:bg-muted/20",
                             )}
                           >
                             <button
@@ -896,7 +1313,8 @@ export function GenerateNewChangelogPage() {
                                       variant="outline"
                                       className={cn(
                                         "text-[9px] font-medium px-1 py-0 leading-none",
-                                        catColors[item.category] ?? "bg-muted text-muted-foreground",
+                                        catColors[item.category] ??
+                                          "bg-muted text-muted-foreground",
                                       )}
                                     >
                                       {item.category}
@@ -924,23 +1342,27 @@ export function GenerateNewChangelogPage() {
                             <div
                               className={cn(
                                 "grid transition-[grid-template-rows] duration-200 ease-in-out",
-                                isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+                                isExpanded
+                                  ? "grid-rows-[1fr]"
+                                  : "grid-rows-[0fr]",
                               )}
                             >
                               <div className="overflow-hidden">
                                 <div className="space-y-2 border-t border-border/20 px-3 py-2.5">
-                                  {item.description && item.description !== item.title && (
-                                    <p className="text-xs leading-relaxed text-muted-foreground/70">
-                                      {item.description}
-                                    </p>
-                                  )}
-                                  {item.filePaths && item.filePaths.length > 0 && (
-                                    <div className="flex flex-wrap gap-1">
-                                      {item.filePaths.map((fp, j) => (
-                                        <FilePill key={j} path={fp} />
-                                      ))}
-                                    </div>
-                                  )}
+                                  {item.description &&
+                                    item.description !== item.title && (
+                                      <p className="text-xs leading-relaxed text-muted-foreground/70">
+                                        {item.description}
+                                      </p>
+                                    )}
+                                  {item.filePaths &&
+                                    item.filePaths.length > 0 && (
+                                      <div className="flex flex-wrap gap-1">
+                                        {item.filePaths.map((fp, j) => (
+                                          <FilePill key={j} path={fp} />
+                                        ))}
+                                      </div>
+                                    )}
                                   {item.links?.[0] && (
                                     <a
                                       href={item.links[0]}
@@ -985,9 +1407,13 @@ export function GenerateNewChangelogPage() {
                             >
                               PR
                             </Badge>
-                            <span className="font-semibold text-foreground/80">#{item.id}</span>
+                            <span className="font-semibold text-foreground/80">
+                              #{item.id}
+                            </span>
                             {item.author && (
-                              <span className="truncate text-[11px] text-muted-foreground/60">{item.author}</span>
+                              <span className="truncate text-[11px] text-muted-foreground/60">
+                                {item.author}
+                              </span>
                             )}
                             {item.links?.[0] && (
                               <a
@@ -1003,27 +1429,35 @@ export function GenerateNewChangelogPage() {
                           <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
                             {item.title ?? "(no title)"}
                           </p>
-                          {item.description && item.description !== item.title && (
-                            <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
-                              {stripHtml(item.description)}
-                            </p>
-                          )}
+                          {item.description &&
+                            item.description !== item.title && (
+                              <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
+                                {stripHtml(item.description)}
+                              </p>
+                            )}
                         </div>
                       ))}
                     </SourceDataSection>
                   )}
 
                   {/* Work items */}
-                  {(prDetails?.workItems.length ?? 0) > 0 || buildWorkItems.length > 0 ? (
+                  {(prDetails?.workItems.length ?? 0) > 0 ||
+                  buildWorkItems.length > 0 ? (
                     <SourceDataSection
                       title="Work items"
                       icon={Bug}
                       iconBgClass="bg-amber-100 dark:bg-amber-900/40"
                       iconColorClass="text-amber-600 dark:text-amber-400"
-                      count={prDetails ? prDetails.workItems.length : buildWorkItems.length}
+                      count={
+                        prDetails
+                          ? prDetails.workItems.length
+                          : buildWorkItems.length
+                      }
                     >
                       {prDetails
-                        ? prDetails.workItems.map((wi) => <WorkItemCard key={wi.id} wi={wi} />)
+                        ? prDetails.workItems.map((wi) => (
+                            <WorkItemCard key={wi.id} wi={wi} />
+                          ))
                         : buildWorkItems.map((wi, i) => (
                             <div
                               key={wi.id ?? i}
@@ -1039,7 +1473,9 @@ export function GenerateNewChangelogPage() {
                                 >
                                   Work item
                                 </Badge>
-                                <span className="font-semibold text-foreground/80">#{wi.id}</span>
+                                <span className="font-semibold text-foreground/80">
+                                  #{wi.id}
+                                </span>
                                 {wi.links?.[0] && (
                                   <a
                                     href={wi.links[0]}
@@ -1069,12 +1505,10 @@ export function GenerateNewChangelogPage() {
                     </div>
                   ) : null}
                 </div>
-
               </div>
             )}
           </div>
         )}
-
 
         {/* ── Action bar ── */}
         <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-card/50 p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1087,22 +1521,27 @@ export function GenerateNewChangelogPage() {
                 >
                   <FileCode className="size-3.5 shrink-0" />
                   <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="font-medium text-foreground/70">Raw data sent to AI</span>
+                    <span className="font-medium text-foreground/70">
+                      Raw data sent to AI
+                    </span>
                     {rawBreakdown.total > 0 && (
                       <span className="inline-flex flex-wrap items-center gap-1 text-[10px]">
                         <span className="rounded bg-sky-100/60 px-1 py-0.5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-400">
-                          {rawBreakdown.commits} commit{rawBreakdown.commits !== 1 ? "s" : ""}
+                          {rawBreakdown.commits} commit
+                          {rawBreakdown.commits !== 1 ? "s" : ""}
                         </span>
                         <span className="rounded bg-violet-100/60 px-1 py-0.5 text-violet-700 dark:bg-violet-900/40 dark:text-violet-400">
-                          {rawBreakdown.prs} PR{rawBreakdown.prs !== 1 ? "s" : ""}
+                          {rawBreakdown.prs} PR
+                          {rawBreakdown.prs !== 1 ? "s" : ""}
                         </span>
                         <span className="rounded bg-amber-100/60 px-1 py-0.5 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
-                          {rawBreakdown.workItems} WI{rawBreakdown.workItems !== 1 ? "s" : ""}
+                          {rawBreakdown.workItems} WI
+                          {rawBreakdown.workItems !== 1 ? "s" : ""}
                         </span>
                         <span className="text-muted-foreground/40">
                           · {commitText.length} chars
                         </span>
-                          <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
+                        <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
                       </span>
                     )}
                   </span>
@@ -1113,7 +1552,9 @@ export function GenerateNewChangelogPage() {
                   <DialogTitle className="flex items-center gap-2">
                     <FileCode className="size-4 shrink-0 text-muted-foreground/60" />
                     Raw data sent to AI
-                    <span className="text-xs font-normal text-muted-foreground/50">{formatAsAiPrompt(keptItems, project ?? "").length} chars</span>
+                    <span className="text-xs font-normal text-muted-foreground/50">
+                      {formatAsAiPrompt(keptItems, project ?? "").length} chars
+                    </span>
                   </DialogTitle>
                 </DialogHeader>
                 <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -1125,7 +1566,8 @@ export function GenerateNewChangelogPage() {
             </Dialog>
           ) : (
             <span className="text-[11px] text-muted-foreground/50">
-              No source data yet — open this page from a pipeline run in the dashboard's Pipeline runs table.
+              No source data yet — open this page from a pipeline run in the
+              dashboard's Pipeline runs table.
             </span>
           )}
 
@@ -1138,11 +1580,19 @@ export function GenerateNewChangelogPage() {
                 // control; once there's something on screen, Regen (with its own model picker,
                 // below) is the only way forward. Kept visible as a record of what produced the
                 // preview, same reasoning as the Generate button beside it.
-                <Select value={model} onValueChange={setModel} disabled={status === "loading" || hasResult}>
+                <Select
+                  value={model}
+                  onValueChange={setModel}
+                  disabled={status === "loading" || hasResult}
+                >
                   <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto">
                     <SelectValue placeholder="Select model…" />
                   </SelectTrigger>
-                  <SelectContent className="min-w-[180px]" side="bottom" align="end">
+                  <SelectContent
+                    className="min-w-[180px]"
+                    side="bottom"
+                    align="end"
+                  >
                     {models.data.map((m) => (
                       <SelectItem key={m.id} value={m.id} className="pr-8">
                         <span className="flex items-center gap-2">
@@ -1175,9 +1625,13 @@ export function GenerateNewChangelogPage() {
                   running, so this stays a plain disabled "Generate" instead of spinning in sync
                   with a request it didn't start. */}
               {status === "loading" && !hasResult ? (
-                <><Loader2 className="size-3.5 animate-spin" /> Generating…</>
+                <>
+                  <Loader2 className="size-3.5 animate-spin" /> Generating…
+                </>
               ) : (
-                <><Wand2 className="size-3.5" /> Generate</>
+                <>
+                  <Wand2 className="size-3.5" /> Generate
+                </>
               )}
             </Button>
           </div>
@@ -1186,13 +1640,20 @@ export function GenerateNewChangelogPage() {
         {/* ── Generating progress (first generation only — a Regen keeps the result panel below
              mounted instead of swapping to this) ── */}
         {status === "loading" && !hasResult && (
-          <div ref={resultRef} className="animate-in fade-in slide-in-from-bottom-4 overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm">
+          <div
+            ref={resultRef}
+            className="animate-in fade-in slide-in-from-bottom-4 overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm"
+          >
             {/* Animated gradient bar */}
             <div className="h-1 w-full overflow-hidden bg-muted">
-              <div className="h-full w-full animate-gradient-pan" style={{
-                background: "linear-gradient(90deg, oklch(0.58 0.18 255), oklch(0.68 0.14 220), oklch(0.52 0.18 275), oklch(0.58 0.18 255))",
-                backgroundSize: "300% 100%",
-              }} />
+              <div
+                className="h-full w-full animate-gradient-pan"
+                style={{
+                  background:
+                    "linear-gradient(90deg, oklch(0.58 0.18 255), oklch(0.68 0.14 220), oklch(0.52 0.18 275), oklch(0.58 0.18 255))",
+                  backgroundSize: "300% 100%",
+                }}
+              />
             </div>
 
             <div className="p-5">
@@ -1201,8 +1662,9 @@ export function GenerateNewChangelogPage() {
                   <Sparkles className="size-5 text-primary animate-glow-pulse" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-foreground/90">Generating changelog</p>
-                  <p className="text-xs text-muted-foreground/60">v{version} — {model ?? "default model"}</p>
+                  <p className="text-sm font-semibold text-foreground/90">
+                    Generating changelog
+                  </p>
                 </div>
                 <Loader2 className="size-5 animate-spin text-primary/50" />
               </div>
@@ -1221,7 +1683,7 @@ export function GenerateNewChangelogPage() {
                         isDone
                           ? "border-emerald-200/50 bg-emerald-50/50 dark:border-emerald-900/30 dark:bg-emerald-950/20"
                           : isLoading
-                            ? "border-primary/30 bg-primary/[0.03]"
+                            ? "border-primary/30 bg-primary/3"
                             : "border-border/30 bg-muted/20",
                       )}
                     >
@@ -1254,7 +1716,11 @@ export function GenerateNewChangelogPage() {
                         {tab.label}
                       </span>
                       <span className="ml-auto text-[10px] text-muted-foreground/40">
-                        {isDone ? "Done" : isLoading ? "Generating…" : "Pending"}
+                        {isDone
+                          ? "Done"
+                          : isLoading
+                            ? "Generating…"
+                            : "Pending"}
                       </span>
                     </div>
                   );
@@ -1275,33 +1741,47 @@ export function GenerateNewChangelogPage() {
               className={cn(
                 "flex flex-col gap-2 border-b border-border/30 px-4 py-3 transition-colors duration-300 sm:flex-row sm:items-center sm:justify-between",
                 status === "loading"
-                  ? "bg-gradient-to-r from-primary/[0.06] to-primary/[0.02]"
-                  : "bg-gradient-to-r from-emerald-500/[0.06] to-emerald-500/[0.02]",
+                  ? "bg-linear-to-r from-primary/6 to-primary/2"
+                  : "bg-linear-to-r from-emerald-500/6 to-emerald-500/2",
               )}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                 {status === "loading" ? (
                   <span className="inline-flex items-center gap-1.5 text-primary">
                     <Loader2 className="size-3 shrink-0 animate-spin" />
-                    <span className="font-medium">Regenerating — v{version}</span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
                     <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-                    <span className="font-medium">Changelog generated — v{version}</span>
+                    <span className="font-medium">
+                      Changelog generated for Run - {runNumber}
+                    </span>
                   </span>
                 )}
                 {status === "success" && (
                   <>
-                    <span className="hidden text-muted-foreground/40 sm:inline">·</span>
-                    <span className="text-muted-foreground/60">{(streamDuration / 1000).toFixed(1)}s</span>
-                    <span className="hidden text-muted-foreground/40 sm:inline">·</span>
-                    <span className="text-muted-foreground/60">{streamTokens} tokens</span>
+                    <span className="hidden text-muted-foreground/40 sm:inline">
+                      ·
+                    </span>
+                    <span className="text-muted-foreground/60">
+                      {(streamDuration / 1000).toFixed(1)}s
+                    </span>
+                    <span className="hidden text-muted-foreground/40 sm:inline">
+                      ·
+                    </span>
+                    <span className="text-muted-foreground/60">
+                      {streamTokens} tokens
+                    </span>
                     {resultModel && (
                       <>
-                        <span className="hidden text-muted-foreground/40 sm:inline">·</span>
+                        <span className="hidden text-muted-foreground/40 sm:inline">
+                          ·
+                        </span>
                         <span className="text-muted-foreground/60">
-                          {(models.status === "success" && models.data.find((m) => m.id === resultModel)?.label) || resultModel}
+                          {(models.status === "success" &&
+                            models.data.find((m) => m.id === resultModel)
+                              ?.label) ||
+                            resultModel}
                         </span>
                       </>
                     )}
@@ -1313,7 +1793,10 @@ export function GenerateNewChangelogPage() {
             {/* Tabs — hidden when there's only one generated audience (Developer); nothing to
                 switch between until QA/Business are generated from the history panel instead. */}
             {GENERATED_AUDIENCES.length > 1 && (
-              <div role="tablist" className="flex gap-0 overflow-x-auto border-b border-border/40 bg-muted/15">
+              <div
+                role="tablist"
+                className="flex gap-0 overflow-x-auto border-b border-border/40 bg-muted/15"
+              >
                 {GENERATED_AUDIENCES.map((tab) => {
                   const tabLoading = audienceLoading.has(tab.key);
                   return (
@@ -1330,7 +1813,11 @@ export function GenerateNewChangelogPage() {
                           : "text-muted-foreground/60 hover:text-foreground/80",
                       )}
                     >
-                      {tabLoading ? <Loader2 className="size-3.5 animate-spin" /> : <tab.icon className="size-3.5" />}
+                      {tabLoading ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <tab.icon className="size-3.5" />
+                      )}
                       {tab.label}
                       {activeAudience === tab.key && (
                         <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground transition-all duration-300" />
@@ -1347,10 +1834,13 @@ export function GenerateNewChangelogPage() {
                 <textarea
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
-                  className="w-full min-h-[300px] rounded-lg border border-border/50 bg-background p-3.5 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
+                  className="w-full min-h-75 rounded-lg border border-border/50 bg-background p-3.5 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
                 />
               ) : (
-                <div key={activeAudience} className="animate-in fade-in duration-200">
+                <div
+                  key={activeAudience}
+                  className="animate-in fade-in duration-200"
+                >
                   <ChangelogBody text={audienceTexts[activeAudience] ?? ""} />
                 </div>
               )}
@@ -1360,7 +1850,12 @@ export function GenerateNewChangelogPage() {
             {editingTab === activeAudience ? (
               <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-3">
                 <div className="flex justify-end gap-2">
-                  <Button size="sm" variant="ghost" onClick={cancelEdit} disabled={editSaving}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={cancelEdit}
+                    disabled={editSaving}
+                  >
                     Cancel
                   </Button>
                   <Button
@@ -1369,7 +1864,13 @@ export function GenerateNewChangelogPage() {
                     onClick={requestSaveEdit}
                     disabled={editSaving || !editText.trim()}
                   >
-                    {editSaving ? <><Loader2 className="size-3 animate-spin" /> Saving…</> : "Save"}
+                    {editSaving ? (
+                      <>
+                        <Loader2 className="size-3 animate-spin" /> Saving…
+                      </>
+                    ) : (
+                      "Save"
+                    )}
                   </Button>
                 </div>
               </div>
@@ -1403,7 +1904,11 @@ export function GenerateNewChangelogPage() {
                       {/* Locked while a (re)generation is in flight — otherwise switching models
                           mid-request leaves it ambiguous which model actually produced whatever
                           streams back in. */}
-                      <Select value={model} onValueChange={setModel} disabled={status === "loading"}>
+                      <Select
+                        value={model}
+                        onValueChange={setModel}
+                        disabled={status === "loading"}
+                      >
                         <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
                           <SelectValue placeholder="Model">
                             {models.data.find((m) => m.id === model)?.label}
@@ -1411,9 +1916,15 @@ export function GenerateNewChangelogPage() {
                         </SelectTrigger>
                         <SelectContent side="bottom" align="end">
                           {models.data.map((m) => (
-                            <SelectItem key={m.id} value={m.id} className="pr-8 text-xs">
+                            <SelectItem
+                              key={m.id}
+                              value={m.id}
+                              className="pr-8 text-xs"
+                            >
                               <span className="flex min-w-0 items-center gap-2">
-                                <span className="min-w-0 truncate">{m.label}</span>
+                                <span className="min-w-0 truncate">
+                                  {m.label}
+                                </span>
                                 {m.recommended && (
                                   <Badge
                                     variant="outline"
@@ -1435,9 +1946,13 @@ export function GenerateNewChangelogPage() {
                         disabled={status === "loading" || !model}
                       >
                         {status === "loading" ? (
-                          <><Loader2 className="size-3 animate-spin" /> Regen…</>
+                          <>
+                            <Loader2 className="size-3 animate-spin" /> Regen…
+                          </>
                         ) : (
-                          <><RefreshCw className="size-3" /> Regen</>
+                          <>
+                            <RefreshCw className="size-3" /> Regen
+                          </>
                         )}
                       </Button>
                     </div>
@@ -1448,9 +1963,17 @@ export function GenerateNewChangelogPage() {
                       variant="default"
                       className="gap-1.5"
                       onClick={requestSaveGenerated}
-                      disabled={saving || status === "loading" || !audienceTexts.developer}
+                      disabled={
+                        saving ||
+                        status === "loading" ||
+                        !audienceTexts.developer
+                      }
                     >
-                      {saving ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
+                      {saving ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Check className="size-3" />
+                      )}
                       Save
                     </Button>
                   )}
@@ -1460,7 +1983,11 @@ export function GenerateNewChangelogPage() {
                       variant="default"
                       className="gap-1.5"
                       onClick={requestPush}
-                      disabled={pushRepoTextLoading || !branchParam || status === "loading"}
+                      disabled={
+                        pushRepoTextLoading ||
+                        !branchParam ||
+                        status === "loading"
+                      }
                     >
                       {pushRepoTextLoading ? (
                         <Loader2 className="size-3 animate-spin" />
@@ -1481,7 +2008,8 @@ export function GenerateNewChangelogPage() {
           <div className="flex items-center gap-3 rounded-xl border border-dashed border-border/30 bg-muted/10 px-4 py-3 text-xs text-muted-foreground/60">
             <Layers className="size-4 shrink-0" />
             <span>
-              No source data loaded yet. Enter a version above or paste changes manually in the text area to generate a changelog. You can also{" "}
+              No source data loaded yet. Paste changes manually in the text area
+              to generate a changelog. You can also{" "}
               <button
                 type="button"
                 onClick={() => navigate(backHref)}
@@ -1496,7 +2024,11 @@ export function GenerateNewChangelogPage() {
 
         <ConfirmDialog
           open={saveConfirmOpen}
-          title={`Save this Developer changelog for v${version || "?"}?`}
+          title={
+            version
+              ? `Save this Developer changelog for v${version}?`
+              : "Save this Developer changelog?"
+          }
           description="This writes the text below to the database. It won't be pushed to the repo until you confirm a separate Push."
           confirmLabel="Save"
           pendingLabel="Saving…"
@@ -1512,7 +2044,11 @@ export function GenerateNewChangelogPage() {
 
         <ConfirmDialog
           open={editSaveConfirmOpen}
-          title={`Save this edit for v${version || "?"}?`}
+          title={
+            version
+              ? `Save this edit for v${version}?`
+              : "Save this edit?"
+          }
           description="This writes the edited text below to the database, replacing what's currently saved for Developer."
           confirmLabel="Save"
           pendingLabel="Saving…"
@@ -1528,8 +2064,8 @@ export function GenerateNewChangelogPage() {
 
         <ConfirmDialog
           open={pushConfirmOpen}
-          title={`Push v${version || "?"} to the repo?`}
-          description={`This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${version || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
+          title={`Push v${pushVersion || "?"} to the repo?`}
+          description={`This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${pushVersion || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
           diff={{ before: pushRepoText, after: audienceTexts.developer ?? "" }}
           confirmLabel="Push"
           pendingLabel="Pushing…"
@@ -1541,23 +2077,40 @@ export function GenerateNewChangelogPage() {
             setPushError(null);
           }}
         >
-          {branches.status === "success" && branches.data.length > 0 && (
+          <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Target branch</span>
-              <Select value={pushBranch} onValueChange={handlePushBranchChange} disabled={pushLoading || pushRepoTextLoading}>
-                <SelectTrigger className="h-8 w-[220px] text-xs">
-                  <SelectValue placeholder="Select a branch" />
-                </SelectTrigger>
-                <SelectContent>
-                  {branches.data.map((b) => (
-                    <SelectItem key={b} value={b}>
-                      {b}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <span className="text-muted-foreground">Version</span>
+              <Input
+                value={pushVersion}
+                onChange={(e) => handlePushVersionChange(e.target.value)}
+                disabled={pushLoading || pushRepoTextLoading}
+                placeholder="e.g. 1.0.5"
+                size={Math.max(8, pushVersion.length + 1)}
+                className="h-8 w-fit min-w-[120px] text-xs font-mono"
+              />
             </div>
-          )}
+            {branches.status === "success" && branches.data.length > 0 && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Target branch</span>
+                <Select
+                  value={pushBranch}
+                  onValueChange={handlePushBranchChange}
+                  disabled={pushLoading || pushRepoTextLoading}
+                >
+                  <SelectTrigger className="h-8 w-[220px] text-xs">
+                    <SelectValue placeholder="Select a branch" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branches.data.map((b) => (
+                      <SelectItem key={b} value={b}>
+                        {b}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
         </ConfirmDialog>
       </div>
     </div>

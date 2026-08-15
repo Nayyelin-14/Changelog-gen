@@ -1,0 +1,15 @@
+# Caddy reverse-proxy config for the changelog service on the VM.
+# Template — copy to VM_COMPOSE_DIR as `Caddyfile` (next to docker-compose.prod.yml).
+#
+# DOMAIN is injected from the VM's `.env` by docker-compose (the caddy service sets the DOMAIN
+# env var, and Caddy interpolates {$DOMAIN}). Point DNS for this domain at the VM's IP — Caddy
+# obtains and renews the TLS certificate automatically via Let's Encrypt.
+#
+# Example .env line:
+#   DOMAIN=changelog.example.com
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:8080
+}

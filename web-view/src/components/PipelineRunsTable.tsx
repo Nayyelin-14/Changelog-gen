@@ -79,13 +79,18 @@ export function PipelineRunsTable({
                   <p className="truncate text-sm font-medium text-foreground/90">
                     {run.commitTitle ?? run.buildNumber ?? `Build #${run.buildId}`}
                   </p>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground/70">
-                    <span className="shrink-0 font-mono">#{run.buildId}</span>
-                    {run.buildNumber && (
-                      <span className="inline-block shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono font-medium break-all">
-                        {run.buildNumber}
-                      </span>
-                    )}
+                   <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground/70">
+                     <span className="shrink-0 font-mono">#{run.buildId}</span>
+                     {run.runNumber && (
+                       <span className="inline-block shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 font-mono font-medium text-primary break-all">
+                         Pipeline run #{run.runNumber}
+                       </span>
+                     )}
+                     {run.buildNumber && (
+                       <span className="inline-block shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono font-medium break-all">
+                         {run.buildNumber}
+                       </span>
+                     )}
                     {run.prNumber != null && (
                       <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-primary">
                         PR #{run.prNumber}

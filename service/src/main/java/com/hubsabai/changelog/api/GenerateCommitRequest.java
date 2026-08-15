@@ -11,12 +11,20 @@ public class GenerateCommitRequest {
     private String text;
     private Integer tokens;
     private Integer durationMs;
+    private Long buildId;
 
     public GenerateCommitRequest() {}
 
     @JsonProperty("version")
     public String getVersion() { return version; }
     public void setVersion(String version) { this.version = version; }
+
+    /** When {@code version} is absent (a manual dashboard generation), the draft is persisted
+     * keyed on the pipeline run this text came from instead — {@code version} is then chosen by
+     * the human in the push modal and written into the row at push time. */
+    @JsonProperty("buildId")
+    public Long getBuildId() { return buildId; }
+    public void setBuildId(Long buildId) { this.buildId = buildId; }
 
     @JsonProperty("branch")
     public String getBranch() { return branch; }

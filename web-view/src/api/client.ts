@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 
+import { providerApiBase, getStoredProvider } from '../lib/provider';
 import type {
   AiModelOption,
   AiUsage,
@@ -15,12 +16,39 @@ import type {
   PullRequestDetails,
   RepoOverview,
   ReleaseData,
+  ReleaseVersionResolution,
   RepositorySummary,
+  RunChangeContext,
 } from './types';
 
 export const apiClient = axios.create({
+  baseURL: providerApiBase(getStoredProvider()),
+});
+
+// Provider can change at runtime (localStorage) without a reload — re-resolve the base URL on
+// every request so Azure and GitHub share the same axios instance but hit different route trees.
+apiClient.interceptors.request.use((config) => {
+  config.baseURL = providerApiBase(getStoredProvider());
+  return config;
+});
+
+// Root-agnostic calls — endpoints that are shared across providers (the recorded-pipeline-run
+// store lives at /pipeline/runs, outside the /github or / azure route trees). These must be
+// pinned to /api, not the provider base, or GitHub mode rewrites them to /api/github/pipeline/runs.
+export const rootApiClient = axios.create({
   baseURL: '/api',
 });
+
+rootApiClient.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError<{ error?: string; hint?: string }>) => {
+    const status = error.response?.status;
+    const body = error.response?.data;
+    const message = body?.error ?? error.response?.statusText ?? error.message;
+    const full = body?.hint ? `${message} — ${body.hint}` : message;
+    return Promise.reject(new ApiError(`${status ?? '—'} ${full}`, status));
+  },
+);
 
 export class ApiError extends Error {
   readonly status: number | undefined;
@@ -120,7 +148,8 @@ export async function generateChangelog(
 /** Persists a candidate AI generation the dashboard already showed for confirmation (see
  * {@link generateChangelog}'s `commit=false` preview mode) — no new AI call, just the write.
  * `text`/`model` must be exactly what the preview returned, so what's saved matches what the
- * user actually reviewed. */
+ * user actually reviewed. A manual dashboard generation has no version yet: pass `buildId` (the
+ * pipeline run the text came from) instead, and version is filled in at push time. */
 export async function commitChangelog(
   project: string,
   repo: string,
@@ -133,10 +162,11 @@ export async function commitChangelog(
   // tokens/duration have to be carried over from whoever generated the preview.
   tokens?: number,
   durationMs?: number,
+  buildId?: number,
 ): Promise<GenerateResult> {
   const { data } = await apiClient.put<GenerateResult>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/generate-commit`,
-    { version, branch, audience, model, text, tokens, durationMs },
+    { version, branch, audience, model, text, tokens, durationMs, buildId },
   );
   return data;
 }
@@ -190,8 +220,9 @@ export async function generateChangelogStream(
   manualText?: string,
   force?: boolean,
   signal?: AbortSignal,
+  buildId?: number,
 ): Promise<void> {
-  const url = `/api/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/generate-stream`;
+  const url = `${providerApiBase(getStoredProvider())}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/generate-stream`;
 
   // A real JSON body, not query params — manualText (the raw commit/PR/work-item text for a
   // whole build) can run into the tens of thousands of characters, which blows past a URL's
@@ -201,7 +232,7 @@ export async function generateChangelogStream(
     response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, version, branch, fromVersion, manualText, force: !!force }),
+      body: JSON.stringify({ model, version, branch, fromVersion, manualText, force: !!force, buildId }),
       signal,
     });
   } catch (e) {
@@ -252,7 +283,7 @@ export async function sendChangelogChatMessageStream(
   signal: AbortSignal,
 ): Promise<void> {
   const params = new URLSearchParams({ audience, version });
-  const url = `/api/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-chat/stream?${params}`;
+  const url = `${providerApiBase(getStoredProvider())}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-chat/stream?${params}`;
 
   let response: Response;
   try {
@@ -497,10 +528,11 @@ export async function pushChangelog(
   branch: string,
   audience: ChangelogAudience,
   unsaved?: { text: string; model?: string },
+  buildId?: number,
 ): Promise<{ commitUrl: string }> {
   const { data } = await apiClient.post<{ commitUrl: string }>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-push`,
-    { version, branch, audience, text: unsaved?.text, model: unsaved?.model },
+    { version, branch, audience, text: unsaved?.text, model: unsaved?.model, buildId },
   );
   return data;
 }
@@ -529,6 +561,52 @@ export async function getPullRequestDetails(
   return data;
 }
 
+export async function getRecordedRuns(
+  project: string,
+  repo: string,
+  provider?: 'azure' | 'github',
+): Promise<PipelineRunSummary[]> {
+  const { data } = await rootApiClient.get<PipelineRunSummary[]>(
+    `/pipeline/runs`,
+    { params: { project, repo, provider } },
+  );
+  return data;
+}
+
+export async function getRecordedRunChanges(
+  project: string,
+  repo: string,
+  runId: number,
+  provider?: 'azure' | 'github',
+): Promise<ReleaseData> {
+  const { data } = await rootApiClient.get<ReleaseData>(
+    `/pipeline/runs/${runId}/changes`,
+    { params: { project, repo, provider } },
+  );
+  return data;
+}
+
+export interface AiDraft {
+  audience: string | null;
+  text: string | null;
+  model: string | null;
+  tokens: number | null;
+  durationMs: number | null;
+}
+
+export async function getAiDraft(
+  project: string,
+  repo: string,
+  runId: number,
+  provider?: 'azure' | 'github',
+): Promise<AiDraft> {
+  const { data } = await rootApiClient.get<AiDraft>(
+    `/pipeline/runs/${runId}/draft`,
+    { params: { project, repo, provider } },
+  );
+  return data;
+}
+
 export async function getRepoBuilds(
   project: string,
   repo: string,
@@ -548,6 +626,32 @@ export async function getBuildChanges(
 ): Promise<ReleaseData> {
   const { data } = await apiClient.get<ReleaseData>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/builds/${buildId}/changes`,
+  );
+  return data;
+}
+
+/** Provider-normalized run context — run + PR + commits + files + work items — for one run. */
+export async function getRunContext(
+  project: string,
+  repo: string,
+  buildId: number,
+): Promise<RunChangeContext> {
+  const { data } = await apiClient.get<RunChangeContext>(
+    `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/builds/${buildId}/run-context`,
+  );
+  return data;
+}
+
+/** Resolves the latest semantic version from CHANGELOG.md, the suggested next version,
+ * and the current branch HEAD commit SHA — used by the generate-new-changelog page. */
+export async function resolveReleaseVersion(
+  project: string,
+  repo: string,
+  branch?: string,
+): Promise<ReleaseVersionResolution> {
+  const { data } = await apiClient.get<ReleaseVersionResolution>(
+    `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/release-version`,
+    { params: branch ? { branch } : undefined },
   );
   return data;
 }

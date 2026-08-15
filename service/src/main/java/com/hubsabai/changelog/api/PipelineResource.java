@@ -5,11 +5,14 @@ import com.hubsabai.changelog.ai.AiException;
 import com.hubsabai.changelog.connector.ConnectionConfig;
 import com.hubsabai.changelog.connector.SourceConnector;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector;
+import com.hubsabai.changelog.connector.azuredevops.RunFetchResult;
 import com.hubsabai.changelog.connector.azuredevops.PlainBullets;
 import com.hubsabai.changelog.core.model.ChangeItem;
 import com.hubsabai.changelog.core.model.ReleaseData;
+import com.hubsabai.changelog.generation.RunChangeContext;
 import com.hubsabai.changelog.storage.ChangelogCacheService;
 import com.hubsabai.changelog.storage.ChangelogService;
+import com.hubsabai.changelog.storage.RecordedRunService;
 import com.hubsabai.changelog.storage.RawReleaseService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.POST;
@@ -42,6 +45,9 @@ public class PipelineResource {
 
     @Inject
     AzureDevOpsOrgConnector orgConnector;
+
+    @Inject
+    RecordedRunService recordedRunService;
 
     @Inject
     ChangelogCacheService cacheService;
@@ -80,10 +86,14 @@ public class PipelineResource {
         String stage = request.getStage() != null && VALID_STAGES.contains(request.getStage()) ? request.getStage() : "release";
 
         ReleaseData data;
+        RunChangeContext runContext = null;
         if (request.getBuildId() != null) {
             // Pipeline-run flow: the Composer fetches this run's own commits/work items/PRs
             // straight from Azure DevOps' Build API — rawCommitLog/workItemIds/prIds are ignored.
-            data = orgConnector.fetchRunChanges(request.getProject(), request.getRepo(), request.getBuildId());
+            // Use unified fetch to get both ReleaseData and RunChangeContext in ONE provider fetch.
+            RunFetchResult fetchResult = orgConnector.fetchRunData(request.getProject(), request.getRepo(), request.getBuildId());
+            data = fetchResult.releaseData();
+            runContext = fetchResult.runContext();
         } else {
             ConnectionConfig config = new ConnectionConfig();
             config.setProject(request.getProject());
@@ -135,13 +145,24 @@ public class PipelineResource {
 
         rawReleaseService.ingest(project, repo, request.getBranch(), version, stage, itemsJson, prIds);
 
+        // Record the complete run snapshot for dashboard to use later (stored-first, live-fetch fallback)
+        // Use the pre-fetched runContext from the unified fetch to avoid duplicate provider API calls.
+        if (request.getBuildId() != null && runContext != null) {
+            try {
+                recordedRunService.recordRun("azure", project, repo, request.getBuildId().longValue(), version, stage, request.getBranch(), runContext, data.getItems());
+            } catch (Exception e) {
+                LOG.warning("Failed to record pipeline run for " + project + "/" + repo + " buildId=" + request.getBuildId() + ": " + e.getMessage());
+                // Non-fatal: pipeline ingestion succeeds even if recording fails
+            }
+        }
+
         // Same plain, non-AI bullet list as the raw-init flow below — saved here as this
         // version's starting Developer draft, and handed back to the caller so its own CI can
         // commit it straight into its own CHANGELOG.md without waiting on a human or an AI call.
         String rawChangelog = PlainBullets.plainBullets(data.getItems());
         boolean wasNew = cacheService.saveRawInitIfAbsent(project, repo, version, "developer", rawChangelog);
         if (wasNew) {
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
+            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
             changelogService.createRawRevision(vid, "developer", rawChangelog);
         }
 
@@ -178,7 +199,7 @@ public class PipelineResource {
         String rawText = PlainBullets.plainBullets(details);
         boolean wasNew = cacheService.saveRawInitIfAbsent(project, repo, version, "developer", rawText);
         if (wasNew) {
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null).id;
+            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
             changelogService.createRawRevision(vid, "developer", rawText);
         }
 
