@@ -59,7 +59,7 @@ REMOTE_EOF
 )
 
 REMOTE_SCRIPT=$(printf '%s' "$REMOTE_TEMPLATE" \
-  | sed "s|__VM_COMPOSE_DIR__|'$(q "$VM_COMPOSE_DIR")'|g" \
+  | sed -e "s|__VM_COMPOSE_DIR__|'$(q "$VM_COMPOSE_DIR")'|g" \
         -e "s|__VM_GHCR_USER__|'$(q "$VM_GHCR_USER")'|g" \
         -e "s|__VM_GHCR_TOKEN__|'$(q "$VM_GHCR_TOKEN")'|g" \
         -e "s|__IMAGE_REF__|'$(q "$IMAGE_REF")'|g")
