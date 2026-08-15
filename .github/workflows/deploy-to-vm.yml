@@ -79,7 +79,8 @@ jobs:
           fi
 
           echo "Verified: $TAG -> $DIGEST"
-          echo "image_ref=ghcr.io/${OWNER}/${PKG}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          OWNER_LOWER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "image_ref=ghcr.io/${OWNER_LOWER}/${PKG}@${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "run_number=${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
