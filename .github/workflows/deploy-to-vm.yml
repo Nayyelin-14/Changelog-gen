@@ -2,7 +2,8 @@ name: Deploy to VM (promote build)
 
 # Production promotion. NEVER rebuilds the app — the selected image already exists in GHCR (built
 # by the dev pipeline). This workflow only: (1) verifies the image + digest, (2) pulls it on the
-# VM, (3) health-checks, and only THEN (4) bumps semver + commits the release to main.
+# RUNNER and streams the tarball to the VM (`docker load` — the VM never touches GHCR, see the
+# deploy script), (3) health-checks, and only THEN (4) bumps semver + commits the release to main.
 #
 # Semver changes here and nowhere else. dev never bumps. A failed deploy leaves main untouched.
 
@@ -115,23 +116,38 @@ jobs:
           echo "body_file=dev-entry.md" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
-      # 3. Deploy to the VM (pull selected image + compose up + healthcheck).
+      # 3. Pull the image on the RUNNER and save a tarball — the VM never touches GHCR.
+      #    The burstable VM drained its CPU credits decompressing layers on every pull and
+      #    froze mid-deploy; the runner does the heavy lifting, the VM only runs `docker load`
+      #    (gunzip + disk write, near-zero CPU) on the streamed tarball.
+      # ------------------------------------------------------------
+      - name: Pull image on runner + save tarball
+        env:
+          IMAGE_REF: ${{ steps.verify.outputs.image_ref }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$IMAGE_REF"
+          docker save "$IMAGE_REF" | gzip -1 > /tmp/image.tar.gz
+          ls -lh /tmp/image.tar.gz
+
+      # ------------------------------------------------------------
+      # 4. Deploy to the VM (stream tarball -> docker load -> compose up -> healthcheck).
       #    Failure here stops the workflow — no release is created.
       # ------------------------------------------------------------
       - name: Deploy to VM
         env:
           IMAGE_REF: ${{ steps.verify.outputs.image_ref }}
+          IMAGE_TAR: /tmp/image.tar.gz
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USER }}
           VM_COMPOSE_DIR: ${{ secrets.VM_COMPOSE_DIR }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          VM_GHCR_USER: ${{ secrets.VM_GHCR_USER }}
-          VM_GHCR_TOKEN: ${{ secrets.VM_GHCR_TOKEN }}
         run: |
           bash .github/scripts/deploy-to-vm.sh
 
       # ------------------------------------------------------------
-      # 4. SUCCESS reached this far: bump semver + commit the release to main.
+      # 5. SUCCESS reached this far: bump semver + commit the release to main.
       # ------------------------------------------------------------
       - name: Bump version + commit release to main
         env:
