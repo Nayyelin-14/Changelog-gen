@@ -216,6 +216,17 @@ export function GenerateChangelogPage() {
     { cacheKey: 'builds' },
   );
 
+  // Poll every 30s while any pipeline run is still in flight (no result yet) so running runs flip
+  // to success/failure on their own instead of waiting for a manual Refresh. Stops entirely once
+  // every run has a result — nothing is in flight, nothing to watch.
+  const hasInFlightRuns = builds.status === "success" && builds.data.some((r) => !r.result);
+  const refreshBuilds = builds.refresh;
+  useEffect(() => {
+    if (!hasInFlightRuns) return;
+    const timer = setInterval(() => refreshBuilds(), 30_000);
+    return () => clearInterval(timer);
+  }, [hasInFlightRuns, refreshBuilds, project, repo]);
+
   // Keep the last-known entry for the selected id so the detail pane doesn't go blank when
   // paging the sidebar to a page that doesn't contain it — same fallback QA/Business rely on.
   const entryCacheRef = useRef<GenerationRecord | undefined>(undefined);
@@ -270,9 +281,18 @@ export function GenerateChangelogPage() {
   }, [project, repo, selectedBranch]);
 
   // Pipeline-runs table paginates client-side too — the backend endpoint only supports "give me
-  // the N most recent runs", no server-side page/skip.
+  // N most recent runs", no server-side page/skip. Sorted newest-first: the backend merge lists
+  // recorded runs before live-fetched ones, so without this the table reads in insertion order
+  // (old recorded runs above today's live fetches). Runs still in flight have finishTime
+  // (completedAt ?? updatedAt) — they sort among the finished ones by last activity.
   const BUILD_PAGE_SIZE = 10;
-  const buildRuns = builds.status === "success" ? builds.data : [];
+  const buildRuns = builds.status === "success"
+    ? [...builds.data].sort((a, b) => {
+        const ta = a.finishTime ? Date.parse(a.finishTime) : 0;
+        const tb = b.finishTime ? Date.parse(b.finishTime) : 0;
+        return tb - ta;
+      })
+    : [];
   const buildTotalPages = Math.max(1, Math.ceil(buildRuns.length / BUILD_PAGE_SIZE));
   const buildCurrentPage = Math.min(buildPage, buildTotalPages - 1);
   const pagedBuildRuns = buildRuns.slice(
