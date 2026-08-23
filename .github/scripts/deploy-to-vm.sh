@@ -64,7 +64,35 @@ REMOTE_SCRIPT=$(printf '%s' "$REMOTE_TEMPLATE" \
         -e "s|__VM_GHCR_TOKEN__|'$(q "$VM_GHCR_TOKEN")'|g" \
         -e "s|__IMAGE_REF__|'$(q "$IMAGE_REF")'|g")
 
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
-  "${VM_USER}@${VM_HOST}" "bash -s" <<REMOTE_EOF2
+# SSH options:
+#   ConnectTimeout=15      — fail fast if the VM is unreachable instead of hanging for hours
+#   BatchMode=yes          — never sit at an interactive prompt (password/host-key) in CI
+#   ServerAliveInterval=30 — keepalive traffic every 30s so Azure's ~4min NAT idle timeout
+#                            can't silently reset the connection mid docker-pull (the cause
+#                            of "client_loop: send disconnect: Broken pipe" exit 255)
+#   ServerAliveCountMax=10 — tolerate ~5min of total silence before giving up
+#   Retry (3 attempts)     — a dropped connection resumes cheaply: docker keeps completed
+#                            layers, so a retry continues the pull instead of restarting it.
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+  -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+
+ATTEMPT=1
+MAX_ATTEMPTS=3
+while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+  echo "::group::Deploy attempt ${ATTEMPT}/${MAX_ATTEMPTS}"
+  if ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "bash -s" <<REMOTE_EOF2
 ${REMOTE_SCRIPT}
 REMOTE_EOF2
+  then
+    echo "::endgroup::"
+    echo "Deploy succeeded on attempt ${ATTEMPT}."
+    exit 0
+  fi
+  echo "::endgroup::"
+  echo "::warning::SSH deploy attempt ${ATTEMPT} failed — retrying in 10s (docker layer cache makes the retry resume the pull)."
+  ATTEMPT=$((ATTEMPT + 1))
+  sleep 10
+done
+
+echo "Deploy failed after ${MAX_ATTEMPTS} attempts." >&2
+exit 1
