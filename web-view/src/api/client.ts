@@ -126,8 +126,9 @@ export async function generateChangelog(
   audience?: string,
   force?: boolean,
   commit?: boolean,
+  buildId?: number,
 ): Promise<GenerateResult> {
-  const params: Record<string, string | boolean | undefined> = {
+  const params: Record<string, string | boolean | number | undefined> = {
     model,
     branch,
     version,
@@ -136,6 +137,7 @@ export async function generateChangelog(
     audience,
     force,
     commit,
+    buildId,
   };
   const { data } = await apiClient.post<GenerateResult>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/generate`,

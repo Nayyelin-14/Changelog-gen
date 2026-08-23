@@ -47,6 +47,11 @@ export function useChangelogGeneration(
       setGenError(null);
       setGenerating(tab);
       try {
+        // Run-keyed drafts (entry.id "run-<buildId>") have no version yet — the buildId tells
+        // the backend to source the run's recorded changes instead of a version range.
+        const buildId = entryId?.startsWith("run-")
+          ? Number(entryId.slice("run-".length)) || undefined
+          : undefined;
         const res = await generateChangelog(
           project,
           repo,
@@ -58,6 +63,7 @@ export function useChangelogGeneration(
           tab,
           force,
           false,
+          buildId,
         );
         const tokens = res.usage.reduce((sum, u) => sum + u.totalTokens, 0);
         setGenerateConfirm({ tab, force, text: res[tab], model, tokens, durationMs: res.durationMs });
@@ -83,6 +89,28 @@ export function useChangelogGeneration(
     setConfirmingGenerate(true);
     setGenError(null);
     try {
+      // Run-keyed drafts have no version yet — generated_changelog is version-keyed backend-side,
+      // so there is nothing to commit to. Keep the text in memory only; it gets persisted (under
+      // the human-chosen version) when the draft is pushed to the repo.
+      if (!selectedEntry.version) {
+        if (tab === "developer") {
+          setDeveloperOverrides((prev) => ({ ...prev, [entryId]: text }));
+        }
+        setGeneratedByEntry((prev) => ({
+          ...prev,
+          [entryId]: { ...prev[entryId], [tab]: { text } },
+        }));
+        setMetaByEntry((prev) => ({
+          ...prev,
+          [entryId]: { ...prev[entryId], [tab]: { source: "ai", model: usedModel, tokens, durationMs } },
+        }));
+        toast.success(`${TAB_LABELS[tab]} changelog generated`, {
+          description: "Draft has no version yet — it will be saved to the repo when you Push.",
+        });
+        setConfirmingGenerate(false);
+        setGenerateConfirm(null);
+        return;
+      }
       const res = await commitChangelog(
         project,
         repo,
