@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 
 import type { PipelineRunSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,22 @@ interface PipelineRunsTableProps {
   emptyMessage?: string;
 }
 
+/** True while a run hasn't finished yet. Providers differ in casing: Azure sends
+ * "inProgress"/"notStarted", GitHub sends snake_case "in_progress"/"queued"/"waiting"/"pending". */
+function isRunningStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const s = status.toLowerCase();
+  // Actively executing
+  return s === "inprogress" || s === "in_progress";
+}
+
+function isQueuedStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const s = status.toLowerCase();
+  // Waiting for a runner / not yet started
+  return s === "queued" || s === "waiting" || s === "pending" || s === "notstarted";
+}
+
 function resultBadgeClass(result: string | null, status: string | null): string {
   switch (result) {
     case "succeeded":
@@ -28,11 +44,18 @@ function resultBadgeClass(result: string | null, status: string | null): string 
       return "bg-amber-500/15 text-amber-600 dark:text-amber-400";
     default:
       // No result yet — a still-running (or queued) build hasn't finished, so `result` is null.
-      if (status === "inProgress" || status === "notStarted") {
+      if (isRunningStatus(status) || isQueuedStatus(status)) {
         return "bg-blue-500/15 text-blue-600 dark:text-blue-400";
       }
       return "bg-muted text-muted-foreground";
   }
+}
+
+function resultLabel(run: PipelineRunSummary): string {
+  if (run.result) return run.result;
+  if (isRunningStatus(run.status)) return "running";
+  if (isQueuedStatus(run.status)) return "queued";
+  return run.status ?? "—";
 }
 
 /** Dense, table-based pipeline-run list — mirrors VersionTable's layout (pinned header, internal
@@ -104,7 +127,10 @@ export function PipelineRunsTable({
                 </td>
                 <td className="px-3 py-2">
                   <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", resultBadgeClass(run.result, run.status))}>
-                    {run.result ?? (run.status === "inProgress" ? "running" : run.status) ?? "—"}
+                    {isRunningStatus(run.status) && !run.result && (
+                      <Loader2 className="size-3 animate-spin" />
+                    )}
+                    {resultLabel(run)}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
