@@ -19,7 +19,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write # required: the release step bumps semver + commits the release to main
   packages: read
 
 concurrency:
