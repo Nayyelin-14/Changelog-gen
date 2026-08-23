@@ -23,12 +23,13 @@ import {
 
 import {
   fetchRepoChanges,
-  getChangelogRepoText,
   getRecordedRuns,
   hasChangelog,
+  listBranches,
   listHistory,
   listRepositories,
   pushChangelog,
+  resolveReleaseVersion,
 } from "@/api/client";
 import type { GenerationRecord } from "@/api/types";
 import type { HistoryRow } from "@/components/ChangelogEditHistoryPanel";
@@ -45,6 +46,8 @@ import { VersionTable } from "@/components/VersionTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -240,25 +243,19 @@ export function GenerateChangelogPage() {
   function entryHref(entry: GenerationRecord) {
     const params = new URLSearchParams();
     if (selectedBranch) params.set("branch", selectedBranch);
-    // Not generated yet (a merged PR with no changelog) — nothing to view, so go straight to the
-    // generate flow instead of a history entry that doesn't exist. entry.id is "pr-<id>" for
-    // these (see AzureDevOpsResource#buildUngeneratedEntries) — pass the PR id through so the
-    // generate page can pre-fill that PR's real title/commits instead of starting blank.
-    if (entry.generated === false) {
-      const prId = entry.id.startsWith("pr-") ? entry.id.slice("pr-".length) : undefined;
+    // Ungenerated merged PRs (entry.id "pr-<id>", see AzureDevOpsResource#buildUngeneratedEntries)
+    // have no changelog content to view yet — send them to the generate flow, passing the PR id
+    // so it can pre-fill the PR's real title/commits instead of starting blank.
+    if (entry.generated === false && entry.id.startsWith("pr-")) {
+      const prId = entry.id.slice("pr-".length);
       if (prId) params.set("prId", prId);
       const query = params.toString();
       return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/generate${query ? `?${query}` : ""}`;
     }
-    // A saved-but-unversioned draft (the Save action's artifact) is keyed on its pipeline run
-    // ("run-<buildId>") — no history detail exists for it yet, so go to the generate page for
-    // that run to review/push instead of a version-detail page.
-    if (entry.id.startsWith("run-")) {
-      const buildId = entry.id.slice("run-".length);
-      if (buildId) params.set("buildId", buildId);
-      const query = params.toString();
-      return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/generate${query ? `?${query}` : ""}`;
-    }
+    // Everything else — versioned entries AND raw pipeline-run drafts ("run-<buildId>") — opens
+    // the full version detail view (versions sidebar + the three audience tabs). A draft's dev
+    // text comes from the pipeline capture; QA/business can be generated right there (the
+    // backend /generate accepts the run's buildId), and Push asks for the version + branch.
     const query = params.toString();
     return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/history/${encodeURIComponent(entry.id)}${query ? `?${query}` : ""}`;
   }
@@ -358,16 +355,73 @@ export function GenerateChangelogPage() {
 
   // Push-to-repo is Dev-only — separate from Save (opens a real repo PR, not a Postgres write).
   // Keyed by entryId so switching versions doesn't lose a just-opened PR link.
-  const [pushConfirmingEntry, setPushConfirmingEntry] = useState<string | null>(null);
-  const [pushRepoText, setPushRepoText] = useState("");
-  const [pushRepoTextLoading, setPushRepoTextLoading] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
   const [pushResultByEntry, setPushResultByEntry] = useState<Record<string, string>>({});
   const pushResult = effectiveEntryId ? pushResultByEntry[effectiveEntryId] : undefined;
 
+  // Push modal — asks WHICH BRANCH and WHICH VERSION before writing to the repo. Required for
+  // run-keyed drafts (no version yet); for versioned entries it just prefills what's known.
+  const [pushModalOpen, setPushModalOpen] = useState(false);
+  const [pushModalVersion, setPushModalVersion] = useState("");
+  const [pushModalBranch, setPushModalBranch] = useState("");
+  const branches = useQuery(
+    useCallback(() => (project && repo ? listBranches(project, repo) : Promise.resolve([])), [project, repo]),
+    [project, repo],
+    { cacheKey: "branches" },
+  );
+  const pushBuildId =
+    effectiveEntryId?.startsWith("run-") ? Number(effectiveEntryId.slice("run-".length)) || undefined : undefined;
+
+  async function openPushModal(entry: GenerationRecord) {
+    setPushError(null);
+    setPushModalVersion(entry.version ?? "");
+    setPushModalBranch(entry.branch ?? selectedBranch ?? "main");
+    setPushModalOpen(true);
+    // Prefill the suggested next version for drafts (repo has no entry for them yet).
+    if (!entry.version) {
+      try {
+        const rv = await resolveReleaseVersion(project!, repo!, entry.branch ?? selectedBranch ?? undefined);
+        if (rv.suggestedNextVersion) setPushModalVersion(rv.suggestedNextVersion);
+      } catch {
+        /* suggestion is best-effort — empty input is fine */
+      }
+    }
+  }
+
+  async function handlePushModalConfirm() {
+    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch) return;
+    setPushing(true);
+    setPushError(null);
+    try {
+      const text = developerOverride ?? displayEntry.developer;
+      const res = await pushChangelog(
+        project,
+        repo,
+        pushModalVersion.trim(),
+        pushModalBranch,
+        "developer",
+        text ? { text } : undefined,
+        pushBuildId,
+      );
+      setPushResultByEntry((prev) => ({ ...prev, [displayEntry.id]: res.commitUrl }));
+      setPushModalOpen(false);
+      clearMeta("developer");
+      toast.success(`Pushed v${pushModalVersion.trim()} to ${pushModalBranch}`, {
+        description: "Committed directly — no PR needed.",
+        action: { label: "View commit", onClick: () => window.open(res.commitUrl, "_blank", "noreferrer") },
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to push to repo.";
+      setPushError(message);
+      toast.error("Failed to push to the repo", { description: message });
+    } finally {
+      setPushing(false);
+    }
+  }
+
   useEffect(() => {
-    setPushConfirmingEntry(null);
+    setPushModalOpen(false);
     setPushError(null);
     setSelectedHistoryRow(null);
   }, [effectiveEntryId]);
@@ -375,48 +429,6 @@ export function GenerateChangelogPage() {
   useEffect(() => {
     if (mutationCount > 0) setSelectedHistoryRow(null);
   }, [mutationCount]);
-
-  /** Fetches the repo's actual current CHANGELOG.md entry for this version before opening the
-   * confirm dialog, so it can diff against the real file instead of asking "are you sure" with
-   * nothing to compare — same reasoning as Generate/Regenerate calling the AI before their own
-   * confirm dialog opens. */
-  async function requestPush(entry: GenerationRecord) {
-    if (!project || !repo || !entry.branch) return;
-    setPushError(null);
-    setPushRepoTextLoading(true);
-    try {
-      const repoText = await getChangelogRepoText(project, repo, entry.version ?? "", entry.branch);
-      setPushRepoText(repoText ?? "");
-      setPushConfirmingEntry(entry.id);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to load the repo's current changelog.";
-      toast.error("Failed to check the repo's current changelog", { description: message });
-    } finally {
-      setPushRepoTextLoading(false);
-    }
-  }
-
-  async function handlePush(entry: GenerationRecord) {
-    if (!project || !repo || !entry.version || !entry.branch) return;
-    setPushing(true);
-    setPushError(null);
-    try {
-      const res = await pushChangelog(project, repo, entry.version, entry.branch, "developer");
-      setPushResultByEntry((prev) => ({ ...prev, [entry.id]: res.commitUrl }));
-      setPushConfirmingEntry(null);
-      clearMeta("developer");
-      toast.success(`Pushed v${entry.version} to ${entry.branch}`, {
-        description: `Committed directly — no PR needed.`,
-        action: { label: "View commit", onClick: () => window.open(res.commitUrl, "_blank", "noreferrer") },
-      });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to push to repo.";
-      setPushError(message);
-      toast.error(`Failed to push v${entry.version} to the repo`, { description: message });
-    } finally {
-      setPushing(false);
-    }
-  }
 
   const activeTabConfig =
     TABS.find((tab) => tab.key === activeTab) ?? DEVELOPER_TAB;
@@ -730,7 +742,7 @@ export function GenerateChangelogPage() {
 
                       {editingTab !== activeTab && !noSnapshotYet && activeTab === "developer" && (
                         <div className="space-y-4">
-                          {pushResult && pushConfirmingEntry !== displayEntry.id && (
+                          {pushResult && (
                             <a
                               href={pushResult}
                               target="_blank"
@@ -922,10 +934,10 @@ export function GenerateChangelogPage() {
                               </Button>
                             </div>
                           )}
-                          {displayEntry.branch && meta.developer?.hasUnpushedChanges && (
-                            <Button size="sm" variant="default" className="gap-1.5" onClick={() => requestPush(displayEntry)} disabled={pushRepoTextLoading}>
-                              {pushRepoTextLoading ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
-                              Push
+                          {(displayEntry.developer || developerOverride) && (
+                            <Button size="sm" variant="default" className="gap-1.5" onClick={() => openPushModal(displayEntry)} disabled={pushing}>
+                              {pushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
+                              Push to repo
                             </Button>
                           )}
                         </div>
@@ -994,12 +1006,65 @@ export function GenerateChangelogPage() {
                       confirmLabel="Save" pendingLabel="Saving…" loading={editSaving} error={editError}
                       onConfirm={() => saveConfirmingTab && handleSaveEdit(saveConfirmingTab)} onCancel={cancelSaveConfirm} />
 
-                    <ConfirmDialog open={pushConfirmingEntry === displayEntry.id}
-                      title={`Push v${displayEntry.version ?? "?"} to the repo?`}
-                      description={`This commits directly to ${displayEntry.branch ?? "?"} — no PR — replacing v${displayEntry.version ?? "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
-                      diff={{ before: pushRepoText, after: developerOverride ?? displayEntry.developer }}
-                      confirmLabel="Push" pendingLabel="Pushing…" loading={pushing} error={pushError}
-                      onConfirm={() => handlePush(displayEntry)} onCancel={() => { setPushConfirmingEntry(null); setPushError(null); }} />
+                    {/* Push modal — asks which branch + which version before writing to the repo.
+                        Version is required (run-keyed drafts have none; the field is prefilled
+                        with the repo's suggested next semver). */}
+                    <Dialog open={pushModalOpen} onOpenChange={(open) => { setPushModalOpen(open); if (!open) setPushError(null); }}>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Push to repo</DialogTitle>
+                          <DialogDescription>
+                            Commits the Developer changelog directly to {pushModalBranch || "the branch"} — no PR.
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-4">
+                          <div className="space-y-1.5">
+                            <label htmlFor="push-version" className="text-sm font-medium">Version</label>
+                            <Input
+                              id="push-version"
+                              value={pushModalVersion}
+                              onChange={(e) => setPushModalVersion(e.target.value)}
+                              placeholder="e.g. 1.4.31"
+                              className="font-mono"
+                            />
+                            <p className="text-[11px] text-muted-foreground">
+                              {displayEntry?.version
+                                ? "Prefilled from this entry — change it to push as a different version."
+                                : "This run has no version yet — pick the version this changelog is for."}
+                            </p>
+                          </div>
+                          <div className="space-y-1.5">
+                            <label htmlFor="push-branch" className="text-sm font-medium">Branch</label>
+                            <Select value={pushModalBranch} onValueChange={setPushModalBranch}>
+                              <SelectTrigger id="push-branch" className="w-full">
+                                <SelectValue placeholder="Select a branch" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {(branches.status === "success" ? branches.data : []).map((b) => (
+                                  <SelectItem key={b} value={b}>{b}</SelectItem>
+                                ))}
+                                {pushModalBranch && !(branches.status === "success" && branches.data.includes(pushModalBranch)) && (
+                                  <SelectItem value={pushModalBranch}>{pushModalBranch}</SelectItem>
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {pushError && (
+                            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                              {pushError}
+                            </div>
+                          )}
+                        </div>
+                        <DialogFooter className="gap-2">
+                          <Button variant="outline" size="sm" onClick={() => { setPushModalOpen(false); setPushError(null); }} disabled={pushing}>
+                            Cancel
+                          </Button>
+                          <Button size="sm" onClick={handlePushModalConfirm} disabled={pushing || !pushModalVersion.trim() || !pushModalBranch}>
+                            {pushing ? <><Loader2 className="size-3 animate-spin" /> Pushing…</> : <><Upload className="size-3" /> Push</>}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
 
                     <RestoreConfirmDialog open={restorePushedConfirmingTab !== null}
                       tabLabel={restorePushedConfirmingTab ? (TABS.find((t) => t.key === restorePushedConfirmingTab)?.label ?? "") : ""}

@@ -55,6 +55,10 @@ export function useChangelogEditor(
   );
 
   // Clear interaction state on version switch (same as original)
+  // NOTE: deps must be entryId only. The generation/edit/restore objects are fresh literals every
+  // render, so including them here re-ran this effect on EVERY render — instantly resetting
+  // activeTab back to "developer", which made the QA/Business tabs impossible to switch to.
+  // The cancel* functions are stable useCallbacks, so reading them here is safe.
   useEffect(() => {
     if (!state.entryId) return;
     state.setActiveTab("developer");
@@ -65,7 +69,8 @@ export function useChangelogEditor(
     restore.cancelRestore();
     restore.cancelRestorePushed();
     restore.cancelRestoreRevision();
-  }, [state.entryId, generation, edit, restore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.entryId]);
 
   return {
     // State
