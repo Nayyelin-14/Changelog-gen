@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.hubsabai</groupId>
     <artifactId>service</artifactId>
-    <version>1.0.12</version>
+    <version>1.0.13</version>
     <packaging>quarkus</packaging>
 
     <properties>
