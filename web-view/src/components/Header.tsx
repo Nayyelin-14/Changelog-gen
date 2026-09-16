@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Briefcase,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   GitBranch,
@@ -226,28 +227,55 @@ function handleProviderClick(next: Provider) {
                 {accountMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-20" onClick={() => setAccountMenuOpen(false)} />
-                    <div className="absolute right-0 z-30 mt-2 w-52 overflow-hidden rounded-lg border border-border/60 bg-card shadow-lg">
-                      <div className="border-b border-border/40 px-3 py-2">
-                        <p className="text-xs font-semibold text-foreground">{user.login}</p>
-                        <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
+                    <div className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-lg border border-border/60 bg-card shadow-lg">
+                      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2.5">
+                        {user.avatarUrl ? (
+                          <img src={user.avatarUrl} alt="" className="size-8 rounded-full" />
+                        ) : (
+                          <span className="flex size-8 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                            {user.login.charAt(0).toUpperCase()}
+                          </span>
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-foreground">{user.login}</p>
+                          <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
+                        </div>
                       </div>
+
                       <button
                         type="button"
                         onClick={handleSignOut}
-                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-accent"
+                        className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent"
                       >
-                        <LogOut className="size-4" /> Sign out
+                        <LogOut className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                        <span>
+                          <span className="block text-sm font-medium text-foreground">Sign out</span>
+                          <span className="block text-[11px] leading-snug text-muted-foreground">
+                            Ends this session. You can sign back in anytime.
+                          </span>
+                        </span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAccountMenuOpen(false);
-                          setDeleteOpen(true);
-                        }}
-                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm text-destructive transition-colors hover:bg-accent"
-                      >
-                        <Trash2 className="size-4" /> Delete account
-                      </button>
+
+                      <div className="border-t border-border/40 px-3 py-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAccountMenuOpen(false);
+                            setDeleteOpen(true);
+                          }}
+                          className="flex w-full cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-destructive/5"
+                        >
+                          <Trash2 className="mt-0.5 size-4 shrink-0 text-destructive" />
+                          <span>
+                            <span className="block text-sm font-medium text-destructive">
+                              Delete account
+                            </span>
+                            <span className="block text-[11px] leading-snug text-muted-foreground">
+                              Removes your GitHub token and stored login.
+                            </span>
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   </>
                 )}
@@ -273,14 +301,37 @@ function handleProviderClick(next: Provider) {
         <ConfirmDialog
           open={deleteOpen}
           title="Delete your account?"
-          description="This removes ONLY the stored sign-in credentials and revokes the GitHub token server-side. Every changelog and version you generated stays right here."
+          description="Only sign-in credentials are removed. Nothing you generated is touched."
           confirmLabel="Delete my account"
           pendingLabel="Deleting…"
           loading={deletePending}
           error={deleteError}
           onConfirm={handleDeleteAccount}
           onCancel={() => setDeleteOpen(false)}
-        />
+        >
+          <div className="space-y-3">
+            <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3">
+              <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-destructive">
+                <Trash2 className="size-3.5" /> This will be removed
+              </p>
+              <ul className="space-y-1 text-[11px] text-foreground/85">
+                <li>Your GitHub login and profile info in this app</li>
+                <li>The encrypted access token, and its revocation on GitHub</li>
+                <li>Your active session — you'll be signed out</li>
+              </ul>
+            </div>
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+              <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="size-3.5" /> This stays untouched
+              </p>
+              <ul className="space-y-1 text-[11px] text-foreground/85">
+                <li>Every changelog and release note you generated</li>
+                <li>Your version history and any saved edits</li>
+                <li>Other users' accounts and data</li>
+              </ul>
+            </div>
+          </div>
+        </ConfirmDialog>
     </header>
   );
 }
