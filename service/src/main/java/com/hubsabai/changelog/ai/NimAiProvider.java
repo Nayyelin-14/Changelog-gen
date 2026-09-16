@@ -23,7 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.logging.Logger;
@@ -40,7 +44,24 @@ public class NimAiProvider implements AiProvider {
     private static final Map<String, Long> MODEL_BLACKLIST = new ConcurrentHashMap<>();
     private static final long BLACKLIST_TTL_MS = TimeUnit.MINUTES.toMillis(10);
 
+    /**
+     * Last-known health per catalog model, from a live {@code /chat/completions} probe. Used to
+     * hide models the NVIDIA catalog advertises but that don't actually serve chat traffic (they
+     * hang or answer 404/503). Working models are trusted for {@link #PROBE_OK_TTL_MS}; broken ones
+     * are re-probed after {@link #PROBE_BROKEN_TTL_MS} so a recovered model reappears by itself.
+     */
+    private static final Map<String, ModelHealth> MODEL_HEALTH = new ConcurrentHashMap<>();
+    private static final long PROBE_OK_TTL_MS = TimeUnit.HOURS.toMillis(6);
+    private static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
+    private static final int PROBE_CONCURRENCY = 12;
+    private static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(8);
+    private static final Semaphore PROBE_GATE = new Semaphore(PROBE_CONCURRENCY);
+    private static final ExecutorService PROBE_POOL = Executors.newVirtualThreadPerTaskExecutor();
+
+    private record ModelHealth(boolean ok, long checkedAtMillis) {}
+
     private final Client client;
+    private final Client probeClient;
     private final String baseUrl;
     private final String model;
     private final List<String> fallbackModels;
@@ -60,6 +81,10 @@ public class NimAiProvider implements AiProvider {
         this.client = ClientBuilder.newBuilder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(120, TimeUnit.SECONDS)
+                .build();
+        this.probeClient = ClientBuilder.newBuilder()
+                .connectTimeout(Math.min(5, TimeUnit.SECONDS.toSeconds(PROBE_TIMEOUT_MS)), TimeUnit.SECONDS)
+                .readTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .build();
         this.baseUrl = baseUrl;
         this.model = model;
@@ -142,6 +167,7 @@ public class NimAiProvider implements AiProvider {
             try {
                 AiResult result = attempt.apply(candidate);
                 MODEL_BLACKLIST.remove(candidate);
+                MODEL_HEALTH.put(candidate, new ModelHealth(true, System.currentTimeMillis()));
                 return result;
             } catch (AiStreamException e) {
                 if (e.anyOutputEmitted()) throw e;
@@ -170,10 +196,12 @@ public class NimAiProvider implements AiProvider {
         MODEL_BLACKLIST.put(model, System.currentTimeMillis() + BLACKLIST_TTL_MS);
     }
 
-    /** Clears the failure blacklist. Test hook — the map is static across the JVM, so tests must
-     * start from a clean slate instead of inheriting failures from an earlier test method. */
+    /** Clears the failure blacklist and the probe-health cache. Test hook — both maps are static
+     * across the JVM, so tests must start from a clean slate instead of inheriting failures from
+     * an earlier test method. */
     static void resetModelBlacklist() {
         MODEL_BLACKLIST.clear();
+        MODEL_HEALTH.clear();
     }
 
     @Override
@@ -386,26 +414,104 @@ public class NimAiProvider implements AiProvider {
     @Override
     public List<AiModelOption> listModels() {
         String modelsUrl = baseUrl.replace("/chat/completions", "/models");
+        List<NvidiaModelsResponse.NvidiaModel> catalog;
         try {
             Response raw = client.target(modelsUrl)
                     .request(MediaType.APPLICATION_JSON)
                     .header("Authorization", "Bearer " + apiKey)
                     .get();
             NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-return response.dataOrEmpty().stream()
-                    .map(NvidiaModelsResponse.NvidiaModel::getId)
-                    .filter(NimAiProvider::looksLikeChatModel)
-                    .filter(id -> !EXCLUDED_MODELS.contains(id))
-                    .map(id -> new AiModelOption(id, prettifyModelId(id), isRecommended(id)))
-                    .sorted(Comparator.<AiModelOption, Boolean>comparing(m -> m.id().equals(model), Comparator.reverseOrder())
-                            .thenComparingInt(m -> recommendedRank(m.id()))
-                            .thenComparing(AiModelOption::label))
-                    .toList();
+            catalog = response.dataOrEmpty();
         } catch (WebApplicationException e) {
             String body = e.getResponse().readEntity(String.class);
             throw new AiException("Failed to list models: HTTP " + e.getResponse().getStatus() + " — " + body, e);
         } catch (Exception e) {
             throw new AiException("Failed to list models: " + e.getMessage(), e);
+        }
+
+        List<CompletableFuture<AiModelOption>> futures = catalog.stream()
+                .map(NvidiaModelsResponse.NvidiaModel::getId)
+                .filter(NimAiProvider::looksLikeChatModel)
+                .filter(id -> !EXCLUDED_MODELS.contains(id))
+                .map(id -> CompletableFuture.supplyAsync(() -> healthyOption(id), PROBE_POOL))
+                .toList();
+
+        List<AiModelOption> healthy = new ArrayList<>(futures.size());
+        for (CompletableFuture<AiModelOption> future : futures) {
+            try {
+                AiModelOption option = future.join();
+                if (option != null) healthy.add(option);
+            } catch (Exception e) {
+                LOG.fine("Model probe failed unexpectedly: " + e.getMessage());
+            }
+        }
+
+        // Dropdown must only ever offer models that actually answer chat traffic.
+        LOG.info("Model catalog: " + catalog.size() + " listed, " + healthy.size() + " health-checked OK");
+        return healthy.stream()
+                .sorted(Comparator.<AiModelOption, Boolean>comparing(
+                        m -> m.id().equals(model), Comparator.reverseOrder())
+                        .thenComparingInt(m -> recommendedRank(m.id()))
+                        .thenComparing(AiModelOption::label))
+                .toList();
+    }
+
+    /**
+     * Returns the model option only if the model is known to answer chat requests, probing it once
+     * when its cached health has expired. A column of the catalog can advertise models whose serving
+     * endpoint hangs or 404s (Kimi K3 and GLM 5.3-flash hang today) — surfacing them would send every
+     * regenerate into a 120s read-timeout. Probing replicates exactly what generation does (a minimal
+     * chat call) so the dropdown stays in sync with reality.
+     */
+    private AiModelOption healthyOption(String id) {
+        ModelHealth cached = MODEL_HEALTH.get(id);
+        long now = System.currentTimeMillis();
+        if (cached != null) {
+            long ttl = cached.ok() ? PROBE_OK_TTL_MS : PROBE_BROKEN_TTL_MS;
+            if (now - cached.checkedAtMillis() < ttl) {
+                return cached.ok() ? new AiModelOption(id, prettifyModelId(id), isRecommended(id)) : null;
+            }
+        }
+        return probeHealth(id) ? new AiModelOption(id, prettifyModelId(id), isRecommended(id)) : null;
+    }
+
+    private boolean probeHealth(String id) {
+        try {
+            PROBE_GATE.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        boolean ok;
+        try {
+            ok = probeChat(id);
+        } finally {
+            PROBE_GATE.release();
+        }
+        MODEL_HEALTH.put(id, new ModelHealth(ok, System.currentTimeMillis()));
+        return ok;
+    }
+
+    /** Minimal chat call against the real-generation endpoint: 200 = served and healthy; anything
+     * else (404/503, connection error, read-timeout hang) = broken and hidden from the dropdown. */
+    private boolean probeChat(String id) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", id);
+        body.put("messages", List.of(new AiMessage("user", "hi")));
+        body.put("max_tokens", 5);
+        try {
+            String json = MAPPER.writeValueAsString(body);
+            Response response = probeClient.target(baseUrl)
+                    .request(MediaType.APPLICATION_JSON)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .post(Entity.entity(json, MediaType.APPLICATION_JSON));
+            try {
+                return response.getStatus() == 200;
+            } finally {
+                response.close();
+            }
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -442,9 +548,11 @@ return response.dataOrEmpty().stream()
     private static final List<String> RECOMMENDED_MODELS = List.of(
         "meta/llama-3.2-11b-vision-instruct",
         "nvidia/nemotron-3-super-120b-a12b",
+        "meta/muse-glimmer-30b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "openai/gpt-oss-20b",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "nvidia/nemotron-3-ultra-550b-a55b",
-        "meta/muse-glimmer-30b"
+        "nvidia/nemotron-3-ultra-550b-a55b"
     );
 
     private static boolean isRecommended(String id) {

@@ -322,6 +322,9 @@ class NimAiProviderTest {
                 """;
         stubFor(get(urlPathEqualTo("/v1/models"))
                 .willReturn(aResponse().withStatus(200).withBody(modelsResponse)));
+        // Every keepable model must survive its chat probe to be offered.
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
 
         List<AiModelOption> models = provider.listModels();
 
@@ -334,6 +337,36 @@ class NimAiProviderTest {
     }
 
     @Test
+    void modelsEndpointHidesModelsWhoseProbeFails() {
+        String modelsResponse = """
+                {"data":[
+                    {"id":"meta/llama-3.2-11b-vision-instruct"},
+                    {"id":"moonshotai/kimi-k3"},
+                    {"id":"z-ai/glm-5.3-flash"}
+                ]}
+                """;
+        stubFor(get(urlPathEqualTo("/v1/models"))
+                .willReturn(aResponse().withStatus(200).withBody(modelsResponse)));
+        // kimi-k3 and glm-5.3-flash hang on the real endpoint — simulate a non-200 that generation
+        // would treat as a failure so the picker never offers them.
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("meta/llama-3.2-11b-vision-instruct"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("moonshotai/kimi-k3"))
+                .willReturn(aResponse().withStatus(404)));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("z-ai/glm-5.3-flash"))
+                .willReturn(aResponse().withStatus(404)));
+
+        List<AiModelOption> models = provider.listModels();
+
+        assertFalse(models.stream().anyMatch(m -> m.id().contains("kimi-k3")));
+        assertFalse(models.stream().anyMatch(m -> m.id().contains("glm-5.3")));
+        assertTrue(models.stream().anyMatch(m -> m.id().equals("meta/llama-3.2-11b-vision-instruct")));
+    }
+
+    @Test
     void modelsEndpointMarksRecommendedModels() {
         String modelsResponse = """
                 {"data":[
@@ -343,6 +376,8 @@ class NimAiProviderTest {
                 """;
         stubFor(get(urlPathEqualTo("/v1/models"))
                 .willReturn(aResponse().withStatus(200).withBody(modelsResponse)));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
 
         List<AiModelOption> models = provider.listModels();
 
