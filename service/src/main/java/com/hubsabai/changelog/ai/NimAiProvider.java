@@ -55,6 +55,10 @@ public class NimAiProvider implements AiProvider {
     private static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
     private static final int PROBE_CONCURRENCY = 12;
     private static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(8);
+    /** Probing attempts per model. NVIDIA's chat endpoint flaps hard (even healthy models hang on
+     * their first cold request), so a model must fail EVERY attempt before it's hidden — a single
+     * transient hang or 503 must not yank a working model out of the picker. */
+    private static final int PROBE_ATTEMPTS = 2;
     private static final Semaphore PROBE_GATE = new Semaphore(PROBE_CONCURRENCY);
     private static final ExecutorService PROBE_POOL = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -476,17 +480,19 @@ public class NimAiProvider implements AiProvider {
     }
 
     private boolean probeHealth(String id) {
-        try {
-            PROBE_GATE.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
-        boolean ok;
-        try {
-            ok = probeChat(id);
-        } finally {
-            PROBE_GATE.release();
+        boolean ok = false;
+        for (int attempt = 0; attempt < PROBE_ATTEMPTS && !ok; attempt++) {
+            try {
+                PROBE_GATE.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            try {
+                ok = probeChat(id);
+            } finally {
+                PROBE_GATE.release();
+            }
         }
         MODEL_HEALTH.put(id, new ModelHealth(ok, System.currentTimeMillis()));
         return ok;
