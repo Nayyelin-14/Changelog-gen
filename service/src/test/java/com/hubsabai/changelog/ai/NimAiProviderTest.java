@@ -290,12 +290,11 @@ class NimAiProviderTest {
     void modelsEndpointFiltersExcludedAndNonChatModels() {
         String modelsResponse = """
                 {"data":[
-                    {"id":"mistralai/mistral-small-4-119b-2603"},
-                    {"id":"meta/llama-3.1-8b-instruct"},
-                    {"id":"nvidia/nemotron-mini-4b-instruct"},
+                    {"id":"meta/llama-3.2-11b-vision-instruct"},
+                    {"id":"nvidia/nemotron-3-super-120b-a12b"},
                     {"id":"some/embedding-model"},
                     {"id":"some/guard-model"},
-                    {"id":"deepseek-ai/deepseek-v4-flash"},
+                    {"id":"deepseek-ai/deepseek-v4-flash-0731"},
                     {"id":"google/codegemma-1.1-7b"}
                 ]}
                 """;
@@ -304,11 +303,11 @@ class NimAiProviderTest {
 
         List<AiModelOption> models = provider.listModels();
 
-        assertTrue(models.stream().anyMatch(m -> m.id().equals("mistralai/mistral-small-4-119b-2603")));
-        assertTrue(models.stream().anyMatch(m -> m.id().equals("meta/llama-3.1-8b-instruct")));
+        assertTrue(models.stream().anyMatch(m -> m.id().equals("meta/llama-3.2-11b-vision-instruct")));
+        assertTrue(models.stream().anyMatch(m -> m.id().equals("nvidia/nemotron-3-super-120b-a12b")));
         assertFalse(models.stream().anyMatch(m -> m.id().equals("some/embedding-model")));
         assertFalse(models.stream().anyMatch(m -> m.id().equals("some/guard-model")));
-        assertFalse(models.stream().anyMatch(m -> m.id().equals("deepseek-ai/deepseek-v4-flash")));
+        assertFalse(models.stream().anyMatch(m -> m.id().equals("deepseek-ai/deepseek-v4-flash-0731")));
         assertFalse(models.stream().anyMatch(m -> m.id().equals("google/codegemma-1.1-7b")));
     }
 
@@ -316,7 +315,7 @@ class NimAiProviderTest {
     void modelsEndpointMarksRecommendedModels() {
         String modelsResponse = """
                 {"data":[
-                    {"id":"meta/llama-3.1-8b-instruct"},
+                    {"id":"meta/llama-3.2-11b-vision-instruct"},
                     {"id":"unknown/model"}
                 ]}
                 """;
@@ -325,7 +324,7 @@ class NimAiProviderTest {
 
         List<AiModelOption> models = provider.listModels();
 
-        assertTrue(models.stream().filter(m -> m.id().equals("meta/llama-3.1-8b-instruct")).findFirst().get().recommended());
+        assertTrue(models.stream().filter(m -> m.id().equals("meta/llama-3.2-11b-vision-instruct")).findFirst().get().recommended());
         assertFalse(models.stream().filter(m -> m.id().equals("unknown/model")).findFirst().get().recommended());
     }
 

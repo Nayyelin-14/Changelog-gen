@@ -392,7 +392,7 @@ return response.dataOrEmpty().stream()
         "microsoft/phi-3-vision-128k-instruct", "microsoft/phi-3.5-moe-instruct",
         "google/recurrentgemma-2b", "aisingapore/sea-lion-7b-instruct",
         "bigcode/starcoder2-15b", "01-ai/yi-large", "zyphra/zamba2-7b-instruct",
-        "deepseek-ai/deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-flash-0731",
         "microsoft/phi-4-multimodal-instruct", "minimaxai/minimax-m3",
         "z-ai/glm-5.2", "qwen/qwen3.5-397b-a17b", "google/gemma-3n-e2b-it",
         "google/gemma-3n-e4b-it", "nvidia/llama-3.1-nemotron-nano-8b-v1",
@@ -404,11 +404,11 @@ return response.dataOrEmpty().stream()
     );
 
     private static final List<String> RECOMMENDED_MODELS = List.of(
-        "meta/llama-3.1-8b-instruct",
-        "poolside/laguna-xs-2.1",
-        "mistralai/mistral-nemotron",
-        "meta/llama-3.1-70b-instruct",
-        "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+        "meta/llama-3.2-11b-vision-instruct",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "meta/muse-glimmer-30b"
     );
 
     private static boolean isRecommended(String id) {
@@ -428,7 +428,7 @@ return response.dataOrEmpty().stream()
                 || lower.contains("fuyu") || lower.contains("deplot") || lower.contains("gliner")
                 || lower.contains("detector") || lower.contains("parse") || lower.contains("reward")
                 || lower.contains("vila") || lower.contains("neva") || lower.contains("bge")
-                || lower.contains("diffusion")) {
+                || lower.contains("diffusion") || lower.contains("calibration")) {
             return false;
         }
         return true;

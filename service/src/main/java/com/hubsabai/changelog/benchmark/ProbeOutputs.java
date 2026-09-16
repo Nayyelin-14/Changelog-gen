@@ -26,13 +26,13 @@ public final class ProbeOutputs {
         NimAiProvider provider = new NimAiProvider(baseUrl, "probe", apiKey,
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         List<String> models = List.of(
-                "meta/llama-3.1-8b-instruct",
-                "nvidia/nemotron-mini-4b-instruct",
-                "minimaxai/minimax-m3",
-                "poolside/laguna-xs-2.1",
                 "meta/llama-3.2-11b-vision-instruct",
-                "nvidia/llama-3.3-nemotron-super-49b-v1",
-                "thinkingmachines/inkling");
+                "nvidia/nemotron-3-super-120b-a12b",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "meta/muse-glimmer-30b",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "openai/gpt-oss-20b");
         ReleaseData data = ModelBenchmark.sampleRelease();
         for (String model : models) {
             System.out.println("\n======================== " + model + " ========================");

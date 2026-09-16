@@ -262,7 +262,7 @@ GITHUB_TOKEN=your-github-pat        # GitHub provider — needs repo + actions:r
 GITHUB_OWNER=your-github-org-or-user  # GitHub provider — acts as the single "project"
 AI_API_KEY=your-ai-key
 AI_BASE_URL=https://integrate.api.nvidia.com/v1/chat/completions
-AI_MODEL=mistralai/mistral-large-3-675b-instruct-2512
+AI_MODEL=meta/llama-3.2-11b-vision-instruct
 DB_USERNAME=neondb_owner
 DB_PASSWORD=your-db-password
 DB_URL=jdbc:postgresql://your-project-pooler.region.aws.neon.tech/neondb?sslmode=require

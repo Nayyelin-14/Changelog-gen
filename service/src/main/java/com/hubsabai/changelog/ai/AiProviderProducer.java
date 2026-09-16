@@ -14,10 +14,12 @@ public class AiProviderProducer {
     public AiProvider produceAiProvider(
             @ConfigProperty(name = "ai.api-key") Optional<String> apiKey,
             @ConfigProperty(name = "ai.base-url", defaultValue = "https://integrate.api.nvidia.com/v1/chat/completions") String baseUrl,
-            @ConfigProperty(name = "ai.model", defaultValue = "meta/llama-3.1-8b-instruct") String model,
+            @ConfigProperty(name = "ai.model", defaultValue = "meta/llama-3.2-11b-vision-instruct") String model,
             @ConfigProperty(name = "ai.fallback-models",
-                    defaultValue = "poolside/laguna-xs-2.1,mistralai/mistral-nemotron,"
-                            + "meta/llama-3.1-70b-instruct,nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
+                    defaultValue = "nvidia/nemotron-3-super-120b-a12b,"
+                            + "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,"
+                            + "nvidia/nemotron-3-ultra-550b-a55b,"
+                            + "meta/muse-glimmer-30b")
                     Optional<String> fallbackModels,
             @ConfigProperty(name = "ai.prompt.developer") Optional<String> developerPrompt,
             @ConfigProperty(name = "ai.prompt.qa") Optional<String> qaPrompt,
