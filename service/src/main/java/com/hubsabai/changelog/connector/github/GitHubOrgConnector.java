@@ -3,6 +3,7 @@ package com.hubsabai.changelog.connector.github;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hubsabai.changelog.auth.CurrentUser;
 import com.hubsabai.changelog.connector.github.ChangelogMarkdown.ChangelogEntry;
 import com.hubsabai.changelog.connector.github.ChangelogMarkdown.ChangelogFile;
 import com.hubsabai.changelog.connector.github.dto.GitHubBlob;
@@ -26,6 +27,8 @@ import com.hubsabai.changelog.core.model.RepositorySummary;
 import com.hubsabai.changelog.core.model.ReleaseData;
 import com.hubsabai.changelog.generation.RunChangeContext;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.ContextNotActiveException;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -73,6 +76,10 @@ public class GitHubOrgConnector {
     @ConfigProperty(name = "github.token", defaultValue = "CHANGE_ME")
     String token;
 
+    /** The signed-in user (GitHub OAuth), resolved per HTTP request when present. */
+    @Inject
+    Instance<CurrentUser> currentUser;
+
     @Inject
     jakarta.persistence.EntityManager entityManager;
 
@@ -87,7 +94,31 @@ public class GitHubOrgConnector {
     }
 
     private GitHubOrgUser resolveOwner() {
+        // A signed-in user owns their whole dashboard view — the "project" collapses to their own
+        // login, so fall back to the configured owner only for the service account / no-session path.
+        Optional<String> login = userLogin();
+        if (login.isPresent()) {
+            return new GitHubOrgUser(login.get(), login.get(), "https://github.com/" + login.get());
+        }
         return resolveOwnerCached().user();
+    }
+
+    private Optional<String> userLogin() {
+        if (loginProvider() != null) {
+            return loginProvider().login();
+        }
+        return Optional.empty();
+    }
+
+    private CurrentUser loginProvider() {
+        try {
+            if (currentUser.isResolvable() && currentUser.get() != null) {
+                return currentUser.get();
+            }
+        } catch (ContextNotActiveException e) {
+            // No HTTP request context on this thread (e.g. lazy run capture) — no signed-in user.
+        }
+        return null;
     }
 
     private record OwnerCacheEntry(GitHubOrgUser user, long validUntil) { }
@@ -347,7 +378,7 @@ public class GitHubOrgConnector {
     /** All branch short names for a repo, or empty on failure. */
     public List<String> listBranches(String project, String repo) {
         try {
-            List<GitHubBranch> branches = parseList(client.listBranches(owner, repo, 100), GitHubBranch.class);
+            List<GitHubBranch> branches = parseList(client.listBranches(project, repo, 100), GitHubBranch.class);
             return branches.stream().map(GitHubBranch::name).filter(Objects::nonNull).toList();
         } catch (Exception e) {
             LOG.warning("listBranches failed for " + project + "/" + repo + ": " + e);
@@ -946,17 +977,19 @@ public class GitHubOrgConnector {
     }
 
     /** Org-wide fetch for the dashboard's "fetch everything" — GitHub has one owner (the project
-     * tier) whose repos are each a ReleaseData; work items are always empty. */
+     * tier, which is the signed-in user's own login when one is present) whose repos are each a
+     * ReleaseData; work items are always empty. */
     public com.hubsabai.changelog.core.model.OrgFetchResult fetchAll() {
+        String effectiveOwner = userLogin().orElse(owner);
         var ownerSummary = listOwnerAsProject();
         List<com.hubsabai.changelog.core.model.ProjectFetchResult> projects = new ArrayList<>();
         List<com.hubsabai.changelog.core.model.ReleaseData> repos = new ArrayList<>();
-        for (com.hubsabai.changelog.core.model.RepositorySummary r : listRepositories(owner)) {
+        for (com.hubsabai.changelog.core.model.RepositorySummary r : listRepositories(effectiveOwner)) {
             com.hubsabai.changelog.core.model.ReleaseData rd;
             try {
-                rd = fetchRepoChanges(owner, r.name());
+                rd = fetchRepoChanges(effectiveOwner, r.name());
             } catch (Exception e) {
-                LOG.warning("fetchAll skipped " + owner + "/" + r.name() + ": " + e);
+                LOG.warning("fetchAll skipped " + effectiveOwner + "/" + r.name() + ": " + e);
                 rd = null;
             }
             if (rd != null) repos.add(rd);

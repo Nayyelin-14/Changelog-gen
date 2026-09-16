@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Briefcase, ChevronRight, GitBranch, Moon, Sparkles, Sun, Terminal } from 'lucide-react';
+import {
+  Briefcase,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  LogIn,
+  LogOut,
+  Moon,
+  Sparkles,
+  Sun,
+  Terminal,
+  Trash2,
+} from 'lucide-react';
 
+import { useAuth } from '@/api/AuthContext';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { Button } from '@/components/ui/button';
 import { getStoredRole, setStoredRole, type Role } from '@/lib/role';
 import { getStoredProvider, setStoredProvider, type Provider } from '@/lib/provider';
 import { cn } from '@/lib/utils';
@@ -38,7 +53,39 @@ export function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { dark, toggle } = useTheme();
+  const { user, loading, logout, removeAccount } = useAuth();
   const [provider, setProvider] = useState<Provider>(() => getStoredProvider());
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleSignOut() {
+    setAccountMenuOpen(false);
+    try {
+      await logout();
+    } catch {
+      // The dev gate re-renders to /login if the session is already gone server-side; if the
+      // POST failed we simply stay signed in and let the user retry.
+    }
+  }
+
+  async function handleDeleteAccount() {
+    setDeletePending(true);
+    setDeleteError(null);
+    try {
+      await removeAccount();
+      setDeleteOpen(false);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Account deletion failed. Please try again.');
+    } finally {
+      setDeletePending(false);
+    }
+  }
+
+  function goToLogin() {
+    navigate('/login', { replace: true, state: { next: location.pathname } });
+  }
 
   // The URL is the actual source of truth for which role is active (see App.tsx's /dev, /qa,
   // /business route prefixes) — re-derived on every navigation via `location.pathname` as a dep,
@@ -153,6 +200,66 @@ function handleProviderClick(next: Provider) {
           <span className="hidden sm:inline">{provider === 'github' ? 'GitHub' : 'Azure'}</span>
         </button>
 
+        {provider === 'github' && (
+          <div className="flex items-center">
+            {loading ? (
+              <div className="size-7 animate-pulse rounded-full bg-muted" />
+            ) : user ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setAccountMenuOpen((open) => !open)}
+                  className="flex cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1 transition-colors hover:bg-accent"
+                  aria-label="Account menu"
+                  aria-expanded={accountMenuOpen}
+                >
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="" className="size-7 rounded-full" />
+                  ) : (
+                    <span className="flex size-7 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                      {user.login.charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                  <ChevronDown className="size-3.5 text-muted-foreground" />
+                </button>
+
+                {accountMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-20" onClick={() => setAccountMenuOpen(false)} />
+                    <div className="absolute right-0 z-30 mt-2 w-52 overflow-hidden rounded-lg border border-border/60 bg-card shadow-lg">
+                      <div className="border-b border-border/40 px-3 py-2">
+                        <p className="text-xs font-semibold text-foreground">{user.login}</p>
+                        <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSignOut}
+                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-accent"
+                      >
+                        <LogOut className="size-4" /> Sign out
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          setDeleteOpen(true);
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm text-destructive transition-colors hover:bg-accent"
+                      >
+                        <Trash2 className="size-4" /> Delete account
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={goToLogin}>
+                <LogIn className="size-3.5" /> Sign in
+              </Button>
+            )}
+          </div>
+        )}
+
         <button
           type="button"
           onClick={toggle}
@@ -161,7 +268,19 @@ function handleProviderClick(next: Provider) {
         >
           {dark ? <Sun className="size-4.5" /> : <Moon className="size-4.5" />}
         </button>
-      </div>
+        </div>
+
+        <ConfirmDialog
+          open={deleteOpen}
+          title="Delete your account?"
+          description="This removes ONLY the stored sign-in credentials and revokes the GitHub token server-side. Every changelog and version you generated stays right here."
+          confirmLabel="Delete my account"
+          pendingLabel="Deleting…"
+          loading={deletePending}
+          error={deleteError}
+          onConfirm={handleDeleteAccount}
+          onCancel={() => setDeleteOpen(false)}
+        />
     </header>
   );
 }

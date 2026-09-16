@@ -260,6 +260,14 @@ export interface PullRequestDetails {
 
 export type ChangelogAudience = 'developer' | 'qa' | 'business';
 
+/** The signed-in GitHub user (GitHub OAuth). Null/absent = the app acts as the shared service
+ * account. See {@link com.hubsabai.changelog.auth.GitHubAuthResource} on the server. */
+export interface AuthUser {
+  id: number;
+  login: string;
+  avatarUrl: string | null;
+}
+
 /** One turn of a changelog Q&A conversation — the browser is the only place a conversation is
  * kept (see ChangelogChatWidget's localStorage persistence), so every request resends the
  * turns it still has instead of the server holding any chat state. `at` is a display-only
