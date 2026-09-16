@@ -8,5 +8,13 @@ public record ReleaseNoteEntry(
     String title,
     String description,
     Integer prNumber,
-    List<String> workItems
-) {}
+    List<String> workItems,
+    List<String> filePaths,
+    int additions,
+    int deletions
+) {
+    public ReleaseNoteEntry {
+        if (filePaths == null) filePaths = List.of();
+        if (workItems == null) workItems = List.of();
+    }
+}

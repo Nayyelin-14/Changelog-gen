@@ -7,6 +7,7 @@ import io.restassured.RestAssured;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import jakarta.transaction.UserTransaction;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,12 @@ class GitHubAuthResourceTest {
     @Inject
     UserTransaction utx;
 
+    // The effective OAuth client id (service/.env may override the test fixture, so stubs and
+    // redirect assertions must follow whatever the app actually loaded).
+    @Inject
+    @ConfigProperty(name = "github.oauth.client-id")
+    String clientId;
+
     @BeforeEach
     void reset() throws Exception {
         // OAuth redirects (302 to github.com / back to the app base) must be asserted as-is,
@@ -64,7 +71,7 @@ class GitHubAuthResourceTest {
         response.then()
                 .statusCode(302)
                 .header("Location", containsString("/login/oauth/authorize"))
-                .header("Location", containsString("client_id=test-oauth-client"))
+                .header("Location", containsString("client_id=" + clientId))
                 .header("Location", containsString("redirect_uri=" + URLEncoder.encode(
                         "https://test.example.com/api/auth/github/callback", StandardCharsets.UTF_8)))
                 .header("Location", containsString("scope=repo"));
@@ -192,14 +199,14 @@ class GitHubAuthResourceTest {
     @Test
     void deleteAccountRevokesTheTokenClearsSessionsAndKeepsGeneratedContentIntact() {
         String session = loginRoundTrip();
-        WireMockGitHubAuthResource.server().stubFor(delete(urlPathEqualTo("/applications/test-oauth-client/token"))
+        WireMockGitHubAuthResource.server().stubFor(delete(urlPathEqualTo("/applications/" + clientId + "/token"))
                 .withQueryParam("access_token", WireMock.equalTo(ACCESS_TOKEN))
                 .willReturn(aResponse().withStatus(204)));
 
         given().cookie("cc_session", session).when().delete("/api/auth/github/account")
                 .then().statusCode(204);
 
-        WireMockGitHubAuthResource.server().verify(deleteRequestedFor(urlPathEqualTo("/applications/test-oauth-client/token")));
+        WireMockGitHubAuthResource.server().verify(deleteRequestedFor(urlPathEqualTo("/applications/" + clientId + "/token")));
 
         given().cookie("cc_session", session).when().get("/api/auth/me").then().statusCode(401);
         assertEquals(0, GithubUser.count(), "deleting the account removes the credentials");

@@ -15,6 +15,10 @@ public class ChangeItem {
     private String date;
     private List<String> links;
     private List<String> filePaths;
+    /** Total operations this change introduced in the run's diff (additions/deletions), when
+     * known — PR-level aggregate for GitHub runs, per-commit for providers that expose it. */
+    private int additions;
+    private int deletions;
 
     public enum ItemType {
         WORK_ITEM,
@@ -67,4 +71,12 @@ public class ChangeItem {
     @JsonProperty("filePaths")
     public List<String> getFilePaths() { return filePaths; }
     public void setFilePaths(List<String> filePaths) { this.filePaths = filePaths; }
+
+    @JsonProperty("additions")
+    public int getAdditions() { return additions; }
+    public void setAdditions(int additions) { this.additions = additions; }
+
+    @JsonProperty("deletions")
+    public int getDeletions() { return deletions; }
+    public void setDeletions(int deletions) { this.deletions = deletions; }
 }

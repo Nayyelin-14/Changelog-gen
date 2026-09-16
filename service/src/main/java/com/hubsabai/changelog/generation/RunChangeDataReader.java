@@ -21,6 +21,19 @@ public class RunChangeDataReader {
     public ReleaseData toReleaseData(String project, String repo, String branch, String org, RunChangeContext context) {
         List<ChangeItem> items = new ArrayList<>();
 
+        int additions = 0;
+        int deletions = 0;
+        List<String> filePaths = new ArrayList<>();
+        if (context.getFiles() != null) {
+            for (RunChangeContext.FileChangeInfo file : context.getFiles()) {
+                additions += file.getAdditions();
+                deletions += file.getDeletions();
+                if (file.getPath() != null) {
+                    filePaths.add(file.getPath());
+                }
+            }
+        }
+
         if (context.getPrs() != null && !context.getPrs().isEmpty()) {
             for (RunChangeContext.PrInfo pr : context.getPrs()) {
                 ChangeItem item = new ChangeItem();
@@ -34,7 +47,12 @@ public class RunChangeDataReader {
                 item.setRepo(repo);
                 item.setDate(pr.getUpdatedAt());
                 item.setLinks(pr.getUrl() != null ? List.of(pr.getUrl()) : List.of());
-                item.setFilePaths(List.of());
+                item.setFilePaths(filePaths);
+                // The PR aggregates the whole run's diff — carry its touched files and total
+                // operations through so the AI sees how big the change was even when no
+                // per-commit stats exist.
+                item.setAdditions(additions);
+                item.setDeletions(deletions);
                 items.add(item);
             }
         }

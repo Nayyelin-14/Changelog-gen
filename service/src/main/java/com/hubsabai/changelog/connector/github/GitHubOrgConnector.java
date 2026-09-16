@@ -1052,8 +1052,12 @@ public class GitHubOrgConnector {
             }
         } else {
             // schedule / dynamic / push-triggered runs don't carry PR refs, but the head commit may
-            // still be a merge commit of a merged PR — resolve it the same way fetchRunChanges does.
+            // still be a merge commit of a merged PR — resolve it the same way fetchRunChanges does,
+            // then fall back to asking GitHub which PR the head commit belongs to.
             RunChangeContext.PrInfo prInfo = findPrByMergeCommit(effectiveOwner, repo, run.headSha());
+            if (prInfo == null) {
+                prInfo = findPrByRunHead(effectiveOwner, repo, run.headSha());
+            }
             if (prInfo != null) {
                 ctx.setPr(prInfo);
             }
@@ -1274,8 +1278,12 @@ public class GitHubOrgConnector {
                 }
             }
         } else {
-            // Same fallback as fetchRunContext for schedule/push/dynamic-triggered runs.
+            // Same fallback as fetchRunContext for schedule/push/dynamic-triggered runs,
+            // plus head-commit resolution when the run head isn't a merge commit.
             RunChangeContext.PrInfo prInfo = findPrByMergeCommit(effectiveOwner, repo, headSha);
+            if (prInfo == null) {
+                prInfo = findPrByRunHead(effectiveOwner, repo, headSha);
+            }
             if (prInfo != null) {
                 context.getPrs().add(prInfo);
             }
@@ -1332,21 +1340,54 @@ public class GitHubOrgConnector {
             List<GitHubPullRequest> prs = fetchClosedPrsCached(project, repo, defaultBranch(project, repo));
             for (GitHubPullRequest pr : prs) {
                 if (pr.mergeCommitSha() != null && sha.equals(pr.mergeCommitSha()) && pr.mergedAt() != null) {
-                    RunChangeContext.PrInfo info = new RunChangeContext.PrInfo();
-                    info.setId(String.valueOf(pr.number()));
-                    info.setTitle(pr.title());
-                    info.setDescription(pr.body());
-                    info.setAuthor(pr.user() != null ? pr.user().login() : null);
-                    info.setState(pr.state());
-                    info.setUrl(pr.htmlUrl());
-                    info.setUpdatedAt(pr.mergedAt() != null ? pr.mergedAt() : pr.createdAt());
-                    return info;
+                    return toPrInfo(pr);
                 }
             }
         } catch (Exception e) {
             LOG.warning("GitHub PR resolution by merge commit failed for " + project + "/" + repo + ": " + e);
         }
         return null;
+    }
+
+    /**
+     * Resolves the PR behind a workflow run by its head commit — the run's {@code head } for a
+     * {@code pull_request}-triggered run is the PR's own head commit, so {@code
+     * /commits/{sha}/pulls} names the PR even when the run carries no {@code pull_requests} refs
+     * and the head isn't a merge commit. Prefers a merged PR, else the newest one touching the
+     * commit.
+     */
+    private RunChangeContext.PrInfo findPrByRunHead(String project, String repo, String sha) {
+        if (sha == null || sha.isBlank()) return null;
+        try {
+            List<GitHubPullRequest> prs = fetch(() -> parseList(client.listPullRequestsForCommit(project, repo, sha), GitHubPullRequest.class));
+            GitHubPullRequest best = null;
+            for (GitHubPullRequest pr : prs) {
+                if (pr.mergedAt() != null) {
+                    best = pr;
+                    break;
+                }
+                if (best == null || pr.createdAt() != null
+                        && (best.createdAt() == null || pr.createdAt().compareTo(best.createdAt()) > 0)) {
+                    best = pr;
+                }
+            }
+            return best == null ? null : toPrInfo(best);
+        } catch (Exception e) {
+            LOG.warning("GitHub PR resolution by head commit failed for " + project + "/" + repo + ": " + e);
+            return null;
+        }
+    }
+
+    private static RunChangeContext.PrInfo toPrInfo(GitHubPullRequest pr) {
+        RunChangeContext.PrInfo info = new RunChangeContext.PrInfo();
+        info.setId(String.valueOf(pr.number()));
+        info.setTitle(pr.title());
+        info.setDescription(pr.body());
+        info.setAuthor(pr.user() != null ? pr.user().login() : null);
+        info.setState(pr.state());
+        info.setUrl(pr.htmlUrl());
+        info.setUpdatedAt(pr.mergedAt() != null ? pr.mergedAt() : pr.createdAt());
+        return info;
     }
 
     /** Helper to fetch a single workflow run. */

@@ -41,7 +41,9 @@ public final class ReleaseNotePreparer {
         String description = cleanDescription(item.getDescription());
         Integer prNumber = extractPrNumber(item);
         List<String> workItems = extractWorkItems(item);
-        return new ReleaseNoteEntry(type, scope, title, description, prNumber, workItems);
+        return new ReleaseNoteEntry(type, scope, title, description, prNumber, workItems,
+                item.getFilePaths() != null ? item.getFilePaths() : List.of(),
+                item.getAdditions(), item.getDeletions());
     }
 
     /**

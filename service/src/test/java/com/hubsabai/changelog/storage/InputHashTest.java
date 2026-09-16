@@ -43,7 +43,7 @@ class InputHashTest {
 
     @Test
     void nullFieldsAreHandled() {
-        ReleaseNoteEntry entry = new ReleaseNoteEntry(null, null, null, null, null, null);
+        ReleaseNoteEntry entry = new ReleaseNoteEntry(null, null, null, null, null, null, null, 0, 0);
 
         String hash = InputHash.of(List.of(entry));
         assertNotNull(hash);
@@ -74,6 +74,6 @@ class InputHashTest {
 
     private static ReleaseNoteEntry entry(String type, String scope, String title, String description,
             Integer prNumber, List<String> workItems) {
-        return new ReleaseNoteEntry(type, scope, title, description, prNumber, workItems);
+        return new ReleaseNoteEntry(type, scope, title, description, prNumber, workItems, null, 0, 0);
     }
 }

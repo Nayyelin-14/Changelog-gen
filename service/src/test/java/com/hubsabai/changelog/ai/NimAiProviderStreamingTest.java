@@ -28,6 +28,7 @@ class NimAiProviderStreamingTest {
     @BeforeEach
     void setUp() {
         configureFor("localhost", wiremock.getPort());
+        NimAiProvider.resetModelBlacklist();
         provider = new NimAiProvider(
                 wiremock.url("/v1/chat/completions"),
                 "test-primary-model",

@@ -28,6 +28,7 @@ class NimAiProviderTest {
     @BeforeEach
     void setUp() {
         configureFor("localhost", wiremock.getPort());
+        NimAiProvider.resetModelBlacklist();
         provider = new NimAiProvider(
                 wiremock.url("/v1/chat/completions"),
                 "test-primary-model",
@@ -115,6 +116,27 @@ class NimAiProviderTest {
         AiResult result = provider.generateForAudience(items, release, "developer", "override-model", null);
 
         assertEquals("From default model.", result.getText());
+    }
+
+    @Test
+    void skipsRecentlyFailedOverrideOnSecondCall() {
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("override-model"))
+                .willReturn(aResponse().withStatus(500)));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("test-primary-model"))
+                .willReturn(aResponse().withStatus(200).withBody(jsonResponse("From default model."))));
+
+        // First call: override fails, default succeeds, override gets blacklisted.
+        provider.generateForAudience(items, release, "developer", "override-model", null);
+
+        // Second call: the overridden (still-broken) model must be skipped, not re-hit.
+        AiResult result = provider.generateForAudience(items, release, "developer", "override-model", null);
+
+        assertEquals("From default model.", result.getText());
+        int overrideHits = wiremock.countRequestsMatching(postRequestedFor(urlPathEqualTo("/v1/chat/completions"))
+                .withRequestBody(containing("override-model")).build()).getCount();
+        assertEquals(1, overrideHits);
     }
 
     @Test

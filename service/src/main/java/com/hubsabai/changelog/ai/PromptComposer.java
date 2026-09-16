@@ -269,6 +269,12 @@ public final class PromptComposer {
                 }
                 sb.append("\n");
             }
+            if (entry.filePaths() != null && !entry.filePaths().isEmpty()) {
+                sb.append("Files: ").append(String.join(", ", entry.filePaths())).append("\n");
+            }
+            if (entry.additions() > 0 || entry.deletions() > 0) {
+                sb.append("Diff: +").append(entry.additions()).append("/-").append(entry.deletions()).append("\n");
+            }
             sb.append("\n");
         }
 

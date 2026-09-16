@@ -187,6 +187,64 @@ class GitHubOrgConnectorTest {
     }
 
     @Test
+    void shouldResolvePrFromRunHeadWhenRunCarriesNoPrRefs() {
+        // A pull_request/push run whose pull_requests[] is empty and whose head isn't a merge
+        // commit: the PR must still be recovered via /commits/{sha}/pulls so the build context
+        // shows the PR instead of "only commits".
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/actions/runs/999999"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"id":999999,"run_number":27,"status":"completed","conclusion":"success",
+                                 "created_at":"2026-09-16T10:00:00Z","updated_at":"2026-09-16T10:01:00Z",
+                                 "run_started_at":"2026-09-16T10:00:00Z","completed_at":"2026-09-16T10:01:00Z",
+                                 "head_branch":"feat/oauth","head_sha":"featabc","event":"push",
+                                 "pull_requests":[],"workflow_id":1,"name":"CI Pipeline",
+                                 "head_commit":{"id":"featabc","message":"feat: add the gadget",
+                                   "author":{"name":"bob","email":"bob@x"}}}""")));
+        // Head commit has no parents -> single-commit path (no merge, no compare).
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/commits/featabc"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"sha":"featabc",
+                                 "commit":{"author":{"name":"bob","date":"2026-09-16T10:00:00Z"},
+                                   "committer":{"name":"bob","date":"2026-09-16T10:00:00Z"},
+                                   "message":"feat: add the gadget"},
+                                 "parents":[],"tree":{"sha":"treesha"},
+                                 "files":[{"filename":"src/gadget.ts"}]}""")));
+        // Merge-commit resolution finds nothing (no closed PRs on main match).
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/pulls"))
+                .withQueryParam("state", equalTo("closed"))
+                .withQueryParam("base", equalTo("main"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("[]")));
+        // ... so the head-commit lookup recovers the PR.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/commits/featabc/pulls"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                [{"number":7,"title":"Add the gadget","body":"Does the gadget",
+                                  "state":"closed","merged_at":"2026-09-16T10:01:00Z","created_at":"2026-09-15T09:00:00Z",
+                                  "html_url":"https://github.com/test-owner/repo-one/pull/7",
+                                  "merge_commit_sha":"zzz","user":{"login":"bob"},
+                                  "base":{"ref":"main"}}]""")));
+
+        RunChangeContext ctx = connector.fetchRunContext("test-owner", "repo-one", 999999);
+
+        assertEquals(1, ctx.getPrs().size());
+        assertEquals("7", ctx.getPrs().get(0).getId());
+        assertEquals("Add the gadget", ctx.getPrs().get(0).getTitle());
+        assertEquals("bob", ctx.getPrs().get(0).getAuthor());
+        assertEquals(1, ctx.getCommits().size());
+    }
+
+    @Test
     void shouldSwapMergeCommitForPullRequest() {
         // The merged PR's merge_commit_sha matches a commit in the compare payload, so the raw
         // merge commit becomes the PR's richer ChangeItem.

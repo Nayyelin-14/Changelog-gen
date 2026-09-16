@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.logging.Logger;
@@ -32,6 +33,12 @@ public class NimAiProvider implements AiProvider {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     private static final Logger LOG = Logger.getLogger(NimAiProvider.class.getName());
+
+    /** Models whose last call failed without producing output; blocked for {@link #BLACKLIST_TTL_MS}
+     * so a hung/failing endpoint (e.g. a catalog model that never answers) doesn't burn a full
+     * read-timeout on every regenerate. Self-healing: a later success clears the entry. */
+    private static final Map<String, Long> MODEL_BLACKLIST = new ConcurrentHashMap<>();
+    private static final long BLACKLIST_TTL_MS = TimeUnit.MINUTES.toMillis(10);
 
     private final Client client;
     private final String baseUrl;
@@ -118,17 +125,31 @@ public class NimAiProvider implements AiProvider {
         if (!activeModel.equals(model)) chain.add(model);
         chain.addAll(fallbackModels);
 
+        long now = System.currentTimeMillis();
+        List<String> usable = chain.stream().filter(c -> !isBlacklisted(c, now)).toList();
+        // If every candidate is blacklisted there is nothing left to try — fall through to the
+        // full chain and let a real attempt happen (maybe the model recovered between checks).
+        if (usable.isEmpty()) usable = chain;
+
         Exception lastError = null;
         for (int i = 0; i < chain.size(); i++) {
             String candidate = chain.get(i);
+            if (!usable.contains(candidate)) {
+                LOG.info("Skipping blacklisted model " + candidate + " for " + context
+                        + " (temporarily failing) — using fallbacks");
+                continue;
+            }
             try {
-                return attempt.apply(candidate);
+                AiResult result = attempt.apply(candidate);
+                MODEL_BLACKLIST.remove(candidate);
+                return result;
             } catch (AiStreamException e) {
                 if (e.anyOutputEmitted()) throw e;
                 lastError = e;
             } catch (Exception e) {
                 lastError = e;
             }
+            blacklist(candidate);
             boolean isLast = i == chain.size() - 1;
             if (!isLast) {
                 LOG.warning("Model " + candidate + " failed for " + context + " (" + lastError.getMessage()
@@ -138,6 +159,21 @@ public class NimAiProvider implements AiProvider {
         throw lastError instanceof AiException aiException ? aiException
                 : new AiException("LLM call failed (" + context + "): all " + chain.size()
                         + " models in the chain failed. Last error: " + lastError.getMessage(), lastError);
+    }
+
+    private static boolean isBlacklisted(String model, long now) {
+        Long blockedUntil = MODEL_BLACKLIST.get(model);
+        return blockedUntil != null && blockedUntil > now;
+    }
+
+    private static void blacklist(String model) {
+        MODEL_BLACKLIST.put(model, System.currentTimeMillis() + BLACKLIST_TTL_MS);
+    }
+
+    /** Clears the failure blacklist. Test hook — the map is static across the JVM, so tests must
+     * start from a clean slate instead of inheriting failures from an earlier test method. */
+    static void resetModelBlacklist() {
+        MODEL_BLACKLIST.clear();
     }
 
     @Override
