@@ -1,5 +1,6 @@
 import { apiClient } from './client';
 import { providerApiBase, getStoredProvider } from '../lib/provider';
+import { getStoredAiProvider } from '../lib/aiProvider';
 import { readSseEvents, type GenerateStreamCallbacks } from './sse';
 import type { GenerateResult, ChangelogAudience } from './types';
 
@@ -7,6 +8,7 @@ export async function generateChangelog(
   project: string,
   repo: string,
   model?: string,
+  provider?: string,
   version?: string,
   branch?: string,
   fromVersion?: string,
@@ -18,6 +20,7 @@ export async function generateChangelog(
 ): Promise<GenerateResult> {
   const params: Record<string, string | boolean | number | undefined> = {
     model,
+    provider: provider || getStoredAiProvider(),
     branch,
     version,
     fromVersion,
@@ -67,6 +70,7 @@ export async function generateChangelogStream(
   repo: string,
   callbacks: GenerateStreamCallbacks,
   model?: string,
+  provider?: string,
   version?: string,
   branch?: string,
   fromVersion?: string,
@@ -85,7 +89,16 @@ export async function generateChangelogStream(
     response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, version, branch, fromVersion, manualText, force: !!force, buildId }),
+      body: JSON.stringify({
+        model,
+        provider: provider || getStoredAiProvider(),
+        version,
+        branch,
+        fromVersion,
+        manualText,
+        force: !!force,
+        buildId,
+      }),
       signal,
     });
   } catch (e) {

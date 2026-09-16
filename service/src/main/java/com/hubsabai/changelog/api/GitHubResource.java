@@ -6,7 +6,8 @@ import com.hubsabai.changelog.ai.AiException;
 import com.hubsabai.changelog.ai.AiMessage;
 import com.hubsabai.changelog.ai.AiModelCatalog;
 import com.hubsabai.changelog.ai.AiModelOption;
-import com.hubsabai.changelog.ai.AiProvider;
+import com.hubsabai.changelog.ai.AiProviderInfo;
+import com.hubsabai.changelog.ai.AiProviderRegistry;
 import com.hubsabai.changelog.ai.AiResult;
 import com.hubsabai.changelog.ai.AiStreamException;
 import com.hubsabai.changelog.ai.AiUsage;
@@ -98,7 +99,7 @@ public class GitHubResource {
     GitHubOrgConnector orgConnector;
 
     @Inject
-    AiProvider aiProvider;
+    AiProviderRegistry aiProviderRegistry;
 
     @Inject
     ChangelogCacheService cacheService;
@@ -626,6 +627,7 @@ public class GitHubResource {
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             @QueryParam("model") String model,
+            @QueryParam("provider") String provider,
             @QueryParam("fromVersion") String fromVersion,
             @QueryParam("version") String version,
             @QueryParam("branch") String branch,
@@ -678,7 +680,7 @@ public class GitHubResource {
         if (audience != null && !audience.isBlank()) {
             boolean wasCached = !force && version != null && !version.isBlank()
                     && cacheService.getCurrent(project, repo, version, audience, inputHash).isPresent();
-            AiResult result = generationService.ensureAudience(project, repo, version, audience, model, true, data, inputHash, force, effectiveCommit, new HashMap<>());
+            AiResult result = generationService.ensureAudience(project, repo, version, provider, audience, model, true, data, inputHash, force, effectiveCommit, new HashMap<>());
             long durationMs = System.currentTimeMillis() - start;
             return new GenerateResponse(
                     "developer".equals(audience) ? result.getText() : null,
@@ -688,9 +690,9 @@ public class GitHubResource {
         }
 
         Map<String, AiResult> computed = new HashMap<>();
-        AiResult developerResult = generationService.ensureAudience(project, repo, version, "developer", model, true, data, inputHash, false, true, computed);
-        AiResult qaResult = generationService.ensureAudience(project, repo, version, "qa", model, true, data, inputHash, false, true, computed);
-        AiResult businessResult = generationService.ensureAudience(project, repo, version, "business", model, true, data, inputHash, false, true, computed);
+        AiResult developerResult = generationService.ensureAudience(project, repo, version, provider, "developer", model, true, data, inputHash, false, true, computed);
+        AiResult qaResult = generationService.ensureAudience(project, repo, version, provider, "qa", model, true, data, inputHash, false, true, computed);
+        AiResult businessResult = generationService.ensureAudience(project, repo, version, provider, "business", model, true, data, inputHash, false, true, computed);
         long durationMs = System.currentTimeMillis() - start;
         List<AiUsage> usage = Stream.of(developerResult, qaResult, businessResult)
                 .map(AiResult::getUsage)
@@ -718,6 +720,7 @@ public class GitHubResource {
             }
         }
         String model = request.getModel();
+        String provider = request.getProvider();
         String fromVersion = request.getFromVersion();
         String version = request.getVersion();
         String branch = request.getBranch();
@@ -770,7 +773,7 @@ public class GitHubResource {
             Map<String, AiResult> computed = new HashMap<>();
             for (String aud : List.of("developer")) {
                 try {
-                    AiResult result = generationService.ensureAudience(project, repo, version, aud, model, true, finalData, inputHash, force, false, computed);
+                    AiResult result = generationService.ensureAudience(project, repo, version, provider, aud, model, true, finalData, inputHash, force, false, computed);
                     AiUsage usage = result.getUsage();
                     if (usage != null) {
                         totalTokens += usage.getTotalTokens();
@@ -1116,10 +1119,16 @@ public class GitHubResource {
     // --- AI model list (shared) ---
 
     @GET
+    @Path("/ai/providers")
+    public List<AiProviderInfo> listAiProviders() {
+        return aiProviderRegistry.list();
+    }
+
+    @GET
     @Path("/ai/models")
-    public List<AiModelOption> listAiModels() {
+    public List<AiModelOption> listAiModels(@QueryParam("provider") String provider) {
         try {
-            List<AiModelOption> live = aiProvider.listModels();
+            List<AiModelOption> live = aiProviderRegistry.resolve(provider).listModels();
             return live.isEmpty() ? AiModelCatalog.FREE_MODELS : live;
         } catch (Exception e) {
             return AiModelCatalog.FREE_MODELS;

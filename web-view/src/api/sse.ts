@@ -1,4 +1,5 @@
 import { providerApiBase, getStoredProvider } from '../lib/provider';
+import { getStoredAiProvider } from '../lib/aiProvider';
 import type { AiUsage, ChatTurn, PreviewAudience } from './types';
 
 /** Shared by every SSE endpoint this client reads (`generate-stream`, `changelog-chat/stream`)
@@ -55,8 +56,9 @@ export async function sendChangelogChatMessageStream(
   history: ChatTurn[],
   callbacks: ChatStreamCallbacks,
   signal: AbortSignal,
+  provider?: string,
 ): Promise<void> {
-  const params = new URLSearchParams({ audience, version });
+  const params = new URLSearchParams({ audience, version, provider: provider || getStoredAiProvider() });
   const url = `${providerApiBase(getStoredProvider())}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-chat/stream?${params}`;
 
   let response: Response;

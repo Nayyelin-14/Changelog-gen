@@ -20,7 +20,7 @@ AI-assisted tool that turns Azure DevOps **or GitHub** activity into audience-sp
 | Backend | Java 25 + Quarkus 3.37.1 | REST API, Azure DevOps + GitHub ingestion, AI generation, Postgres caching |
 | Frontend | React 19 + TypeScript 6 + Vite 8 + Tailwind CSS 4 + shadcn/ui | Dashboard SPA |
 | Source control | Azure DevOps REST API (v7.1) **and** GitHub REST API | Provider chosen in the UI header (stored in localStorage); each has its own connector |
-| LLM provider | NVIDIA NIM (OpenAI-compatible) | Configurable model + fallback chain |
+| LLM provider | OpenAI-compatible, multi-provider | Default NVIDIA NIM; Gemini/Groq/OpenRouter/Together addable via `ai.providers.<id>.*` env keys, each with its own model + fallback chain |
 | Storage | PostgreSQL (Neon) + Flyway + Hibernate Panache | `generated_changelog` table with input-hash staleness detection |
 | Build | Maven (quarkus-maven-plugin) + npm (Vite) | |
 
@@ -68,7 +68,7 @@ changelog-composer/
 | `connector.github` | GitHub mirror of dashboard-mode discovery: `GitHubOrgConnector` (the configured owner acts as the single "project"; workflow runs map to builds; tags + Compare API replace Azure's commit-scan), `GitHubOrgRestClient`, `GitHubOrgAuthFilter` (injects `github.token`), `ChangelogMarkdown`. Push is branch + PR via the Git Data API. |
 | `connector.azuredevops.dto` | Azure DevOps wire DTOs — commits/repos/work-items plus PR/push types (`CreatePullRequestRequest`, `GitPushRequest`, `GitRef`, `RefUpdate`, `RefUpdateResult`, `PullRequestResponse`). |
 | `core.model` | `ChangeItem` (single change), `ReleaseData` (release scope + items), `ProjectSummary`, `RepositorySummary`, `OrgFetchResult`, `PrReference` (extracts PR number references from commit messages). |
-| `ai` | `NimAiProvider` — calls NVIDIA NIM `/chat/completions` with configurable model + up to 4 fallback models, temperature 0.3, per-audience prompts. Supports `generateStream` (SSE) and `generateForAudienceStrict` (no fallback, used by benchmark). `AiBenchmarkResource` at `POST /api/ai/models/bench` runs N trials per model and reports success rate + latency percentiles. |
+| `ai` | `NimAiProvider` — one instance per configured provider, each calling its own OpenAI-compatible `/chat/completions` endpoint with configurable model + fallback chain, temperature 0.3, per-audience prompts. `AiProviderRegistry` builds providers from config: `nvidia` always exists (legacy `ai.api-key`/`ai.base-url`/`ai.model`), extra providers (`gemini`, `groq`, `openrouter`, `together`, …) come from `ai.providers=<ids>` + `ai.providers.<id>.base-url` + `ai.providers.<id>.api-key` + optional `model`/`fallback-models`/`prompt.*`. A provider with no key is hidden from the UI. Supports `generateStream` (SSE) and `generateForAudienceStrict` (no fallback, used by benchmark). `AiBenchmarkResource` at `POST /api/ai/models/bench` runs N trials per model (accepting `provider`) and reports success rate + latency percentiles + token usage. |
 | `storage` | `ChangelogCacheService` — Postgres-backed, keyed by `(project, repo, version, audience)`. Each row holds both a `current_*` and a `previous_*` slot (text/source/model/inputHash/editedBy/at), so `restorePrevious` can swap them back atomically — restoring twice returns to the original state. `current_source` is `"ai"`, `"edit"`, or `"import"` (a version's text copied straight from the repo's `CHANGELOG.md`, never generated/edited here — see `GET /history`). `InputHash` computes SHA-256 of change items; cache returns hit only if hashes match (detects content changes within the same version string). Atomic upsert via `INSERT ... ON CONFLICT DO UPDATE`. `RawReleaseService`/`RawRelease`/`ReleasePr` — raw facts + a PR→release index the pipeline reports via `/pipeline/generate` (see below). `RecordedRunService`/`RecordedPipelineRun` — a per-provider workflow-run snapshot store (`provider, project, repo, build_id`), written eagerly by `/api/github/pipeline/generate` or lazily by the dashboard, so stored run data is never re-fetched from GitHub. |
 | `api` | `PipelineResource` (`POST /api/pipeline/generate`, `@PipelineAuth` Bearer token — raw ingestion only, no AI, no auth for other endpoints), `AzureDevOpsResource` (all dashboard CRUD + generation + edit/restore/push, no auth), `GitHubResource` (same dashboard surface mounted at `/api/github`), `GitHubPipelineResource` (`POST /api/github/pipeline/generate`, same auth gate), `PipelineRunResource` (provider-agnostic recorded-run reads at `/api/pipeline/runs`), `AiBenchmarkResource`. |
 
@@ -108,7 +108,8 @@ All at `/api`. No spec doc currently exists in-repo (the endpoints below are the
 | `GET` | `/projects/{project}/repos/{repo}/has-changelog` | None | Check if CHANGELOG.md exists in the repo |
 | `POST` | `/projects/{project}/repos/{repo}/generate` | None | On-demand generation for any audience |
 | `POST` | `/projects/{project}/repos/{repo}/generate-stream` | None | SSE streaming generation (emits `audience`/`error`/`done` events) |
-| `GET` | `/ai/models` | None | Live model list from NVIDIA (filtered, sorted) |
+| `GET` | `/ai/providers` | None | Enabled AI providers (admin has configured an API key for each) |
+| `GET` | `/ai/models` | None | Live model list for a provider (`provider` query param, default `nvidia`) — filtered + health-probed, never a hardcoded list |
 | `POST` | `/ai/models/bench` | None | Benchmark models against real release data |
 | `GET` | `/fetch-all` | None | Walk entire org, return all projects/repos/items |
 

@@ -5,6 +5,7 @@ import {
   getChangelogText,
   listAiModels,
 } from "@/api/client";
+import { getStoredAiProvider } from "@/lib/aiProvider";
 import type { GenerationRecord } from "@/api/types";
 import { DEVELOPER_TAB, GENERATED_TABS } from "@/lib/historyTabs";
 import type { GeneratedAudience, GeneratedContent, GeneratedMeta } from "@/lib/historyTabs";
@@ -49,8 +50,9 @@ export function useChangelogState(
   const [developerOverrides, setDeveloperOverrides] = useState<Record<string, string>>({});
 
   const models = useQuery(
-    useCallback(() => listAiModels(), []),
+    useCallback(() => listAiModels(getStoredAiProvider()), []),
     [],
+    { cacheKey: `ai-models-${getStoredAiProvider()}` },
   );
   useEffect(() => {
     if (models.status === "success" && models.data.length > 0 && !model) {

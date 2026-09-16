@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { commitChangelog, generateChangelog } from "@/api/client";
+import { getStoredAiProvider } from "@/lib/aiProvider";
 import type { EditableTab, GeneratedMeta } from "./useChangelogState";
 import { TAB_LABELS } from "./useChangelogState";
 
@@ -56,6 +57,7 @@ export function useChangelogGeneration(
           project,
           repo,
           model,
+          getStoredAiProvider(),
           selectedEntry.version ?? undefined,
           selectedEntry.branch ?? undefined,
           undefined,

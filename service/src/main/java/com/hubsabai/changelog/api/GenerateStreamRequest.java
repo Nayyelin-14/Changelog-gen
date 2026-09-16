@@ -9,6 +9,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public class GenerateStreamRequest {
 
     private String model;
+    private String provider;
     private String fromVersion;
     private String version;
     private String branch;
@@ -21,6 +22,10 @@ public class GenerateStreamRequest {
     @JsonProperty("model")
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
+
+    @JsonProperty("provider")
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
 
     @JsonProperty("buildId")
     public Long getBuildId() { return buildId; }

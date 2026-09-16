@@ -1,6 +1,7 @@
 package com.hubsabai.changelog.generation;
 
 import com.hubsabai.changelog.ai.AiProvider;
+import com.hubsabai.changelog.ai.AiProviderRegistry;
 import com.hubsabai.changelog.ai.AiResult;
 import com.hubsabai.changelog.core.model.ChangeItem;
 import com.hubsabai.changelog.core.model.ReleaseData;
@@ -27,7 +28,7 @@ import java.util.Optional;
 public class ChangelogGenerationService {
 
     @Inject
-    AiProvider aiProvider;
+    AiProviderRegistry registry;
 
     @Inject
     ChangelogCacheService cacheService;
@@ -38,8 +39,9 @@ public class ChangelogGenerationService {
     @Inject
     RawReleaseService rawReleaseService;
 
-    /** Generate one audience, honoring the cache unless {@code force}. Persists when {@code commit}. */
-    public AiResult ensureAudience(String project, String repo, String version, String audience,
+    /** Generate one audience, honoring the cache unless {@code force}. Persists when {@code commit}.
+     * {@code provider} selects which AI backend handles the call; blank/null means the default. */
+    public AiResult ensureAudience(String project, String repo, String version, String provider, String audience,
             String model, boolean strict, ReleaseData data, String inputHash, boolean force, boolean commit,
             Map<String, AiResult> computed) {
         if (computed.containsKey(audience)) {
@@ -53,13 +55,14 @@ public class ChangelogGenerationService {
                 return cached;
             }
         }
+        AiProvider aiProvider = registry.resolve(provider);
         List<ChangeItem> items = data.getItems();
         if (!"developer".equals(audience)) {
-            AiResult developer = ensureAudience(project, repo, version, "developer", model, strict, data, inputHash, false, commit, computed);
+            AiResult developer = ensureAudience(project, repo, version, provider, "developer", model, strict, data, inputHash, false, commit, computed);
             items = withContext(items, project, repo, "developer", developer.getText());
         }
         if ("business".equals(audience)) {
-            AiResult qa = ensureAudience(project, repo, version, "qa", model, strict, data, inputHash, false, commit, computed);
+            AiResult qa = ensureAudience(project, repo, version, provider, "qa", model, strict, data, inputHash, false, commit, computed);
             items = withContext(items, project, repo, "qa", qa.getText());
         }
         AiResult result = strict
@@ -75,6 +78,13 @@ public class ChangelogGenerationService {
         return result;
     }
 
+    /** Back-compat call that uses the default provider. */
+    public AiResult ensureAudience(String project, String repo, String version, String audience,
+            String model, boolean strict, ReleaseData data, String inputHash, boolean force, boolean commit,
+            Map<String, AiResult> computed) {
+        return ensureAudience(project, repo, version, null, audience, model, strict, data, inputHash, force, commit, computed);
+    }
+
     /** Whether the current cached entry for (version, audience, hash) exists — for "wasCached" flags. */
     public boolean isCached(String project, String repo, String version, String audience, String inputHash) {
         return cacheService.getCurrent(project, repo, version, audience, inputHash).isPresent();
@@ -84,9 +94,9 @@ public class ChangelogGenerationService {
     public AiResult[] generateAll(String project, String repo, String version, String model,
             ReleaseData data, String inputHash, boolean force) {
         Map<String, AiResult> computed = new HashMap<>();
-        AiResult developer = ensureAudience(project, repo, version, "developer", model, true, data, inputHash, false, true, computed);
-        AiResult qa = ensureAudience(project, repo, version, "qa", model, true, data, inputHash, false, true, computed);
-        AiResult business = ensureAudience(project, repo, version, "business", model, true, data, inputHash, false, true, computed);
+        AiResult developer = ensureAudience(project, repo, version, null, "developer", model, true, data, inputHash, false, true, computed);
+        AiResult qa = ensureAudience(project, repo, version, null, "qa", model, true, data, inputHash, false, true, computed);
+        AiResult business = ensureAudience(project, repo, version, null, "business", model, true, data, inputHash, false, true, computed);
         return new AiResult[]{developer, qa, business};
     }
 

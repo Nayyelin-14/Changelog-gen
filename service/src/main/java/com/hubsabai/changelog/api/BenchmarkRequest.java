@@ -10,10 +10,15 @@ public class BenchmarkRequest {
     private String branch;
     private String fromVersion;
     private String version;
+    private String provider;
     private List<String> models;
     private int trials = 3;
 
     public BenchmarkRequest() {}
+
+    @JsonProperty("provider")
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
 
     @JsonProperty("project")
     public String getProject() { return project; }

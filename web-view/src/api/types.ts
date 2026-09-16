@@ -154,6 +154,12 @@ export interface AiModelOption {
   recommended?: boolean;
 }
 
+export interface AiProviderOption {
+  id: string;
+  label: string;
+  enabled: boolean;
+}
+
 export interface GenerationRecord {
   id: string;
   project: string;

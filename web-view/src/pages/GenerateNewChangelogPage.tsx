@@ -37,6 +37,7 @@ import {
   getPullRequestDetails,
   getRecordedRunChanges,
   listAiModels,
+  listAiProviders,
   listBranches,
   listHistory,
   pushChangelog,
@@ -47,6 +48,10 @@ import type {
   PullRequestDetails as PRDetails,
   PullRequestWorkItemSummary,
 } from "@/api/types";
+import {
+  getStoredAiProvider,
+  setStoredAiProvider,
+} from "@/lib/aiProvider";
 import { Badge } from "@/components/ui/badge";
 import { ChangelogBody } from "@/components/ChangelogBody";
 import { Button } from "@/components/ui/button";
@@ -383,6 +388,9 @@ export function GenerateNewChangelogPage() {
   const [version, setVersion] = useState("");
   const [runNumber, setRunNumber] = useState<string | undefined>(undefined);
   const [model, setModel] = useState<string | undefined>(undefined);
+  // AI provider (NVIDIA, Gemini, …) — the admin decides which are available server-side; the
+  // user picks between them here and it persists for the whole session.
+  const [aiProvider, setAiProvider] = useState<string>(() => getStoredAiProvider());
   const [status, setStatus] = useState<Status>("idle");
   const [audienceTexts, setAudienceTexts] = useState<
     Partial<Record<Audience, string>>
@@ -613,10 +621,15 @@ export function GenerateNewChangelogPage() {
   // When a pipeline run is selected (buildIdParam), version is deliberately NOT resolved
   // automatically — the design keeps the dashboard version-free: the version is only ever chosen
   // by a human in the push modal, or supplied by the pipeline itself (versionParam).
-  const models = useQuery(
-    useCallback(() => listAiModels(), []),
+  const providers = useQuery(
+    useCallback(() => listAiProviders(), []),
     [],
-    { cacheKey: "ai-models", ttlMs: 5 * 60_000 },
+    { cacheKey: "ai-providers", ttlMs: 5 * 60_000 },
+  );
+  const models = useQuery(
+    useCallback(() => listAiModels(aiProvider), [aiProvider]),
+    [aiProvider],
+    { cacheKey: `ai-models-${aiProvider}`, ttlMs: 5 * 60_000 },
   );
   const branches = useQuery(
     useCallback(
@@ -733,6 +746,21 @@ export function GenerateNewChangelogPage() {
     const list = models.data;
     if (list.length > 0 && !model) setModel(list[0].id);
   }, [models.status, models, model]);
+
+  // Provider switched (or the stored one vanished from the admin's enabled set) — forget the
+  // old provider's model and fall back to a real one; the models effect above picks its model.
+  useEffect(() => {
+    if (providers.status !== "success") return;
+    const ids = providers.data.map((p) => p.id);
+    if (!ids.includes(aiProvider)) {
+      setAiProvider(ids[0] ?? "nvidia");
+    }
+  }, [providers.status, providers, aiProvider]);
+
+  useEffect(() => {
+    setModel(undefined);
+    setResultModel(undefined);
+  }, [aiProvider]);
 
   useEffect(() => {
     setAudienceTexts({});
@@ -852,6 +880,7 @@ export function GenerateNewChangelogPage() {
     setSaved(false);
     setSaveError(null);
     setResultModel(model);
+    setStoredAiProvider(aiProvider);
     // Previous audienceTexts are deliberately left in place (not cleared here) — a Regen keeps
     // showing the prior result until each audience's fresh text streams in and overwrites it
     // (see onAudience below), instead of blanking the whole panel for the duration of the call.
@@ -883,6 +912,7 @@ export function GenerateNewChangelogPage() {
           },
         },
         model,
+        aiProvider,
         version || undefined,
         branchParam,
         undefined,
@@ -898,6 +928,12 @@ export function GenerateNewChangelogPage() {
       );
       setStatus("error");
     }
+  }
+
+  /** Persists the AI provider choice and applies it to the current page + generation. */
+  function changeAiProvider(id: string) {
+    setStoredAiProvider(id);
+    setAiProvider(id);
   }
 
   function startEdit(audience: Audience) {
@@ -1572,6 +1608,24 @@ export function GenerateNewChangelogPage() {
           )}
 
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+            {providers.status === "success" && providers.data.length > 1 && (
+              // Provider switch — which AI backend generates the changelog. Only shown when the
+              // admin has enabled more than one (the selector is pointless with one option).
+              <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
+                <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto">
+                  <SelectValue placeholder="Provider…" />
+                </SelectTrigger>
+                <SelectContent className="min-w-[180px]" side="bottom" align="end">
+                  {providers.data.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="pr-8">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate">{p.label}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             {models.status === "loading" ? (
               <Skeleton className="h-8 w-full sm:w-32" />
             ) : (
@@ -1904,6 +1958,24 @@ export function GenerateNewChangelogPage() {
                       {/* Locked while a (re)generation is in flight — otherwise switching models
                           mid-request leaves it ambiguous which model actually produced whatever
                           streams back in. */}
+                      {providers.status === "success" && providers.data.length > 1 && (
+                        <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
+                          <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
+                            <SelectValue placeholder="Provider">
+                              {providers.data.find((p) => p.id === aiProvider)?.label}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent side="bottom" align="end">
+                            {providers.data.map((p) => (
+                              <SelectItem key={p.id} value={p.id} className="pr-8 text-xs">
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="min-w-0 truncate">{p.label}</span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                       <Select
                         value={model}
                         onValueChange={setModel}

@@ -19,10 +19,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -70,6 +72,7 @@ public class NimAiProvider implements AiProvider {
     private final String model;
     private final List<String> fallbackModels;
     private final String apiKey;
+    private final Set<String> allowedModels;
     private final String developerPromptOverride;
     private final String qaPromptOverride;
     private final String businessPromptOverride;
@@ -79,6 +82,22 @@ public class NimAiProvider implements AiProvider {
             String model,
             String apiKey,
             Optional<String> fallbackModels,
+            Optional<String> developerPrompt,
+            Optional<String> qaPrompt,
+            Optional<String> businessPrompt) {
+        this(baseUrl, model, apiKey, fallbackModels, Optional.empty(), developerPrompt, qaPrompt, businessPrompt);
+    }
+
+    /** Same as the {@code fallbackModels} version but with an optional allow-list: when
+     * {@code allowedModels} is non-empty, {@link #listModels()} only serves — and only probes —
+     * those ids. Providers with enormous catalogs (OpenRouter) get pinned to the handful the
+     * admin/benchmark approves instead of probing every advertised checkpoint. */
+    public NimAiProvider(
+            String baseUrl,
+            String model,
+            String apiKey,
+            Optional<String> fallbackModels,
+            Optional<String> allowedModels,
             Optional<String> developerPrompt,
             Optional<String> qaPrompt,
             Optional<String> businessPrompt) {
@@ -98,6 +117,11 @@ public class NimAiProvider implements AiProvider {
                 .filter(s -> !s.isEmpty())
                 .toList();
         this.apiKey = apiKey;
+        this.allowedModels = allowedModels.stream()
+                .flatMap(s -> Arrays.stream(s.split(",")))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
         this.developerPromptOverride = developerPrompt.orElse(null);
         this.qaPromptOverride = qaPrompt.orElse(null);
         this.businessPromptOverride = businessPrompt.orElse(null);
@@ -433,10 +457,18 @@ public class NimAiProvider implements AiProvider {
             throw new AiException("Failed to list models: " + e.getMessage(), e);
         }
 
-        List<CompletableFuture<AiModelOption>> futures = catalog.stream()
+        List<String> candidates = catalog.stream()
                 .map(NvidiaModelsResponse.NvidiaModel::getId)
                 .filter(NimAiProvider::looksLikeChatModel)
                 .filter(id -> !EXCLUDED_MODELS.contains(id))
+                .toList();
+        // Admin-configured allow-list: only probe + surface the handful the admin (or benchmark)
+        // explicitly approved — avoids hammering huge catalogs (OpenRouter/Together) on first hit.
+        List<String> probe = allowedModels.isEmpty()
+                ? candidates
+                : candidates.stream().filter(allowedModels::contains).toList();
+
+        List<CompletableFuture<AiModelOption>> futures = probe.stream()
                 .map(id -> CompletableFuture.supplyAsync(() -> healthyOption(id), PROBE_POOL))
                 .toList();
 
@@ -451,7 +483,8 @@ public class NimAiProvider implements AiProvider {
         }
 
         // Dropdown must only ever offer models that actually answer chat traffic.
-        LOG.info("Model catalog: " + catalog.size() + " listed, " + healthy.size() + " health-checked OK");
+        LOG.info("Model catalog: " + catalog.size() + " listed, " + healthy.size() + " health-checked OK"
+                + (allowedModels.isEmpty() ? "" : " (pinned to " + allowedModels.size() + " approved)"));
         return healthy.stream()
                 .sorted(Comparator.<AiModelOption, Boolean>comparing(
                         m -> m.id().equals(model), Comparator.reverseOrder())

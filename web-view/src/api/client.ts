@@ -1,8 +1,10 @@
 import axios, { AxiosError } from 'axios';
 
 import { providerApiBase, getStoredProvider } from '../lib/provider';
+import { getStoredAiProvider } from '../lib/aiProvider';
 import type {
   AiModelOption,
+  AiProviderOption,
   AiUsage,
   ChangelogLocation,
   ChangelogMeta,
@@ -119,6 +121,7 @@ export async function generateChangelog(
   project: string,
   repo: string,
   model?: string,
+  provider?: string,
   version?: string,
   branch?: string,
   fromVersion?: string,
@@ -130,6 +133,7 @@ export async function generateChangelog(
 ): Promise<GenerateResult> {
   const params: Record<string, string | boolean | number | undefined> = {
     model,
+    provider: provider || getStoredAiProvider(),
     branch,
     version,
     fromVersion,
@@ -216,6 +220,7 @@ export async function generateChangelogStream(
     onError: (error: Error) => void;
   },
   model?: string,
+  provider?: string,
   version?: string,
   branch?: string,
   fromVersion?: string,
@@ -234,7 +239,16 @@ export async function generateChangelogStream(
     response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, version, branch, fromVersion, manualText, force: !!force, buildId }),
+      body: JSON.stringify({
+        model,
+        provider: provider || getStoredAiProvider(),
+        version,
+        branch,
+        fromVersion,
+        manualText,
+        force: !!force,
+        buildId,
+      }),
       signal,
     });
   } catch (e) {
@@ -283,8 +297,9 @@ export async function sendChangelogChatMessageStream(
     onError: (message: string, partial: boolean) => void;
   },
   signal: AbortSignal,
+  provider?: string,
 ): Promise<void> {
-  const params = new URLSearchParams({ audience, version });
+  const params = new URLSearchParams({ audience, version, provider: provider || getStoredAiProvider() });
   const url = `${providerApiBase(getStoredProvider())}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-chat/stream?${params}`;
 
   let response: Response;
@@ -363,8 +378,15 @@ export function getChangelogPreview(
   return request;
 }
 
-export async function listAiModels(): Promise<AiModelOption[]> {
-  const { data } = await apiClient.get<AiModelOption[]>('/ai/models');
+export async function listAiProviders(): Promise<AiProviderOption[]> {
+  const { data } = await apiClient.get<AiProviderOption[]>('/ai/providers');
+  return data;
+}
+
+export async function listAiModels(provider?: string): Promise<AiModelOption[]> {
+  const { data } = await apiClient.get<AiModelOption[]>('/ai/models', {
+    params: { provider: provider || getStoredAiProvider() },
+  });
   return data;
 }
 

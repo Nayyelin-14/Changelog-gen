@@ -3,6 +3,7 @@ package com.hubsabai.changelog.api;
 import com.hubsabai.changelog.ai.AiException;
 import com.hubsabai.changelog.ai.AiModelCatalog;
 import com.hubsabai.changelog.ai.AiProvider;
+import com.hubsabai.changelog.ai.AiProviderRegistry;
 import com.hubsabai.changelog.ai.AiResult;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector;
 import com.hubsabai.changelog.core.model.ReleaseData;
@@ -36,13 +37,15 @@ public class AiBenchmarkResource {
     AzureDevOpsOrgConnector orgConnector;
 
     @Inject
-    AiProvider aiProvider;
+    AiProviderRegistry registry;
 
     @POST
     public List<ModelBenchResult> benchmark(BenchmarkRequest request) {
         if (request.getProject() == null || request.getRepo() == null || request.getVersion() == null) {
             throw new AiException("project, repo, and version are required to benchmark against a real release.");
         }
+
+        AiProvider aiProvider = registry.resolve(request.getProvider());
 
         ReleaseData data = orgConnector.fetchRepoChanges(
                 request.getProject(), request.getRepo(), request.getFromVersion(), request.getVersion(), request.getBranch());
@@ -53,13 +56,13 @@ public class AiBenchmarkResource {
 
         List<String> candidates = request.getModels() != null && !request.getModels().isEmpty()
                 ? request.getModels()
-                : defaultCandidates();
+                : defaultCandidates(aiProvider);
         int trials = Math.max(1, Math.min(10, request.getTrials()));
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<ModelBenchResult>> futures = new ArrayList<>();
             for (String candidate : candidates) {
-                futures.add(executor.submit(() -> benchmarkModel(candidate, data, trials)));
+                futures.add(executor.submit(() -> benchmarkModel(candidate, aiProvider, data, trials)));
             }
             List<ModelBenchResult> results = new ArrayList<>();
             for (Future<ModelBenchResult> future : futures) {
@@ -69,7 +72,7 @@ public class AiBenchmarkResource {
         }
     }
 
-    private ModelBenchResult benchmarkModel(String modelId, ReleaseData data, int trials) {
+    private ModelBenchResult benchmarkModel(String modelId, AiProvider aiProvider, ReleaseData data, int trials) {
         List<Long> latenciesMs = new ArrayList<>();
         LinkedHashSet<String> errors = new LinkedHashSet<>();
         int successes = 0;
@@ -120,7 +123,7 @@ public class AiBenchmarkResource {
     }
 
     /** Union of both curated lists in the codebase — they've drifted apart, which is exactly what this endpoint should settle. */
-    private List<String> defaultCandidates() {
+    private List<String> defaultCandidates(AiProvider aiProvider) {
         Set<String> ids = new LinkedHashSet<>();
         try {
             aiProvider.listModels().stream().filter(m -> m.recommended()).forEach(m -> ids.add(m.id()));
