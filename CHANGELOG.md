@@ -1,3 +1,5 @@
+## v1.0.16 — 2026-09-16 (promoted build.30)
+
 ## v1.0.15 — 2026-09-16 (promoted build.28)
 
 ## v1.0.14 — 2026-09-16 (promoted build.26)
