@@ -91,7 +91,8 @@ public class PipelineResource {
             // Pipeline-run flow: the Composer fetches this run's own commits/work items/PRs
             // straight from Azure DevOps' Build API — rawCommitLog/workItemIds/prIds are ignored.
             // Use unified fetch to get both ReleaseData and RunChangeContext in ONE provider fetch.
-            RunFetchResult fetchResult = orgConnector.fetchRunData(request.getProject(), request.getRepo(), request.getBuildId());
+            RunFetchResult fetchResult = orgConnector.fetchRunData(request.getProject(), request.getRepo(),
+                    request.getBuildId().longValue());
             data = fetchResult.releaseData();
             runContext = fetchResult.runContext();
         } else {

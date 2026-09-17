@@ -144,7 +144,7 @@ public interface AzureDevOpsRestClient {
     BuildResponse getBuild(
             @PathParam("org") String org,
             @PathParam("project") String project,
-            @PathParam("buildId") int buildId,
+            @PathParam("buildId") long buildId,
             @QueryParam("api-version") @DefaultValue(API_VERSION) String apiVersion
     );
 
@@ -156,7 +156,7 @@ public interface AzureDevOpsRestClient {
     AzureDevOpsListResponse<BuildChange> getBuildChanges(
             @PathParam("org") String org,
             @PathParam("project") String project,
-            @PathParam("buildId") int buildId,
+            @PathParam("buildId") long buildId,
             @QueryParam("$top") @DefaultValue("500") int top,
             @QueryParam("api-version") @DefaultValue(API_VERSION) String apiVersion
     );
@@ -168,7 +168,7 @@ public interface AzureDevOpsRestClient {
     AzureDevOpsListResponse<WiqlResult.WorkItemReference> getBuildWorkItems(
             @PathParam("org") String org,
             @PathParam("project") String project,
-            @PathParam("buildId") int buildId,
+            @PathParam("buildId") long buildId,
             @QueryParam("$top") @DefaultValue("500") int top,
             @QueryParam("api-version") @DefaultValue(API_VERSION) String apiVersion
     );

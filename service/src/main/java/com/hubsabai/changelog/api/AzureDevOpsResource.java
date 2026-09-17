@@ -323,7 +323,7 @@ public class AzureDevOpsResource {
             @QueryParam("manualText") String manualText,
             @QueryParam("audience") String audience,
             @QueryParam("force") boolean force,
-            @QueryParam("buildId") int buildId,
+            @QueryParam("buildId") long buildId,
             // Dashboard preview flow: commit=false runs AI but leaves generated_changelog
             // untouched — the user confirms via /generate-commit before anything changes.
             @QueryParam("commit") @DefaultValue("true") boolean commit) {
@@ -343,7 +343,7 @@ public class AzureDevOpsResource {
             data = buildReleaseDataFromManual(project, repo, branch, version, manualText);
         } else if (buildId > 0) {
             // Use stored recorded run data as primary source; fall back to live fetch
-            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, buildId);
             if (storedContext.isPresent()) {
                 data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai", storedContext.get());
             } else {
@@ -456,7 +456,7 @@ public class AzureDevOpsResource {
         String branch = request.getBranch();
         String manualText = request.getManualText();
         boolean force = request.isForce();
-        int buildId = request.getBuildId() != null ? request.getBuildId().intValue() : 0;
+        long buildId = request.getBuildId() != null ? request.getBuildId() : 0L;
         boolean hasManualText = manualText != null && !manualText.isBlank();
         if ((version == null || version.isBlank()) && !hasManualText && buildId <= 0) {
             throw new AiException("A version is required to generate a changelog.");
@@ -470,7 +470,7 @@ public class AzureDevOpsResource {
             data = buildReleaseDataFromManual(project, repo, branch, version, manualText);
         } else if (buildId > 0) {
             // Use stored recorded run data as primary source; fall back to live fetch
-            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+            Optional<RunChangeContext> storedContext = recordedRunService.getRecordedRunContext("azure", project, repo, buildId);
             if (storedContext.isPresent()) {
                 data = runChangeDataReader.toReleaseData(project, repo, branch, "datasabai", storedContext.get());
             } else {
@@ -903,8 +903,8 @@ public class AzureDevOpsResource {
     public ReleaseData buildChanges(
             @PathParam("project") String project,
             @PathParam("repo") String repo,
-            @PathParam("buildId") int buildId) {
-        Optional<ReleaseData> stored = recordedRunService.getRecordedRunData("azure", project, repo, (long) buildId);
+            @PathParam("buildId") long buildId) {
+        Optional<ReleaseData> stored = recordedRunService.getRecordedRunData("azure", project, repo, buildId);
         if (stored.isPresent()) {
             return stored.get();
         }
@@ -917,8 +917,8 @@ public class AzureDevOpsResource {
     public RunChangeContext runContext(
             @PathParam("project") String project,
             @PathParam("repo") String repo,
-            @PathParam("buildId") int buildId) {
-        Optional<RunChangeContext> stored = recordedRunService.getRecordedRunContext("azure", project, repo, (long) buildId);
+            @PathParam("buildId") long buildId) {
+        Optional<RunChangeContext> stored = recordedRunService.getRecordedRunContext("azure", project, repo, buildId);
         if (stored.isPresent()) {
             return stored.get();
         }

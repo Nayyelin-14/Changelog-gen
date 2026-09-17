@@ -30,15 +30,15 @@ export function VersionTable({ items, selectedId, onSelect, page, onPageChange, 
 
   return (
     <div className={cn("flex flex-col overflow-hidden rounded-lg border border-border/60 bg-card", className)}>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full table-fixed text-xs">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+        <table className="w-full min-w-[34rem] table-fixed text-xs">
           <thead className="sticky top-0 z-10 border-b border-border/60 bg-muted/95 backdrop-blur-sm">
             <tr>
-              <th className="w-[40%] px-3 py-2 text-left font-medium text-muted-foreground">
+              <th className="w-[45%] px-3 py-2.5 text-left font-medium text-muted-foreground">
                 {hasPrs ? "Version" : "Version / PR"}
               </th>
-              <th className="w-[25%] px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-              <th className="w-[35%] px-3 py-2 text-right font-medium text-muted-foreground">Date</th>
+              <th className="w-[25%] px-3 py-2.5 text-left font-medium text-muted-foreground">Status</th>
+              <th className="w-[30%] px-3 py-2.5 text-right font-medium text-muted-foreground">Date</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/40">
@@ -91,12 +91,23 @@ export function VersionTable({ items, selectedId, onSelect, page, onPageChange, 
                   <tr
                     key={entry.id}
                     onClick={() => onSelect(entry)}
+                    tabIndex={0}
+                    role="link"
+                    aria-label={label}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelect(entry);
+                      }
+                    }}
                     className={cn(
-                      "cursor-pointer transition-colors",
-                      isSelected ? "bg-primary/5" : "hover:bg-muted/30",
+                      "cursor-pointer transition-colors focus:outline-none",
+                      isSelected
+                        ? "bg-primary/5 focus-visible:bg-primary/10"
+                        : "hover:bg-muted/30 focus-visible:bg-muted/40",
                     )}
                   >
-                    <td className="max-w-64 min-w-0 px-3 py-2">
+                    <td className="max-w-64 min-w-0 px-3 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className={cn("h-4 w-0.5 shrink-0 rounded-full", isSelected ? "bg-primary" : isGenerated ? "bg-transparent" : "bg-amber-400")} />
                         {!isGenerated ? (
@@ -111,20 +122,20 @@ export function VersionTable({ items, selectedId, onSelect, page, onPageChange, 
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       {!isGenerated ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                           PR #{entry.id.startsWith("pr-") ? entry.id.slice(3) : "?"}
                         </span>
                       ) : source ? (
-                        <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", source.className)}>
+                        <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium", source.className)}>
                           {source.label}
                         </span>
                       ) : (
                         <span className="text-muted-foreground/50">—</span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
+                    <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-muted-foreground">
                       {formatTimestamp(entry.timestamp)}
                     </td>
                   </tr>

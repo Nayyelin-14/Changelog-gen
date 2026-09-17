@@ -5,7 +5,7 @@ import {
   getChangelogText,
   listAiModels,
 } from "@/api/client";
-import { getStoredAiProvider } from "@/lib/aiProvider";
+import { useResolvedAiProvider } from "@/hooks/useAiProvider";
 import type { GenerationRecord } from "@/api/types";
 import { DEVELOPER_TAB, GENERATED_TABS } from "@/lib/historyTabs";
 import type { GeneratedAudience, GeneratedContent, GeneratedMeta } from "@/lib/historyTabs";
@@ -49,10 +49,11 @@ export function useChangelogState(
   // `generated` slot for edits/restores too, since the view once something exists is the same either way.
   const [developerOverrides, setDeveloperOverrides] = useState<Record<string, string>>({});
 
+  const { provider } = useResolvedAiProvider();
   const models = useQuery(
-    useCallback(() => listAiModels(getStoredAiProvider()), []),
-    [],
-    { cacheKey: `ai-models-${getStoredAiProvider()}` },
+    useCallback(() => listAiModels(provider), [provider]),
+    [provider],
+    { cacheKey: `ai-models-${provider}` },
   );
   useEffect(() => {
     if (models.status === "success" && models.data.length > 0 && !model) {
@@ -186,6 +187,7 @@ export function useChangelogState(
     model,
     setModel,
     models,
+    provider,
     developerOverride,
     generated,
     checked,

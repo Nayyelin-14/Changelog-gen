@@ -384,7 +384,7 @@ public class AzureDevOpsOrgConnector {
      * {@link PrReference} used by {@link #dedupeMergeCommits}) plus the run's own {@code
      * pr.number} trigger info when the run itself was PR-triggered.
      */
-    public ReleaseData fetchRunChanges(String project, String repo, int buildId) {
+    public ReleaseData fetchRunChanges(String project, String repo, long buildId) {
         BuildResponse build = client.getBuild(org, project, buildId, AzureDevOpsRestClient.API_VERSION);
         List<BuildChange> changes = client.getBuildChanges(org, project, buildId, 500, AzureDevOpsRestClient.API_VERSION).valueOrEmpty();
         List<WiqlResult.WorkItemReference> workItemRefs =
@@ -527,7 +527,7 @@ public class AzureDevOpsOrgConnector {
      * (e.g., during pipeline ingestion where we need to store both the run snapshot and
      * the normalized change data for changelog generation).
      */
-    public RunFetchResult fetchRunData(String project, String repo, int buildId) {
+    public RunFetchResult fetchRunData(String project, String repo, long buildId) {
         // Fetch the build metadata once
         BuildResponse build = client.getBuild(org, project, buildId, AzureDevOpsRestClient.API_VERSION);
         List<BuildChange> changes = client.getBuildChanges(org, project, buildId, 500, AzureDevOpsRestClient.API_VERSION).valueOrEmpty();
@@ -695,7 +695,7 @@ public class AzureDevOpsOrgConnector {
     /** Provider-normalized view of one build for the run-context flow. Reuses the same raw data
      * gathering as {@link #fetchRunChanges} (commits, PR, work items, file paths) so the shape both
      * methods emit from a single build never drifts apart. */
-    public RunChangeContext fetchRunContext(String project, String repo, int buildId) {
+    public RunChangeContext fetchRunContext(String project, String repo, long buildId) {
         ReleaseData data = fetchRunChanges(project, repo, buildId);
         BuildResponse build = client.getBuild(org, project, buildId, AzureDevOpsRestClient.API_VERSION);
 

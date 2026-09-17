@@ -134,7 +134,7 @@ public class PipelineRunResource {
                         .map(RunFetchResult::releaseData)
                         .orElseGet(() -> emptyReleaseData(project, repo));
             } else {
-                return azureConnector.fetchRunChanges(project, repo, runId.intValue());
+                return azureConnector.fetchRunChanges(project, repo, runId);
             }
         } catch (Exception e) {
             return emptyReleaseData(project, repo);
@@ -166,7 +166,7 @@ public class PipelineRunResource {
                         .map(RunFetchResult::runContext)
                         .orElseGet(RunChangeContext::new);
             } else {
-                return azureConnector.fetchRunContext(project, repo, runId.intValue());
+                return azureConnector.fetchRunContext(project, repo, runId);
             }
         } catch (Exception e) {
             return new RunChangeContext();

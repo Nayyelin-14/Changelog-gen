@@ -1,8 +1,15 @@
 import { Outlet } from 'react-router-dom';
 
 import { Header } from '@/components/Header';
+import { useResolvedAiProvider } from '@/hooks/useAiProvider';
 
 export function Layout() {
+  // A stored AI provider can outlive the admin's enabled set (key revoked, old picker value).
+  // Resolving once at the app shell persists the correction, so EVERY AI call — including the
+  // ones that read localStorage directly (chat, SSE, generate) — sends a provider the server
+  // actually serves, on any page.
+  useResolvedAiProvider();
+
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-background">
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
@@ -21,8 +28,8 @@ export function Layout() {
           naturally). Pages that opt into filling the screen (flex-1 min-h-0 down the tree) get
           a real bounded height here instead — that's what lets their own inner lists scroll
           internally instead of the whole page growing taller than the viewport. */}
-      <main className="flex flex-1 flex-col overflow-y-auto">
-        <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-1 flex-col px-6 py-4">
+      <main className="flex flex-1 flex-col overflow-x-hidden overflow-y-auto">
+        <div className="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-1 flex-col px-4 py-4 sm:px-6">
           <Outlet />
         </div>
       </main>

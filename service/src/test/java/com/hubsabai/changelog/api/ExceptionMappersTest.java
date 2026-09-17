@@ -82,9 +82,21 @@ class ExceptionMappersTest {
     }
 
     @Test
-    void webApplicationExceptionWithOtherStatusReturnsBadGateway() {
+    void webApplicationExceptionWith401ReturnsCredentialMessage() {
         WebApplicationExceptionMapper mapper = mapperForMatchedRoute();
         Response upstream = Response.status(401).build();
+        WebApplicationException ex = new WebApplicationException(upstream);
+        Response response = mapper.toResponse(ex);
+        assertEquals(502, response.getStatus());
+        String body = response.getEntity().toString();
+        assertTrue(body.contains("PAT"));
+        assertTrue(body.contains("expired, revoked"));
+    }
+
+    @Test
+    void webApplicationExceptionWithOtherStatusReturnsBadGateway() {
+        WebApplicationExceptionMapper mapper = mapperForMatchedRoute();
+        Response upstream = Response.status(500).build();
         WebApplicationException ex = new WebApplicationException(upstream);
         Response response = mapper.toResponse(ex);
         assertEquals(502, response.getStatus());

@@ -1133,10 +1133,10 @@ export function GenerateChangelogPage() {
           )}
 
           {/* Quick summary cards */}
-          <div className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg border border-border/50 bg-card px-3 py-2.5">
+          <div className="grid shrink-0 grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+            <div className="min-w-0 rounded-lg border border-border/50 bg-card px-3 py-2.5">
               <span className="text-[10px] font-medium text-muted-foreground">Latest version</span>
-              <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+              <p className="mt-0.5 truncate font-mono text-sm font-semibold text-foreground">
                 {history.status === "success"
                   ? data.find((e) => e.generated !== false && e.version)?.version
                     ? `v${data.find((e) => e.generated !== false && e.version)!.version}`
@@ -1146,15 +1146,15 @@ export function GenerateChangelogPage() {
                     : "—"}
               </p>
             </div>
-            <div className="rounded-lg border border-border/50 bg-card px-3 py-2.5">
+            <div className="min-w-0 rounded-lg border border-border/50 bg-card px-3 py-2.5">
               <span className="text-[10px] font-medium text-muted-foreground">Total versions</span>
-              <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+              <p className="mt-0.5 truncate font-mono text-sm font-semibold text-foreground">
                 {history.status === "success" ? history.data.total : history.status === "loading" ? "…" : "—"}
               </p>
             </div>
-            <div className="rounded-lg border border-border/50 bg-card px-3 py-2.5">
+            <div className="min-w-0 rounded-lg border border-border/50 bg-card px-3 py-2.5">
               <span className="text-[10px] font-medium text-muted-foreground">Needs review</span>
-              <p className="mt-0.5 font-mono text-sm font-semibold">
+              <p className="mt-0.5 truncate font-mono text-sm font-semibold">
                 {history.status === "success" ? (
                   data.filter((e) => e.generated === false).length > 0 ? (
                     <span className="text-amber-600 dark:text-amber-400">
@@ -1170,9 +1170,9 @@ export function GenerateChangelogPage() {
                 )}
               </p>
             </div>
-            <div className="rounded-lg border border-border/50 bg-card px-3 py-2.5">
+            <div className="min-w-0 rounded-lg border border-border/50 bg-card px-3 py-2.5">
               <span className="text-[10px] font-medium text-muted-foreground">Activity</span>
-              <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+              <p className="mt-0.5 truncate font-mono text-sm font-semibold text-foreground">
                 {summary.status === "success"
                   ? `${summary.data.commits + summary.data.pullRequests} changes`
                   : summary.status === "loading" ? "…" : "—"}
@@ -1180,14 +1180,25 @@ export function GenerateChangelogPage() {
             </div>
           </div>
 
-          {/* Two tables side by side: Pipeline runs (every run, including PR-triggered ones) +
-              Versions (generated) — all fill whatever screen height is left below the
-              header/summary cards, and stretch to match each other's height regardless of how
-              many rows any one has. Pipeline runs come from Azure directly and are independent
-              of whether any changelog has been generated yet, so this doesn't gate on `data`. */}
-          {history.status === "success" && (
-            <div className="grid flex-1 min-h-0 items-stretch gap-4 lg:grid-cols-2">
-              <div className="flex min-h-0 min-w-0 flex-col">
+          {history.status === "loading" ||
+          (history.status === "error" && history.error.message === "repo-not-ready") ? (
+            <div className="grid min-h-0 flex-1 auto-rows-max content-start items-stretch gap-4 xl:auto-rows-fr xl:grid-cols-2">
+              {[0, 1].map((i) => (
+                <div key={i} className="flex min-h-0 min-w-0 flex-col gap-2">
+                  <Skeleton className="h-4 w-28 rounded-md" />
+                  <Skeleton className="h-64 w-full rounded-lg xl:h-full" />
+                </div>
+              ))}
+            </div>
+          ) : history.status === "error" ? (
+            <Card>
+              <CardContent className="p-6">
+                <ErrorView message={history.error.message} />
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid min-h-0 flex-1 auto-rows-max content-start items-stretch gap-4 xl:auto-rows-fr xl:grid-cols-2">
+              <div className="flex min-h-0 max-h-[30rem] min-w-0 flex-col xl:max-h-none">
                 <h3 className="mb-2 flex shrink-0 items-center gap-1.5 text-xs font-semibold text-foreground">
                   <Rocket className="size-3.5" />
                   Pipeline runs
@@ -1205,11 +1216,11 @@ export function GenerateChangelogPage() {
                     onPageChange={setBuildPage}
                     pageSize={BUILD_PAGE_SIZE}
                     total={buildRuns.length}
-                    emptyMessage={builds.status === 'loading' ? 'Loading…' : 'No pipeline runs found'}
+                    emptyMessage={builds.status === 'loading' ? 'Loading pipeline runs…' : 'No pipeline runs found'}
                   />
                 )}
               </div>
-              <div className="flex min-h-0 min-w-0 flex-col">
+              <div className="flex min-h-0 max-h-[30rem] min-w-0 flex-col xl:max-h-none">
                 <h3 className="mb-2 flex shrink-0 items-center gap-1.5 text-xs font-semibold text-foreground">
                   <History className="size-3.5" />
                   Version history
@@ -1237,14 +1248,6 @@ export function GenerateChangelogPage() {
                 })()}
               </div>
             </div>
-          )}
-
-          {history.status === "error" && history.error.message !== 'repo-not-ready' && (
-            <Card>
-              <CardContent className="p-6">
-                <ErrorView message={history.error.message} />
-              </CardContent>
-            </Card>
           )}
         </div>
       )}

@@ -25,6 +25,7 @@ export function useChangelogEditor(
     repo,
     selectedEntry ? { version: selectedEntry.version, branch: selectedEntry.branch } : undefined,
     state.model,
+    state.provider,
     state.setGeneratedByEntry,
     state.setMetaByEntry,
     state.setDeveloperOverrides,

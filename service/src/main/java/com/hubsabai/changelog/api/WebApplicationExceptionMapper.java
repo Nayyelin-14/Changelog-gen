@@ -72,6 +72,19 @@ public class WebApplicationExceptionMapper implements ExceptionMapper<WebApplica
                     .build();
         }
 
+        // Azure DevOps sign-in redirect (302) and 401/403 all mean the stored credential is
+        // missing, expired, revoked, or out of scope — never "the repo is gone". Naming that
+        // directly saves a wild goose chase (the old message said "request failed (HTTP 302)").
+        if (upstreamStatus == 302 || upstreamStatus == 401 || upstreamStatus == 403) {
+            return Response.status(Response.Status.BAD_GATEWAY)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("error",
+                            "Azure DevOps rejected the request (HTTP " + upstreamStatus + "): the configured "
+                                    + "AZURE_DEVOPS_PAT credential is missing, expired, revoked, or lacks access to this project. "
+                                    + "Refresh the PAT in the server's .env and restart the service."))
+                    .build();
+        }
+
         return Response.status(Response.Status.BAD_GATEWAY)
                 .type(MediaType.APPLICATION_JSON)
                 .entity(Map.of("error", "Azure DevOps request failed (HTTP " + upstreamStatus + ")."))

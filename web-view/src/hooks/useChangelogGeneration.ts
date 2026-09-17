@@ -2,7 +2,6 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { commitChangelog, generateChangelog } from "@/api/client";
-import { getStoredAiProvider } from "@/lib/aiProvider";
 import type { EditableTab, GeneratedMeta } from "./useChangelogState";
 import { TAB_LABELS } from "./useChangelogState";
 
@@ -31,6 +30,7 @@ export function useChangelogGeneration(
   repo: string | undefined,
   selectedEntry: { version?: string | null; branch?: string | null } | undefined,
   model: string | undefined,
+  provider: string | undefined,
   setGeneratedByEntry: React.Dispatch<React.SetStateAction<Record<string, Partial<Record<EditableTab, { text: string }>>>>>,
   setMetaByEntry: React.Dispatch<React.SetStateAction<Record<string, Partial<Record<EditableTab, GeneratedMeta>>>>>,
   setDeveloperOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>,
@@ -57,7 +57,7 @@ export function useChangelogGeneration(
           project,
           repo,
           model,
-          getStoredAiProvider(),
+          provider,
           selectedEntry.version ?? undefined,
           selectedEntry.branch ?? undefined,
           undefined,
@@ -77,7 +77,7 @@ export function useChangelogGeneration(
         setGenerating(null);
       }
     },
-    [project, repo, selectedEntry, model],
+    [project, repo, selectedEntry, model, provider],
   );
 
   const cancelGenerateConfirm = useCallback(() => {

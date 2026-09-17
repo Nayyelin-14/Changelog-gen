@@ -37,7 +37,6 @@ import {
   getPullRequestDetails,
   getRecordedRunChanges,
   listAiModels,
-  listAiProviders,
   listBranches,
   listHistory,
   pushChangelog,
@@ -48,6 +47,7 @@ import type {
   PullRequestDetails as PRDetails,
   PullRequestWorkItemSummary,
 } from "@/api/types";
+import { useResolvedAiProvider } from "@/hooks/useAiProvider";
 import {
   getStoredAiProvider,
   setStoredAiProvider,
@@ -621,11 +621,8 @@ export function GenerateNewChangelogPage() {
   // When a pipeline run is selected (buildIdParam), version is deliberately NOT resolved
   // automatically — the design keeps the dashboard version-free: the version is only ever chosen
   // by a human in the push modal, or supplied by the pipeline itself (versionParam).
-  const providers = useQuery(
-    useCallback(() => listAiProviders(), []),
-    [],
-    { cacheKey: "ai-providers", ttlMs: 5 * 60_000 },
-  );
+  const { options: providerOptions, enabled: enabledProviders } = useResolvedAiProvider();
+
   const models = useQuery(
     useCallback(() => listAiModels(aiProvider), [aiProvider]),
     [aiProvider],
@@ -747,15 +744,13 @@ export function GenerateNewChangelogPage() {
     if (list.length > 0 && !model) setModel(list[0].id);
   }, [models.status, models, model]);
 
-  // Provider switched (or the stored one vanished from the admin's enabled set) — forget the
-  // old provider's model and fall back to a real one; the models effect above picks its model.
+  // Provider switched (or the stored one vanished from the admin's enabled set), so the picker
+  // couldn't have kept it — fall back to a real one; the models effect above picks its model.
   useEffect(() => {
-    if (providers.status !== "success") return;
-    const ids = providers.data.map((p) => p.id);
-    if (!ids.includes(aiProvider)) {
-      setAiProvider(ids[0] ?? "nvidia");
+    if (enabledProviders.length > 0 && !enabledProviders.includes(aiProvider)) {
+      setAiProvider(enabledProviders[0]);
     }
-  }, [providers.status, providers, aiProvider]);
+  }, [enabledProviders, aiProvider]);
 
   useEffect(() => {
     setModel(undefined);
@@ -1607,8 +1602,8 @@ export function GenerateNewChangelogPage() {
             </span>
           )}
 
-          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
-            {providers.status === "success" && providers.data.length > 1 && (
+          <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+            {providerOptions.length > 1 && (
               // Provider switch — which AI backend generates the changelog. Only shown when the
               // admin has enabled more than one (the selector is pointless with one option).
               <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
@@ -1616,7 +1611,7 @@ export function GenerateNewChangelogPage() {
                   <SelectValue placeholder="Provider…" />
                 </SelectTrigger>
                 <SelectContent className="min-w-[180px]" side="bottom" align="end">
-                  {providers.data.map((p) => (
+                  {providerOptions.map((p) => (
                     <SelectItem key={p.id} value={p.id} className="pr-8">
                       <span className="flex items-center gap-2">
                         <span className="truncate">{p.label}</span>
@@ -1958,15 +1953,15 @@ export function GenerateNewChangelogPage() {
                       {/* Locked while a (re)generation is in flight — otherwise switching models
                           mid-request leaves it ambiguous which model actually produced whatever
                           streams back in. */}
-                      {providers.status === "success" && providers.data.length > 1 && (
+                      {providerOptions.length > 1 && (
                         <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
                           <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
                             <SelectValue placeholder="Provider">
-                              {providers.data.find((p) => p.id === aiProvider)?.label}
+                              {providerOptions.find((p) => p.id === aiProvider)?.label}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent side="bottom" align="end">
-                            {providers.data.map((p) => (
+                            {providerOptions.map((p) => (
                               <SelectItem key={p.id} value={p.id} className="pr-8 text-xs">
                                 <span className="flex min-w-0 items-center gap-2">
                                   <span className="min-w-0 truncate">{p.label}</span>
