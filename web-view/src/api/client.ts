@@ -429,10 +429,11 @@ export async function getChangelogMeta(
   version: string,
   audience: ChangelogAudience,
   branch?: string,
+  buildId?: number,
 ): Promise<ChangelogMeta> {
   const { data } = await apiClient.get<ChangelogMeta>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-meta`,
-    { params: { version, audience, branch } },
+    { params: { version, audience, branch, buildId } },
   );
   return data;
 }
@@ -445,10 +446,11 @@ export async function saveChangelogEdit(
   text: string,
   editedBy?: string,
   branch?: string,
+  buildId?: number,
 ): Promise<GenerateResult> {
   const { data } = await apiClient.put<GenerateResult>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-edit`,
-    { version, branch, audience, text, editedBy },
+    { version, branch, audience, text, editedBy, buildId },
   );
   return data;
 }
@@ -498,11 +500,12 @@ export async function restoreChangelogRevision(
   version: string,
   audience: ChangelogAudience,
   sequence: number,
+  buildId?: number,
 ): Promise<string> {
   const { data } = await apiClient.put<{ text: string }>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-revision-restore`,
     null,
-    { params: { version, audience, sequence } },
+    { params: { version, audience, sequence, buildId } },
   );
   return data.text;
 }

@@ -36,6 +36,7 @@ export function useChangelogGeneration(
   setDeveloperOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   entryId: string | undefined,
   setMutationCount: React.Dispatch<React.SetStateAction<number>>,
+  buildId?: number,
 ): UseChangelogGenerationReturn {
   const [generating, setGenerating] = useState<EditableTab | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
@@ -91,10 +92,24 @@ export function useChangelogGeneration(
     setConfirmingGenerate(true);
     setGenError(null);
     try {
-      // Run-keyed drafts have no version yet — generated_changelog is version-keyed backend-side,
-      // so there is nothing to commit to. Keep the text in memory only; it gets persisted (under
-      // the human-chosen version) when the draft is pushed to the repo.
+      // Run-keyed drafts have no version yet. Developer's regeneration persists onto the recorded
+      // run (keyed by buildId) so it survives a refresh; qa/business stay in memory only — the run
+      // row has a single draft slot that the Developer view owns (push is developer-only).
       if (!selectedEntry.version) {
+        if (buildId && tab === "developer") {
+          await commitChangelog(
+            project,
+            repo,
+            "",
+            tab,
+            usedModel,
+            text,
+            selectedEntry.branch ?? undefined,
+            tokens,
+            durationMs,
+            buildId,
+          );
+        }
         if (tab === "developer") {
           setDeveloperOverrides((prev) => ({ ...prev, [entryId]: text }));
         }
@@ -106,9 +121,13 @@ export function useChangelogGeneration(
           ...prev,
           [entryId]: { ...prev[entryId], [tab]: { source: "ai", model: usedModel, tokens, durationMs } },
         }));
-        toast.success(`${TAB_LABELS[tab]} changelog generated`, {
-          description: "Draft has no version yet — it will be saved to the repo when you Push.",
+        toast.success(`${TAB_LABELS[tab]} changelog ${force ? "regenerated" : "generated"}`, {
+          description:
+            buildId && tab === "developer"
+              ? "Saved to the draft — it will be written to the repo when you Push."
+              : "Draft has no version yet — it will be saved to the repo when you Push.",
         });
+        setMutationCount((c) => c + 1);
         setConfirmingGenerate(false);
         setGenerateConfirm(null);
         return;
@@ -167,6 +186,7 @@ export function useChangelogGeneration(
     selectedEntry,
     generateConfirm,
     entryId,
+    buildId,
     setGeneratedByEntry,
     setMetaByEntry,
     setDeveloperOverrides,

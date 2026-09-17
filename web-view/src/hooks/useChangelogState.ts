@@ -120,7 +120,11 @@ export function useChangelogState(
     if (!project || !repo || !selectedEntry) return;
     if (metaByEntry[selectedEntry.id]?.[activeTab]) return;
     let cancelled = false;
-    getChangelogMeta(project, repo, selectedEntry.version ?? "", activeTab, selectedEntry.branch ?? undefined)
+    // Run-keyed drafts have no version — their meta is keyed on the recorded run instead.
+    const buildId = selectedEntry.id.startsWith("run-")
+      ? Number(selectedEntry.id.slice("run-".length)) || undefined
+      : undefined;
+    getChangelogMeta(project, repo, selectedEntry.version ?? "", activeTab, selectedEntry.branch ?? undefined, buildId)
       .then((m) => {
         if (cancelled || !m.source) return;
         setMetaByEntry((prev) => {

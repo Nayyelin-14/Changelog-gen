@@ -20,6 +20,12 @@ export function useChangelogEditor(
 
   const state = useChangelogState(project, repo, selectedEntry);
 
+  // Run-keyed drafts ("run-<buildId>") have no version — their saves/regens/restores are keyed on
+  // the pipeline run instead, so the same edit/generate/restore flows work before a version exists.
+  const buildId = state.entryId?.startsWith("run-")
+    ? Number(state.entryId.slice("run-".length)) || undefined
+    : undefined;
+
   const generation = useChangelogGeneration(
     project,
     repo,
@@ -31,6 +37,7 @@ export function useChangelogEditor(
     state.setDeveloperOverrides,
     state.entryId,
     setMutationCount,
+    buildId,
   );
 
   const edit = useChangelogEdit(
@@ -42,6 +49,7 @@ export function useChangelogEditor(
     state.setDeveloperOverrides,
     state.entryId,
     setMutationCount,
+    buildId,
   );
 
   const restore = useChangelogRestore(
@@ -53,6 +61,7 @@ export function useChangelogEditor(
     state.setDeveloperOverrides,
     state.entryId,
     setMutationCount,
+    buildId,
   );
 
   // Clear interaction state on version switch (same as original)

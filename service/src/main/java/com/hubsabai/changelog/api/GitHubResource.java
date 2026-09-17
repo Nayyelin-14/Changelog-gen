@@ -831,12 +831,16 @@ public class GitHubResource {
             @PathParam("repo") String repo,
             @QueryParam("version") String version,
             @QueryParam("audience") String audience,
-            @QueryParam("branch") String branch) {
+            @QueryParam("branch") String branch,
+            @QueryParam("buildId") Long buildId) {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
         if (version == null || version.isBlank()) {
-            throw new AiException("A version is required.");
+            if (buildId != null && buildId > 0) {
+                return draftMeta(recordedRunService.listDraftRevisions("github", project, repo, buildId), audience);
+            }
+            throw new AiException("A version or a pipeline build ID is required.");
         }
         List<ChangelogRevisionDto> revisions = List.of();
         ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
@@ -856,6 +860,25 @@ public class GitHubResource {
                         finalRevisions, null, null))
                 .orElse(new ChangelogMeta(null, null, null, null, false, null, null, null, null, null, false, null, null, null,
                         finalRevisions, null, null));
+    }
+
+    /** {@link ChangelogMeta} for a version-free draft: only the requested audience's own draft
+     * revisions are surfaced (each run draft belongs to exactly one audience), with the current
+     * text as the last revision. The repo-facing push/pushed/previous fields stay empty — those
+     * only make sense once a human assigns a version in the push modal. */
+    private static ChangelogMeta draftMeta(List<RecordedRunService.DraftRevision> all, String audience) {
+        List<ChangelogRevisionDto> filtered = all.stream()
+                .filter(r -> audience.equals(r.audience()))
+                .map(ChangelogRevisionDto::fromDraft)
+                .toList();
+        if (filtered.isEmpty()) {
+            return new ChangelogMeta(null, null, null, null, false, null, null, null, null, null,
+                    false, null, null, null, List.of(), null, null);
+        }
+        ChangelogRevisionDto current = filtered.get(filtered.size() - 1);
+        return new ChangelogMeta(current.getSource(), current.getModel(), current.getEditedBy(),
+                current.getCreatedAt(), false, null, null, null, null, null,
+                false, null, null, null, filtered, current.getTokens(), current.getDurationMs());
     }
 
     @GET
@@ -904,7 +927,17 @@ public class GitHubResource {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
         if (request.getVersion() == null || request.getVersion().isBlank()) {
-            throw new AiException("A version is required to save a changelog edit.");
+            if (request.getBuildId() == null || request.getBuildId() <= 0) {
+                throw new AiException("A version or a pipeline build ID is required to save a changelog edit.");
+            }
+            // A run-keyed draft edit — persisted onto the recorded run, not a version. It becomes
+            // a real version entry only when a human pushes it in the push modal.
+            recordedRunService.saveAiDraft("github", project, repo, request.getBuildId(), audience, "edit",
+                    request.getEditedBy(), null, request.getText(), null, null);
+            String developerText = "developer".equals(audience) ? request.getText() : null;
+            String qaText = "qa".equals(audience) ? request.getText() : null;
+            String businessText = "business".equals(audience) ? request.getText() : null;
+            return new GenerateResponse(developerText, qaText, businessText, List.of(), 0, true);
         }
         if (request.getText() == null || request.getText().isBlank()) {
             throw new AiException("Edited text must not be blank.");
@@ -974,12 +1007,20 @@ public class GitHubResource {
             @PathParam("repo") String repo,
             @QueryParam("version") String version,
             @QueryParam("audience") String audience,
-            @QueryParam("sequence") int sequence) {
+            @QueryParam("sequence") int sequence,
+            @QueryParam("buildId") Long buildId) {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
         if (version == null || version.isBlank()) {
-            throw new AiException("A version is required.");
+            if (buildId == null || buildId <= 0) {
+                throw new AiException("A version or a pipeline build ID is required.");
+            }
+            String restored = recordedRunService.restoreAiDraftRevision("github", project, repo, buildId,
+                    (long) sequence);
+            Map<String, String> draftResponse = new LinkedHashMap<>();
+            draftResponse.put("text", restored);
+            return draftResponse;
         }
         ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
         var target = cv != null ? ChangelogRevision.findBySequence(cv.id, audience, sequence) : null;
@@ -1018,7 +1059,7 @@ public class GitHubResource {
             throw new AiException("A version or a pipeline build ID is required to save a changelog generation.");
         }
         if (!hasVersion) {
-            recordedRunService.saveAiDraft("github", project, repo, buildId, audience,
+            recordedRunService.saveAiDraft("github", project, repo, buildId, audience, "ai", null,
                     request.getModel(), request.getText(), request.getTokens(), request.getDurationMs());
             return new GenerateResponse(null, null, null, List.of(), 0, true);
         }

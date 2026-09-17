@@ -139,7 +139,7 @@ class AzureDevOpsResourceTest {
                 .when().get("/api/projects/proj/repos/repo/changelog-meta")
                 .then()
                 .statusCode(400)
-                .body("error", org.hamcrest.Matchers.containsString("version is required"));
+                .body("error", org.hamcrest.Matchers.containsString("pipeline build ID is required"));
     }
 
     @Test
@@ -294,7 +294,7 @@ class AzureDevOpsResourceTest {
                 .when().put("/api/projects/proj/repos/repo/changelog-edit")
                 .then()
                 .statusCode(400)
-                .body("error", org.hamcrest.Matchers.containsString("version is required"));
+                .body("error", org.hamcrest.Matchers.containsString("pipeline build ID is required"));
     }
 
     @Test

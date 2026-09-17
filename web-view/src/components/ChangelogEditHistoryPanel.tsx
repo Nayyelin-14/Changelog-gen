@@ -48,6 +48,9 @@ interface ChangelogEditHistoryPanelProps {
   repo: string;
   version: string;
   branch?: string;
+  /** Set for a version-free run-keyed draft ("run-<buildId>"): revisions then come from the
+   * run's own draft history instead of a version's snapshots, and deletion is unavailable. */
+  buildId?: number;
   className?: string;
   selectedKey?: string | null;
   onSelect?: (row: HistoryRow) => void;
@@ -61,6 +64,7 @@ export function ChangelogEditHistoryPanel({
   repo,
   version,
   branch,
+  buildId,
   className,
   selectedKey,
   onSelect,
@@ -71,11 +75,12 @@ export function ChangelogEditHistoryPanel({
   const [deleteConfirmRow, setDeleteConfirmRow] = useState<HistoryRow | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const isDraft = typeof buildId === "number" && buildId > 0;
 
   const load = useCallback(async () => {
     const [developerMeta, qaMeta, businessMeta] = await Promise.all(
       AUDIENCES.map((a) =>
-        getChangelogMeta(project, repo, version, a.key as ChangelogAudience, branch).catch(() => null),
+        getChangelogMeta(project, repo, version, a.key as ChangelogAudience, branch, buildId).catch(() => null),
       ),
     );
 
@@ -128,7 +133,7 @@ export function ChangelogEditHistoryPanel({
         business: toSnapshot(snap.business),
       };
     });
-  }, [project, repo, version, branch]);
+  }, [project, repo, version, branch, buildId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,7 +186,7 @@ export function ChangelogEditHistoryPanel({
       <div className="flex shrink-0 items-center justify-between px-3 py-2.5">
         <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground/80">
           <History className="size-3.5" />
-          v{version} · Revisions
+          {isDraft ? "Draft · Revisions" : `v${version} · Revisions`}
         </span>
         <span className="text-[10px] text-muted-foreground/50">Click to view →</span>
       </div>
@@ -192,7 +197,7 @@ export function ChangelogEditHistoryPanel({
         )}
         {rows !== null && rows.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-            No revisions for v{version} yet.
+            {isDraft ? "No saved draft revisions yet." : `No revisions for v${version} yet.`}
           </p>
         )}
         {rows?.map((row) => {
@@ -275,18 +280,22 @@ export function ChangelogEditHistoryPanel({
                   >
                     Use this →
                   </span>
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => requestDelete(e, row)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") requestDelete(e as unknown as React.MouseEvent, row);
-                    }}
-                    className="mt-0.5 shrink-0 text-muted-foreground/50 transition-colors hover:text-destructive"
-                    title="Delete this revision"
-                  >
-                    <Trash2 className="size-3" />
-                  </span>
+                  {/* Draft revisions are a per-run log, not shared version snapshots — the
+                      delete endpoint is version-keyed and has no draft equivalent, so it's hidden. */}
+                  {!isDraft && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => requestDelete(e, row)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") requestDelete(e as unknown as React.MouseEvent, row);
+                      }}
+                      className="mt-0.5 shrink-0 text-muted-foreground/50 transition-colors hover:text-destructive"
+                      title="Delete this revision"
+                    >
+                      <Trash2 className="size-3" />
+                    </span>
+                  )}
                 </>
               )}
               <ChevronRight

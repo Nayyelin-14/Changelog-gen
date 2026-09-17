@@ -31,7 +31,7 @@ import {
   pushChangelog,
   resolveReleaseVersion,
 } from "@/api/client";
-import type { GenerationRecord } from "@/api/types";
+import type { GenerationRecord, ReleaseVersionResolution } from "@/api/types";
 import type { HistoryRow } from "@/components/ChangelogEditHistoryPanel";
 import { AudienceTabs } from "@/components/AudienceTabs";
 import { ChangelogBody } from "@/components/ChangelogBody";
@@ -365,6 +365,7 @@ export function GenerateChangelogPage() {
   const [pushModalOpen, setPushModalOpen] = useState(false);
   const [pushModalVersion, setPushModalVersion] = useState("");
   const [pushModalBranch, setPushModalBranch] = useState("");
+  const [pushModalResolution, setPushModalResolution] = useState<ReleaseVersionResolution | null>(null);
   const branches = useQuery(
     useCallback(() => (project && repo ? listBranches(project, repo) : Promise.resolve([])), [project, repo]),
     [project, repo],
@@ -373,24 +374,41 @@ export function GenerateChangelogPage() {
   const pushBuildId =
     effectiveEntryId?.startsWith("run-") ? Number(effectiveEntryId.slice("run-".length)) || undefined : undefined;
 
+  // Versions this repo already has a changelog for — the push modal must not let one be reused
+  // (except the entry's own version, which pushing legitimately updates).
+  const existingVersionSet = new Set(
+    data
+      .filter((e) => e.generated !== false && e.version)
+      .map((e) => (e.version as string).replace(/^v/i, "")),
+  );
+  const pushModalNormalizedVersion = pushModalVersion.trim().replace(/^v/i, "");
+  const pushModalOwnVersion = (displayEntry?.version ?? "").replace(/^v/i, "");
+  const pushModalLatestVersion = pushModalResolution?.latestVersion?.replace(/^v/i, "") ?? null;
+  const pushModalVersionTaken =
+    !!pushModalNormalizedVersion &&
+    pushModalNormalizedVersion !== pushModalOwnVersion &&
+    (existingVersionSet.has(pushModalNormalizedVersion) ||
+      (!!pushModalLatestVersion && pushModalNormalizedVersion === pushModalLatestVersion));
+
   async function openPushModal(entry: GenerationRecord) {
     setPushError(null);
     setPushModalVersion(entry.version ?? "");
     setPushModalBranch(entry.branch ?? selectedBranch ?? "main");
+    setPushModalResolution(null);
     setPushModalOpen(true);
-    // Prefill the suggested next version for drafts (repo has no entry for them yet).
-    if (!entry.version) {
-      try {
-        const rv = await resolveReleaseVersion(project!, repo!, entry.branch ?? selectedBranch ?? undefined);
-        if (rv.suggestedNextVersion) setPushModalVersion(rv.suggestedNextVersion);
-      } catch {
-        /* suggestion is best-effort — empty input is fine */
-      }
+    // Resolve the repo's latest version (for the "latest on this branch" hint) and prefill the
+    // suggested next version for drafts (the repo has no entry for them yet).
+    try {
+      const rv = await resolveReleaseVersion(project!, repo!, entry.branch ?? selectedBranch ?? undefined);
+      setPushModalResolution(rv);
+      if (!entry.version && rv.suggestedNextVersion) setPushModalVersion(rv.suggestedNextVersion);
+    } catch {
+      /* suggestion is best-effort — empty input is fine */
     }
   }
 
   async function handlePushModalConfirm() {
-    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch) return;
+    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken) return;
     setPushing(true);
     setPushError(null);
     try {
@@ -631,6 +649,7 @@ export function GenerateChangelogPage() {
                     repo={repo}
                     version={displayEntry.version ?? ""}
                     branch={displayEntry.branch ?? undefined}
+                    buildId={pushBuildId}
                     selectedKey={selectedHistoryRow?.key ?? null}
                     // Selecting the current revision itself just clears back to the live,
                     // fully-editable view — it's not a "snapshot" to browse read-only, it's what
@@ -1027,11 +1046,27 @@ export function GenerateChangelogPage() {
                               placeholder="e.g. 1.4.31"
                               className="font-mono"
                             />
+                            {(pushModalLatestVersion || pushModalResolution?.suggestedNextVersion) && (
+                              <p className="text-[11px] text-muted-foreground">
+                                {pushModalLatestVersion
+                                  ? <>Latest in the repo: <span className="font-mono">v{pushModalLatestVersion}</span></>
+                                  : null}
+                                {pushModalLatestVersion && pushModalResolution?.suggestedNextVersion ? " · " : null}
+                                {pushModalResolution?.suggestedNextVersion
+                                  ? <>Suggested next: <span className="font-mono">v{pushModalResolution.suggestedNextVersion.replace(/^v/i, "")}</span></>
+                                  : null}
+                              </p>
+                            )}
                             <p className="text-[11px] text-muted-foreground">
                               {displayEntry?.version
                                 ? "Prefilled from this entry — change it to push as a different version."
                                 : "This run has no version yet — pick the version this changelog is for."}
                             </p>
+                            {pushModalVersionTaken && (
+                              <p className="text-[11px] text-destructive">
+                                v{pushModalNormalizedVersion} already exists in this repo — choose a new version.
+                              </p>
+                            )}
                           </div>
                           <div className="space-y-1.5">
                             <label htmlFor="push-branch" className="text-sm font-medium">Branch</label>
@@ -1059,7 +1094,7 @@ export function GenerateChangelogPage() {
                           <Button variant="outline" size="sm" onClick={() => { setPushModalOpen(false); setPushError(null); }} disabled={pushing}>
                             Cancel
                           </Button>
-                          <Button size="sm" onClick={handlePushModalConfirm} disabled={pushing || !pushModalVersion.trim() || !pushModalBranch}>
+                          <Button size="sm" onClick={handlePushModalConfirm} disabled={pushing || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken}>
                             {pushing ? <><Loader2 className="size-3 animate-spin" /> Pushing…</> : <><Upload className="size-3" /> Push</>}
                           </Button>
                         </DialogFooter>
@@ -1081,7 +1116,7 @@ export function GenerateChangelogPage() {
                       restoring={restoringRevision} restoreError={restoreRevisionError}
                       onConfirm={handleRestoreRevision} onCancel={cancelRestoreRevision}
                       title="Restore this revision?"
-                      description={`This replaces the current v${displayEntry.version ?? "?"} ${restoreRevisionConfirmingTab ? (TABS.find((t) => t.key === restoreRevisionConfirmingTab)?.label ?? "") : ""} text with the selected revision's text. A new revision entry is created — no history is lost.`} />
+                      description={`This replaces the current ${displayEntry.version ? `v${displayEntry.version} ` : "draft "}${restoreRevisionConfirmingTab ? (TABS.find((t) => t.key === restoreRevisionConfirmingTab)?.label ?? "") : ""} text with the selected revision's text. A new revision entry is created — no history is lost.`} />
                   </div>
                 )}
               </div>

@@ -70,6 +70,19 @@ public class RecordedPipelineRun extends PanacheEntityBase {
     @Column(name = "ai_draft_at")
     public OffsetDateTime aiDraftAt;
 
+    @Column(name = "ai_draft_source", length = 40)
+    public String aiDraftSource;
+
+    @Column(name = "ai_draft_edited_by", length = 100)
+    public String aiDraftEditedBy;
+
+    /** Ordered JSON array of previous draft revisions (see {@code RecordedRunService.DraftRevision})
+     * — the edit/generate history for a version-free draft, so a run's past drafts are as browsable
+     * and restorable as a version's revisions. The current text lives in {@link #aiDraftText} and is
+     * pushed into this array on the next save. */
+    @Column(name = "ai_draft_history", columnDefinition = "text")
+    public String aiDraftHistory;
+
     @Column(name = "created_at")
     public OffsetDateTime createdAt;
 

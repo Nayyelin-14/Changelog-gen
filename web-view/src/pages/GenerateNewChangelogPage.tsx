@@ -40,12 +40,14 @@ import {
   listBranches,
   listHistory,
   pushChangelog,
+  resolveReleaseVersion,
   saveChangelogEdit,
 } from "@/api/client";
 import type {
   ChangeItem,
   PullRequestDetails as PRDetails,
   PullRequestWorkItemSummary,
+  ReleaseVersionResolution,
 } from "@/api/types";
 import { useResolvedAiProvider } from "@/hooks/useAiProvider";
 import {
@@ -434,6 +436,7 @@ export function GenerateNewChangelogPage() {
   // The version is chosen by the human here in the push modal — never auto-resolved by the
   // dashboard. Pre-seeded from a pipeline-supplied version (versionParam) when one exists.
   const [pushVersion, setPushVersion] = useState("");
+  const [pushResolution, setPushResolution] = useState<ReleaseVersionResolution | null>(null);
   // The model that actually produced the text currently on screen — captured at the moment a
   // generate call fires, not read live off `model`, so switching the dropdown after a result is
   // shown (without regenerating) can't make the banner claim a model that never actually ran.
@@ -494,8 +497,28 @@ export function GenerateNewChangelogPage() {
     }
   }, [project, repo, pushVersion, history, branchParam]);
 
+  // Versions this repo already has a changelog for — the push modal must not let one be reused
+  // (except this page's own version, whose entry pushing legitimately updates).
+  const existingVersionSet = useMemo(
+    () =>
+      new Set(
+        (history.status === "success" ? history.data.entries : [])
+          .filter((e) => e.generated !== false && e.version)
+          .map((e) => (e.version as string).replace(/^v/i, "")),
+      ),
+    [history],
+  );
+  const pushVersionNormalized = pushVersion.trim().replace(/^v/i, "");
+  const pushOwnVersionNormalized = (version || "").replace(/^v/i, "");
+  const pushLatestVersion = pushResolution?.latestVersion?.replace(/^v/i, "") ?? null;
+  const pushVersionTaken =
+    !!pushVersionNormalized &&
+    pushVersionNormalized !== pushOwnVersionNormalized &&
+    (existingVersionSet.has(pushVersionNormalized) ||
+      (!!pushLatestVersion && pushVersionNormalized === pushLatestVersion));
+
   async function handlePush() {
-    if (!project || !repo || !pushVersion || !pushBranch) return;
+    if (!project || !repo || !pushVersion || !pushBranch || pushVersionTaken) return;
     setPushLoading(true);
     setPushError(null);
     // Detect push mode based on whether version already has a CHANGELOG.md entry
@@ -1065,6 +1088,7 @@ export function GenerateNewChangelogPage() {
     setPushRepoTextLoading(true);
     setPushBranch(branchParam);
     setPushVersion(version || "");
+    setPushResolution(null);
     const pushVer = version || "";
     try {
       const repoText = pushVer
@@ -1082,6 +1106,22 @@ export function GenerateNewChangelogPage() {
       });
     } finally {
       setPushRepoTextLoading(false);
+    }
+    // Latest version on the target branch (for the modal's hint and duplicate guard) — and, for
+    // a page with no pipeline-supplied version, a suggested next version to prefill. Best-effort.
+    void refreshPushResolution(branchParam, pushVer);
+  }
+
+  /** Loads the repo's latest/suggested version for the branch about to be pushed to, so the modal
+   * can show what already exists and the version input can refuse a duplicate. */
+  async function refreshPushResolution(branch: string | undefined, currentVersion: string) {
+    if (!project || !repo) return;
+    try {
+      const rv = await resolveReleaseVersion(project, repo, branch);
+      setPushResolution(rv);
+      if (!currentVersion && rv.suggestedNextVersion) setPushVersion(rv.suggestedNextVersion);
+    } catch {
+      /* the hint is best-effort — an empty input is still valid */
     }
   }
 
@@ -1109,6 +1149,7 @@ export function GenerateNewChangelogPage() {
     } finally {
       setPushRepoTextLoading(false);
     }
+    void refreshPushResolution(newBranch, pushVersion);
   }
 
   // Re-checks the diff's "Current" side when the user edits the version in the push modal —
@@ -1129,6 +1170,7 @@ export function GenerateNewChangelogPage() {
     } finally {
       setPushRepoTextLoading(false);
     }
+    void refreshPushResolution(pushBranch, newVersion);
   }
 
   /* ──────────────────────────────────────────────── */
@@ -2138,6 +2180,7 @@ export function GenerateNewChangelogPage() {
           pendingLabel="Pushing…"
           loading={pushLoading}
           error={pushError}
+          confirmDisabled={pushVersionTaken}
           onConfirm={handlePush}
           onCancel={() => {
             setPushConfirmOpen(false);
@@ -2156,6 +2199,22 @@ export function GenerateNewChangelogPage() {
                 className="h-8 w-fit min-w-[120px] text-xs font-mono"
               />
             </div>
+            {(pushLatestVersion || pushResolution?.suggestedNextVersion) && (
+              <p className="text-[11px] text-muted-foreground">
+                {pushLatestVersion && (
+                  <>Latest in the repo: <span className="font-mono">v{pushLatestVersion}</span></>
+                )}
+                {pushLatestVersion && pushResolution?.suggestedNextVersion ? " · " : null}
+                {pushResolution?.suggestedNextVersion && (
+                  <>Suggested next: <span className="font-mono">v{pushResolution.suggestedNextVersion.replace(/^v/i, "")}</span></>
+                )}
+              </p>
+            )}
+            {pushVersionTaken && (
+              <p className="text-[11px] text-destructive">
+                v{pushVersionNormalized} already exists in this repo — choose a new version.
+              </p>
+            )}
             {branches.status === "success" && branches.data.length > 0 && (
               <div className="flex items-center gap-2 text-sm">
                 <span className="text-muted-foreground">Target branch</span>

@@ -1,6 +1,7 @@
 package com.hubsabai.changelog.api;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.hubsabai.changelog.storage.RecordedRunService;
 
 public record ChangelogRevisionDto(
         @JsonProperty("sequence") int sequence,
@@ -11,6 +12,13 @@ public record ChangelogRevisionDto(
         @JsonProperty("editedBy") String editedBy,
         @JsonProperty("text") String text,
         @JsonProperty("createdAt") String createdAt) {
+
+    public static ChangelogRevisionDto fromDraft(RecordedRunService.DraftRevision r) {
+        return new ChangelogRevisionDto(r.sequence().intValue(), r.source(), r.model(),
+                r.tokens() != null ? r.tokens().intValue() : null,
+                r.durationMs() != null ? r.durationMs().intValue() : null,
+                r.editedBy(), r.text(), r.createdAt());
+    }
 
     public int getSequence() { return sequence; }
     public String getSource() { return source; }

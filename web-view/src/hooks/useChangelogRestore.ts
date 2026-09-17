@@ -40,6 +40,7 @@ export function useChangelogRestore(
   setDeveloperOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   entryId: string | undefined,
   setMutationCount: React.Dispatch<React.SetStateAction<number>>,
+  buildId?: number,
 ): UseChangelogRestoreReturn {
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -166,6 +167,7 @@ export function useChangelogRestore(
         selectedEntry.version ?? "",
         restoreRevisionConfirmingTab,
         restoreRevisionSequence,
+        buildId,
       );
       if (restoreRevisionConfirmingTab === "developer") {
         setDeveloperOverrides((prev) => ({ ...prev, [entryId]: restoredText }));
@@ -197,6 +199,7 @@ export function useChangelogRestore(
     repo,
     selectedEntry,
     entryId,
+    buildId,
     restoreRevisionConfirmingTab,
     restoreRevisionSequence,
     setGeneratedByEntry,

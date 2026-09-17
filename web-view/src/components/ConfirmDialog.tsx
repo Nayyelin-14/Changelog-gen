@@ -24,6 +24,7 @@ export function ConfirmDialog({
   pendingLabel,
   loading,
   error,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: {
@@ -37,6 +38,8 @@ export function ConfirmDialog({
   pendingLabel: string;
   loading: boolean;
   error: string | null;
+  /** Extra gate for the confirm button beyond `loading` — e.g. a validation failure in `children`. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -71,7 +74,7 @@ export function ConfirmDialog({
           <Button variant="ghost" onClick={onCancel} disabled={loading}>
             Cancel
           </Button>
-          <Button onClick={onConfirm} disabled={loading}>
+          <Button onClick={onConfirm} disabled={loading || confirmDisabled}>
             {loading ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" />

@@ -9,6 +9,7 @@ public class ChangelogEditRequest {
     private String audience;
     private String text;
     private String editedBy;
+    private Long buildId;
 
     public ChangelogEditRequest() {}
 
@@ -31,4 +32,8 @@ public class ChangelogEditRequest {
     @JsonProperty("editedBy")
     public String getEditedBy() { return editedBy; }
     public void setEditedBy(String editedBy) { this.editedBy = editedBy; }
+
+    @JsonProperty("buildId")
+    public Long getBuildId() { return buildId; }
+    public void setBuildId(Long buildId) { this.buildId = buildId; }
 }
