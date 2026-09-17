@@ -926,6 +926,9 @@ public class GitHubResource {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
+        if (request.getText() == null || request.getText().isBlank()) {
+            throw new AiException("Edited text must not be blank.");
+        }
         if (request.getVersion() == null || request.getVersion().isBlank()) {
             if (request.getBuildId() == null || request.getBuildId() <= 0) {
                 throw new AiException("A version or a pipeline build ID is required to save a changelog edit.");
@@ -938,9 +941,6 @@ public class GitHubResource {
             String qaText = "qa".equals(audience) ? request.getText() : null;
             String businessText = "business".equals(audience) ? request.getText() : null;
             return new GenerateResponse(developerText, qaText, businessText, List.of(), 0, true);
-        }
-        if (request.getText() == null || request.getText().isBlank()) {
-            throw new AiException("Edited text must not be blank.");
         }
         String version = request.getVersion();
         cacheService.saveEdit(project, repo, version, audience, request.getText(), request.getEditedBy());
