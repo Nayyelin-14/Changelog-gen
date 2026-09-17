@@ -1,0 +1,53 @@
+{
+  "results": [
+    [
+      "role-select",
+      "ok"
+    ],
+    [
+      "dev-dashboard",
+      "ok"
+    ],
+    [
+      "repo-overview",
+      "ok"
+    ],
+    [
+      "open-latest-run",
+      "ok"
+    ],
+    [
+      "run-generation",
+      "ok"
+    ],
+    [
+      "save-draft",
+      "ok"
+    ],
+    [
+      "edit-and-save-edit",
+      "ok"
+    ],
+    [
+      "restore-previous",
+      "FAIL: locator.click: Timeout 10000ms exceeded."
+    ],
+    [
+      "push-to-repo",
+      "ok"
+    ],
+    [
+      "history-detail",
+      "ok"
+    ],
+    [
+      "qa-view-and-chat",
+      "FAIL: locator.click: Timeout 15000ms exceeded."
+    ],
+    [
+      "business-view",
+      "ok"
+    ]
+  ],
+  "commitUrl": null
+}

@@ -36,9 +36,9 @@ import java.util.logging.Logger;
 
 public class NimAiProvider implements AiProvider {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    protected static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-    private static final Logger LOG = Logger.getLogger(NimAiProvider.class.getName());
+    protected static final Logger LOG = Logger.getLogger(NimAiProvider.class.getName());
 
     /** Models whose last call failed without producing output; blocked for {@link #BLACKLIST_TTL_MS}
      * so a hung/failing endpoint (e.g. a catalog model that never answers) doesn't burn a full
@@ -55,35 +55,35 @@ public class NimAiProvider implements AiProvider {
      * probe rounds, so a single transient failure (cold start, timeout blip, 503) never yanks a
      * usable model out of the picker — only sustained, separate failures do.
      */
-    private static final Map<String, ModelHealth> MODEL_HEALTH = new ConcurrentHashMap<>();
-    private static final long PROBE_OK_TTL_MS = TimeUnit.HOURS.toMillis(6);
-    private static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
-    private static final int PROBE_CONCURRENCY = 12;
+    protected static final Map<String, ModelHealth> MODEL_HEALTH = new ConcurrentHashMap<>();
+    protected static final long PROBE_OK_TTL_MS = TimeUnit.HOURS.toMillis(6);
+    protected static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
+    protected static final int PROBE_CONCURRENCY = 12;
     /** Probe read timeout. Generation uses a separate 120s read timeout; the probe only needs to
      * learn whether a model answers chat at all, but real NVIDIA cold starts can take well over 8s,
      * so probing with 8s hid genuinely usable models. 30s keeps the picker representative without
      * turning the dropdown into a second generation call. */
-    private static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
+    protected static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     /** Probing attempts per model. NVIDIA's chat endpoint flaps hard (even healthy models hang on
      * their first cold request), so a model must fail EVERY attempt before it's hidden — a single
      * transient hang or 503 must not yank a working model out of the picker. */
-    private static final int PROBE_ATTEMPTS = 2;
+    protected static final int PROBE_ATTEMPTS = 2;
     /** Consecutive failed probe rounds (each up to {@link #PROBE_ATTEMPTS} calls, re-probed at most
      * once per {@link #PROBE_BROKEN_TTL_MS}) required before a model is hidden from the picker. */
-    private static final int PROBE_FAILS_TO_HIDE = 3;
-    private static final Semaphore PROBE_GATE = new Semaphore(PROBE_CONCURRENCY);
-    private static final ExecutorService PROBE_POOL = Executors.newVirtualThreadPerTaskExecutor();
+    protected static final int PROBE_FAILS_TO_HIDE = 3;
+    protected static final Semaphore PROBE_GATE = new Semaphore(PROBE_CONCURRENCY);
+    protected static final ExecutorService PROBE_POOL = Executors.newVirtualThreadPerTaskExecutor();
 
     /** {@code failures} counts consecutive probe rounds that ended in failure for this model. */
-    private record ModelHealth(boolean ok, int failures, long checkedAtMillis) {}
+    protected record ModelHealth(boolean ok, int failures, long checkedAtMillis) {}
 
-    private final Client client;
-    private final Client probeClient;
-    private final String baseUrl;
-    private final String model;
-    private final List<String> fallbackModels;
-    private final String apiKey;
-    private final Set<String> allowedModels;
+    protected final Client client;
+    protected final Client probeClient;
+    protected final String baseUrl;
+    protected final String model;
+    protected final List<String> fallbackModels;
+    protected final String apiKey;
+    protected final Set<String> allowedModels;
     private final String developerPromptOverride;
     private final String qaPromptOverride;
     private final String businessPromptOverride;
@@ -238,7 +238,7 @@ public class NimAiProvider implements AiProvider {
     /** Clears the failure blacklist and the probe-health cache. Test hook — both maps are static
      * across the JVM, so tests must start from a clean slate instead of inheriting failures from
      * an earlier test method. */
-    static void resetModelBlacklist() {
+    protected static void resetModelBlacklist() {
         MODEL_BLACKLIST.clear();
         MODEL_HEALTH.clear();
     }
@@ -246,7 +246,7 @@ public class NimAiProvider implements AiProvider {
     /** Seeds a failed probe round for a model. Test hook — lets tests simulate the {@code
      * PROBE_FAILS_TO_HIDE} consecutive failures a model must accumulate (via repeated re-probes
      * spread across {@link #PROBE_BROKEN_TTL_MS}) before {@link #listModels()} stops offering it. */
-    static void recordProbeFailure(String model) {
+    protected static void recordProbeFailure(String model) {
         MODEL_HEALTH.put(model, new ModelHealth(false,
                 (MODEL_HEALTH.get(model) != null ? MODEL_HEALTH.get(model).failures() : 0) + 1,
                 System.currentTimeMillis()));
@@ -447,7 +447,7 @@ public class NimAiProvider implements AiProvider {
     private static final java.util.regex.Pattern WRAPPING_FENCE =
             java.util.regex.Pattern.compile("\\A```[^\\n]*\\r?\\n([\\s\\S]*?)\\r?\\n?```\\s*\\z");
 
-    static String stripCodeFence(String text) {
+    protected static String stripCodeFence(String text) {
         if (text == null) return null;
         String trimmed = text.strip();
         java.util.regex.Matcher matcher = WRAPPING_FENCE.matcher(trimmed);
@@ -520,7 +520,7 @@ public class NimAiProvider implements AiProvider {
      * regenerate into a 120s read-timeout. Probing replicates exactly what generation does (a minimal
      * chat call) so the dropdown stays in sync with reality.
      */
-    private AiModelOption healthyOption(String id) {
+    protected AiModelOption healthyOption(String id) {
         ModelHealth cached = MODEL_HEALTH.get(id);
         long now = System.currentTimeMillis();
         if (cached != null) {
@@ -536,14 +536,14 @@ public class NimAiProvider implements AiProvider {
     /** A model is offered when it is currently healthy, or when it has only failed a few separate
      * probe rounds — a single cold-start hang or 503 must not yank a usable model out of the picker.
      * Only sustained, repeated failures (≥ {@link #PROBE_FAILS_TO_HIDE} consecutive rounds) hide it. */
-    private AiModelOption healthyOrNotYetBroken(ModelHealth health, String id) {
+    protected AiModelOption healthyOrNotYetBroken(ModelHealth health, String id) {
         if (health.ok() || health.failures() < PROBE_FAILS_TO_HIDE) {
             return new AiModelOption(id, prettifyModelId(id), isRecommended(id));
         }
         return null;
     }
 
-    private ModelHealth probeHealth(String id, ModelHealth cached) {
+    protected ModelHealth probeHealth(String id, ModelHealth cached) {
         boolean ok = false;
         for (int attempt = 0; attempt < PROBE_ATTEMPTS && !ok; attempt++) {
             try {
@@ -566,7 +566,7 @@ public class NimAiProvider implements AiProvider {
 
     /** Minimal chat call against the real-generation endpoint: 200 = served and healthy; anything
      * else (404/503, connection error, read-timeout hang) = broken and hidden from the dropdown. */
-    private boolean probeChat(String id) {
+    protected boolean probeChat(String id) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", id);
         body.put("messages", List.of(new AiMessage("user", "hi")));
@@ -587,7 +587,7 @@ public class NimAiProvider implements AiProvider {
         }
     }
 
-    private static final Set<String> EXCLUDED_MODELS = Set.of(
+    protected static final Set<String> EXCLUDED_MODELS = Set.of(
         "google/codegemma-1.1-7b", "google/codegemma-7b", "meta/codellama-70b",
         "mistralai/codestral-22b-instruct-v0.1", "nvidia/cosmos-reason2-8b",
         "databricks/dbrx-instruct", "deepseek-ai/deepseek-coder-6.7b-instruct",
@@ -617,7 +617,7 @@ public class NimAiProvider implements AiProvider {
         "qwen/qwen3-next-80b-a3b-instruct", "stepfun-ai/step-3.7-flash"
     );
 
-    private static final List<String> RECOMMENDED_MODELS = List.of(
+    protected static final List<String> RECOMMENDED_MODELS = List.of(
         "meta/llama-3.2-11b-vision-instruct",
         "nvidia/nemotron-3-super-120b-a12b",
         "meta/muse-glimmer-30b",
@@ -627,17 +627,17 @@ public class NimAiProvider implements AiProvider {
         "nvidia/nemotron-3-ultra-550b-a55b"
     );
 
-    private static boolean isRecommended(String id) {
+    protected static boolean isRecommended(String id) {
         return RECOMMENDED_MODELS.contains(id);
     }
 
     // Rank order puts the top-5 at the top of the dropdown; non-recommended models sort after all of them by label.
-    private static int recommendedRank(String id) {
+    protected int recommendedRank(String id) {
         int rank = RECOMMENDED_MODELS.indexOf(id);
         return rank < 0 ? Integer.MAX_VALUE : rank;
     }
 
-    private static boolean looksLikeChatModel(String id) {
+    protected static boolean looksLikeChatModel(String id) {
         String lower = id.toLowerCase();
         if (lower.contains("embed") || lower.contains("guard") || lower.contains("safety")
                 || lower.contains("translate") || lower.contains("clip") || lower.contains("kosmos")
@@ -650,7 +650,7 @@ public class NimAiProvider implements AiProvider {
         return true;
     }
 
-    private static String prettifyModelId(String id) {
+    protected static String prettifyModelId(String id) {
         String name = id.contains("/") ? id.substring(id.indexOf('/') + 1) : id;
         StringBuilder sb = new StringBuilder();
         for (String part : name.split("[-_]")) {

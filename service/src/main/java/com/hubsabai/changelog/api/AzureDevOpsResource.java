@@ -66,6 +66,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.Objects;
@@ -1200,14 +1201,36 @@ public class AzureDevOpsResource {
         return aiProviderRegistry.list();
     }
 
+    /**
+     * Provider-scoped model listing. Only {@code nvidia} (the default) may fall back to the curated
+     * {@link AiModelCatalog#FREE_MODELS} when its live list is empty or unreachable — those entries
+     * are health-checked against NVIDIA's endpoint, so the substitution stays true to the provider.
+     * Any other provider returns its own live models or a clear error: it must never render another
+     * provider's model IDs in the picker (that masks real failures as healthy NVIDIA options).
+     */
     @GET
     @Path("/ai/models")
     public List<AiModelOption> listAiModels(@QueryParam("provider") String provider) {
+        String id = provider == null || provider.isBlank()
+                ? AiProviderRegistry.DEFAULT_PROVIDER
+                : provider.trim().toLowerCase(Locale.ROOT);
         try {
-            List<AiModelOption> live = aiProviderRegistry.resolve(provider).listModels();
-            return live.isEmpty() ? AiModelCatalog.FREE_MODELS : live;
+            List<AiModelOption> live = aiProviderRegistry.resolve(id).listModels();
+            if (!live.isEmpty()) {
+                return live;
+            }
+            if (AiProviderRegistry.DEFAULT_PROVIDER.equals(id)) {
+                return AiModelCatalog.FREE_MODELS;
+            }
+            throw new AiException("AI provider '" + id + "' returned an empty model list.");
         } catch (Exception e) {
-            return AiModelCatalog.FREE_MODELS;
+            if (AiProviderRegistry.DEFAULT_PROVIDER.equals(id)) {
+                return AiModelCatalog.FREE_MODELS;
+            }
+            if (e instanceof AiException ai) {
+                throw ai;
+            }
+            throw new AiException("AI provider '" + id + "' model list unavailable: " + e.getMessage());
         }
     }
 

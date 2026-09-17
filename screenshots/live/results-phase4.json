@@ -1,0 +1,14 @@
+[
+  [
+    "edit-creates-revision",
+    "ok"
+  ],
+  [
+    "restore-revision",
+    "FAIL: locator.click: Timeout 10000ms exceeded."
+  ],
+  [
+    "qa-chat-full-answer",
+    "FAIL: page.waitForFunction: Timeout 120000ms exceeded."
+  ]
+]

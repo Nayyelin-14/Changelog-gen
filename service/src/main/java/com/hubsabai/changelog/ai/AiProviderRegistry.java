@@ -43,7 +43,8 @@ public class AiProviderRegistry {
             "groq", "Groq",
             "openrouter", "OpenRouter",
             "together", "Together AI",
-            "deepseek", "DeepSeek");
+            "deepseek", "DeepSeek",
+            "zai", "Z.AI (GLM)");
 
     private final Map<String, ProviderEntry> providers = new LinkedHashMap<>();
 
@@ -102,9 +103,15 @@ public class AiProviderRegistry {
         }
 
         boolean enabled = !apiKey.isBlank();
-        return new ProviderEntry(id, label(id), enabled, enabled
-                ? new NimAiProvider(baseUrl, model, apiKey, fallbackModels, allowedModels, developerPrompt, qaPrompt, businessPrompt)
-                : null);
+        AiProvider provider = null;
+        if (enabled) {
+            if ("zai".equals(id)) {
+                provider = new ZaiAiProvider(baseUrl, model, apiKey, fallbackModels, allowedModels, developerPrompt, qaPrompt, businessPrompt);
+            } else {
+                provider = new NimAiProvider(baseUrl, model, apiKey, fallbackModels, allowedModels, developerPrompt, qaPrompt, businessPrompt);
+            }
+        }
+        return new ProviderEntry(id, label(id), enabled, provider);
     }
 
     private static String label(String id) {

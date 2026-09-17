@@ -1,0 +1,10 @@
+[
+  [
+    "restore-qa-revision",
+    "ok"
+  ],
+  [
+    "qa-chat-full-answer",
+    "FAIL: chat never finished thinking"
+  ]
+]

@@ -1,0 +1,28 @@
+{
+  "results": [
+    [
+      "workflow-mcp-full-loop",
+      "FAIL: push failed: 502 GitHub push failed for Nayyelin-14/workflow-mcp: Received: 'Forbidden, status code 403' when invoking REST Client method: 'com.hubsabai.changelog.connector.github.GitHubOrgRestClient#createRef'"
+    ],
+    [
+      "qa-v109-generate-save",
+      "ok"
+    ],
+    [
+      "restore-revision",
+      "FAIL: locator.click: Timeout 10000ms exceeded."
+    ],
+    [
+      "qa-chat",
+      "ok"
+    ],
+    [
+      "business-view",
+      "ok"
+    ]
+  ],
+  "pushOutcome": {
+    "ok": false,
+    "error": "502 GitHub push failed for Nayyelin-14/workflow-mcp: Received: 'Forbidden, status code 403' when invoking REST Client method: 'com.hubsabai.changelog.connector.github.GitHubOrgRestClient#createRef'"
+  }
+}

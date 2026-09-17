@@ -20,6 +20,34 @@ class AzureDevOpsResourceTest {
                 .body("[0].label", org.hamcrest.Matchers.notNullValue());
     }
 
+    // The model listing is provider-scoped: a provider that cannot list its own models must
+    // surface an error instead of silently presenting NVIDIA's curated FREE_MODELS — that masked
+    // a broken provider (e.g. a geo-blocked Gemini/Groq) as a healthy NVIDIA picker with HTTP 200.
+
+    @Test
+    void aiModelsForAnUnknownProviderIsAnErrorNotFreeModels() {
+        // Previously returned HTTP 200 + the 5 NVIDIA FREE_MODELS for ANY provider — the masking bug.
+        given()
+                .queryParam("provider", "does-not-exist")
+                .when().get("/api/ai/models")
+                .then()
+                .statusCode(400)
+                .body("error", org.hamcrest.Matchers.containsString("Unknown AI provider"));
+    }
+
+    @Test
+    void aiModelsForTheDefaultProviderStillFallsBackToCuratedFreeModels() {
+        // NVIDIA (the default) is the only provider allowed the curated fallback when its live
+        // list is unreachable — tests pin ai.base-url to a refused port, so this exercises the
+        // legitimate same-provider fallback path.
+        given()
+                .queryParam("provider", "nvidia")
+                .when().get("/api/ai/models")
+                .then()
+                .statusCode(200)
+                .body("size()", greaterThan(0));
+    }
+
     // version is required unconditionally unless manualText or a buildId identifies the data —
     // a version-free manual-text preview is a deliberate dashboard flow (version is filled in at
     // push time), but with no data source at all the request must fail before any AI/API call.
