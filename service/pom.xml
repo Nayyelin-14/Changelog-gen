@@ -146,6 +146,12 @@
                     <systemPropertyVariables>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                         <maven.home>${maven.home}</maven.home>
+                        <!-- Override service/.env (Quarkus loads it in test mode, above application.properties)
+                             so QuarkusTest never hits the real AI endpoints: a refused port fails the catalog
+                             fetch instantly and the dropdown falls back to FREE_MODELS deterministically. -->
+                        <ai.api-key>test-key</ai.api-key>
+                        <ai.base-url>http://127.0.0.1:1/v1/chat/completions</ai.base-url>
+                        <ai.providers></ai.providers>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

@@ -51,20 +51,31 @@ public class NimAiProvider implements AiProvider {
      * hide models the NVIDIA catalog advertises but that don't actually serve chat traffic (they
      * hang or answer 404/503). Working models are trusted for {@link #PROBE_OK_TTL_MS}; broken ones
      * are re-probed after {@link #PROBE_BROKEN_TTL_MS} so a recovered model reappears by itself.
+     * A model is only actually hidden once it has failed {@link #PROBE_FAILS_TO_HIDE} consecutive
+     * probe rounds, so a single transient failure (cold start, timeout blip, 503) never yanks a
+     * usable model out of the picker — only sustained, separate failures do.
      */
     private static final Map<String, ModelHealth> MODEL_HEALTH = new ConcurrentHashMap<>();
     private static final long PROBE_OK_TTL_MS = TimeUnit.HOURS.toMillis(6);
     private static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
     private static final int PROBE_CONCURRENCY = 12;
-    private static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(8);
+    /** Probe read timeout. Generation uses a separate 120s read timeout; the probe only needs to
+     * learn whether a model answers chat at all, but real NVIDIA cold starts can take well over 8s,
+     * so probing with 8s hid genuinely usable models. 30s keeps the picker representative without
+     * turning the dropdown into a second generation call. */
+    private static final long PROBE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     /** Probing attempts per model. NVIDIA's chat endpoint flaps hard (even healthy models hang on
      * their first cold request), so a model must fail EVERY attempt before it's hidden — a single
      * transient hang or 503 must not yank a working model out of the picker. */
     private static final int PROBE_ATTEMPTS = 2;
+    /** Consecutive failed probe rounds (each up to {@link #PROBE_ATTEMPTS} calls, re-probed at most
+     * once per {@link #PROBE_BROKEN_TTL_MS}) required before a model is hidden from the picker. */
+    private static final int PROBE_FAILS_TO_HIDE = 3;
     private static final Semaphore PROBE_GATE = new Semaphore(PROBE_CONCURRENCY);
     private static final ExecutorService PROBE_POOL = Executors.newVirtualThreadPerTaskExecutor();
 
-    private record ModelHealth(boolean ok, long checkedAtMillis) {}
+    /** {@code failures} counts consecutive probe rounds that ended in failure for this model. */
+    private record ModelHealth(boolean ok, int failures, long checkedAtMillis) {}
 
     private final Client client;
     private final Client probeClient;
@@ -195,7 +206,7 @@ public class NimAiProvider implements AiProvider {
             try {
                 AiResult result = attempt.apply(candidate);
                 MODEL_BLACKLIST.remove(candidate);
-                MODEL_HEALTH.put(candidate, new ModelHealth(true, System.currentTimeMillis()));
+                MODEL_HEALTH.put(candidate, new ModelHealth(true, 0, System.currentTimeMillis()));
                 return result;
             } catch (AiStreamException e) {
                 if (e.anyOutputEmitted()) throw e;
@@ -230,6 +241,15 @@ public class NimAiProvider implements AiProvider {
     static void resetModelBlacklist() {
         MODEL_BLACKLIST.clear();
         MODEL_HEALTH.clear();
+    }
+
+    /** Seeds a failed probe round for a model. Test hook — lets tests simulate the {@code
+     * PROBE_FAILS_TO_HIDE} consecutive failures a model must accumulate (via repeated re-probes
+     * spread across {@link #PROBE_BROKEN_TTL_MS}) before {@link #listModels()} stops offering it. */
+    static void recordProbeFailure(String model) {
+        MODEL_HEALTH.put(model, new ModelHealth(false,
+                (MODEL_HEALTH.get(model) != null ? MODEL_HEALTH.get(model).failures() : 0) + 1,
+                System.currentTimeMillis()));
     }
 
     @Override
@@ -506,13 +526,24 @@ public class NimAiProvider implements AiProvider {
         if (cached != null) {
             long ttl = cached.ok() ? PROBE_OK_TTL_MS : PROBE_BROKEN_TTL_MS;
             if (now - cached.checkedAtMillis() < ttl) {
-                return cached.ok() ? new AiModelOption(id, prettifyModelId(id), isRecommended(id)) : null;
+                return healthyOrNotYetBroken(cached, id);
             }
         }
-        return probeHealth(id) ? new AiModelOption(id, prettifyModelId(id), isRecommended(id)) : null;
+        ModelHealth checked = probeHealth(id, cached);
+        return healthyOrNotYetBroken(checked, id);
     }
 
-    private boolean probeHealth(String id) {
+    /** A model is offered when it is currently healthy, or when it has only failed a few separate
+     * probe rounds — a single cold-start hang or 503 must not yank a usable model out of the picker.
+     * Only sustained, repeated failures (≥ {@link #PROBE_FAILS_TO_HIDE} consecutive rounds) hide it. */
+    private AiModelOption healthyOrNotYetBroken(ModelHealth health, String id) {
+        if (health.ok() || health.failures() < PROBE_FAILS_TO_HIDE) {
+            return new AiModelOption(id, prettifyModelId(id), isRecommended(id));
+        }
+        return null;
+    }
+
+    private ModelHealth probeHealth(String id, ModelHealth cached) {
         boolean ok = false;
         for (int attempt = 0; attempt < PROBE_ATTEMPTS && !ok; attempt++) {
             try {
@@ -527,8 +558,10 @@ public class NimAiProvider implements AiProvider {
                 PROBE_GATE.release();
             }
         }
-        MODEL_HEALTH.put(id, new ModelHealth(ok, System.currentTimeMillis()));
-        return ok;
+        int failures = ok ? 0 : (cached != null ? cached.failures() + 1 : 1);
+        ModelHealth checked = new ModelHealth(ok, failures, System.currentTimeMillis());
+        MODEL_HEALTH.put(id, checked);
+        return checked;
     }
 
     /** Minimal chat call against the real-generation endpoint: 200 = served and healthy; anything
