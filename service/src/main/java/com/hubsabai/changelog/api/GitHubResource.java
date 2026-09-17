@@ -554,11 +554,12 @@ public class GitHubResource {
         }
         List<HistoryEntry> draftEntries = new ArrayList<>();
         for (RecordedPipelineRun run : drafts) {
-            String title = run.displayTitle();
+            String body = run.aiDraftText != null && !run.aiDraftText.isBlank()
+                    ? run.aiDraftText : run.displayTitle();
             HistoryEntry entry = new HistoryEntry(
                     "run-" + run.buildId, project, repo, branch, null,
                     List.of(), run.aiDraftAt != null ? run.aiDraftAt.toString() : null,
-                    title != null ? title : run.aiDraftText);
+                    body);
             entry.setSource("raw");
             draftEntries.add(entry);
         }
