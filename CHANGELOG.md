@@ -1,3 +1,10 @@
+## v1.0.14 — 2026-09-19
+
+- **fix(web-view)**: Fixed model spinner UX by removing per-model spinners and replacing them with a single 'Checking additional models…' indicator, and tightened page layout with stacked layout on mobile and side-by-side on desktop.
+- **fix(web-view)**: Fixed model spinner UX by showing a green dot for recommended/curated models regardless of health-cache status, removing per-model spinners, and showing a single 'Checking additional models…' indicator for non-curated discovered models.
+- **fix(web-view)**: Merged pull request #13 from Nayyelin-14/feat/ui-polish-and-fast-model-select, which fixed model spinner UX and tightened page layout.
+- **fix(web-view)**: Merged pull request #14 from Nayyelin-14/dev, which fixed model spinner UX and tightened page layout.
+
 ## v1.0.13 — 2026-09-19 (promoted build.45)
 
 ## v1.0.12 — 2026-09-19 (promoted build.43)
