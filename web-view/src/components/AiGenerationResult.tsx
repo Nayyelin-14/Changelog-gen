@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 export interface GenerationMetadata {
   provider?: string;
   model?: string;
+  modelLabel?: string;
   durationMs?: number;
   totalTokens?: number;
 }
@@ -12,6 +13,7 @@ export interface GenerationMetadata {
 interface AiGenerationResultProps {
   metadata: GenerationMetadata;
   generating?: boolean;
+  runNumber?: number | string;
   children?: React.ReactNode;
   className?: string;
 }
@@ -21,10 +23,11 @@ interface AiGenerationResultProps {
 export function AiGenerationResult({
   metadata,
   generating = false,
+  runNumber,
   children,
   className,
 }: AiGenerationResultProps) {
-  const { provider, model, durationMs, totalTokens } = metadata;
+  const { provider, model, modelLabel, durationMs, totalTokens } = metadata;
   const hasMetadata = !!(provider || model || durationMs || totalTokens);
 
   return (
@@ -47,12 +50,13 @@ export function AiGenerationResult({
           {generating ? (
             <span className="inline-flex items-center gap-1.5 text-primary">
               <Loader2 className="size-3 shrink-0 animate-spin" />
-              <span className="font-medium">Generating…</span>
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
               <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-              <span className="font-medium">Changelog generated</span>
+              <span className="font-medium">
+                Changelog generated{runNumber != null ? ` for Run - ${runNumber}` : ""}
+              </span>
             </span>
           )}
 
@@ -60,9 +64,9 @@ export function AiGenerationResult({
             <span className="hidden text-muted-foreground/40 sm:inline">·</span>
           )}
 
-          {model && !generating && (
+          {!generating && (modelLabel || model) && (
             <span className="text-muted-foreground/60" title={provider ? `${provider}/${model}` : model}>
-              {model}
+              {modelLabel || model}
             </span>
           )}
 

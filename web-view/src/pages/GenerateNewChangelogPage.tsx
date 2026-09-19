@@ -1711,10 +1711,12 @@ export function GenerateNewChangelogPage() {
             <AiGenerationResult
               metadata={{
                 model: resultModel,
+                modelLabel: resultModel ? (ai.models.find((m) => m.id === resultModel)?.label || resultModel) : undefined,
                 durationMs: streamDuration || undefined,
                 totalTokens: streamTokens || undefined,
               }}
               generating={status === "loading"}
+              runNumber={runNumber}
             >
 
             {/* Tabs — hidden when there's only one generated audience (Developer); nothing to
