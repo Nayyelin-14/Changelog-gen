@@ -459,6 +459,11 @@ public class NimAiProvider implements AiProvider {
         return text.length() > 800 ? text.substring(0, 800) + "…" : text;
     }
 
+    /**
+     * Synchronous model listing — probes all candidates and returns only confirmed-healthy models.
+     * Used by generation logic and benchmarks where only ready models are acceptable.
+     * For UI dropdown, use {@link #listModelsWithStatus()} which returns curated models immediately.
+     */
     @Override
     public List<AiModelOption> listModels() {
         String modelsUrl = baseUrl.replace("/chat/completions", "/models");
@@ -482,8 +487,6 @@ public class NimAiProvider implements AiProvider {
                 .filter(NimAiProvider::looksLikeChatModel)
                 .filter(id -> !EXCLUDED_MODELS.contains(id))
                 .toList();
-        // Admin-configured allow-list: only probe + surface the handful the admin (or benchmark)
-        // explicitly approved — avoids hammering huge catalogs (OpenRouter/Together) on first hit.
         List<String> probe = allowedModels.isEmpty()
                 ? candidates
                 : candidates.stream().filter(allowedModels::contains).toList();
@@ -502,8 +505,7 @@ public class NimAiProvider implements AiProvider {
             }
         }
 
-        // Dropdown must only ever offer models that actually answer chat traffic.
-        LOG.info("Model catalog: " + catalog.size() + " listed, " + healthy.size() + " health-checked OK"
+        LOG.info("Model catalog (sync): " + catalog.size() + " listed, " + healthy.size() + " health-checked OK"
                 + (allowedModels.isEmpty() ? "" : " (pinned to " + allowedModels.size() + " approved)"));
         return healthy.stream()
                 .sorted(Comparator.<AiModelOption, Boolean>comparing(
@@ -511,6 +513,96 @@ public class NimAiProvider implements AiProvider {
                         .thenComparingInt(m -> recommendedRank(m.id()))
                         .thenComparing(AiModelOption::label))
                 .toList();
+    }
+
+    /**
+     * Returns models with availability status. Curated/recommended models are returned immediately
+     * without waiting for health probes. Live-discovered models that haven't been probed yet get
+     * status=checking. This method returns quickly — probing happens in the background.
+     */
+    @Override
+    public List<AiModelOption> listModelsWithStatus() {
+        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
+        List<NvidiaModelsResponse.NvidiaModel> catalog;
+        try {
+            Response raw = client.target(modelsUrl)
+                    .request(MediaType.APPLICATION_JSON)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .get();
+            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
+            catalog = response.dataOrEmpty();
+        } catch (WebApplicationException e) {
+            String body = e.getResponse().readEntity(String.class);
+            throw new AiException("Failed to list models: HTTP " + e.getResponse().getStatus() + " — " + body, e);
+        } catch (Exception e) {
+            throw new AiException("Failed to list models: " + e.getMessage(), e);
+        }
+
+        List<String> candidates = catalog.stream()
+                .map(NvidiaModelsResponse.NvidiaModel::getId)
+                .filter(NimAiProvider::looksLikeChatModel)
+                .filter(id -> !EXCLUDED_MODELS.contains(id))
+                .toList();
+        List<String> probe = allowedModels.isEmpty()
+                ? candidates
+                : candidates.stream().filter(allowedModels::contains).toList();
+
+        long now = System.currentTimeMillis();
+        List<AiModelOption> result = new ArrayList<>();
+
+        // Phase 1: Return curated/recommended models immediately with their cached health status.
+        // These are known-good models that should never block the dropdown.
+        for (String id : probe) {
+            if (!isRecommended(id)) continue;
+            ModelHealth cached = MODEL_HEALTH.get(id);
+            if (cached != null && (now - cached.checkedAtMillis() < (cached.ok() ? PROBE_OK_TTL_MS : PROBE_BROKEN_TTL_MS))) {
+                // Health is cached and fresh — use cached status
+                if (healthyOrNotYetBroken(cached, id) != null) {
+                    result.add(AiModelOption.available(id, prettifyModelId(id), true));
+                }
+            } else {
+                // Not yet probed or cache expired — show as checking, trigger background probe
+                result.add(AiModelOption.checking(id, prettifyModelId(id), true));
+                triggerBackgroundProbe(id);
+            }
+        }
+
+        // Phase 2: Include non-curated models that are already known healthy from cache.
+        // Don't wait for probing — only show models whose health is already confirmed.
+        for (String id : probe) {
+            if (isRecommended(id)) continue;
+            ModelHealth cached = MODEL_HEALTH.get(id);
+            if (cached != null && cached.ok() && (now - cached.checkedAtMillis() < PROBE_OK_TTL_MS)) {
+                result.add(AiModelOption.available(id, prettifyModelId(id), false));
+            } else if (cached == null || (now - cached.checkedAtMillis() >= (cached.ok() ? PROBE_OK_TTL_MS : PROBE_BROKEN_TTL_MS))) {
+                // Not yet probed or cache expired — trigger background probe, show as checking
+                result.add(AiModelOption.checking(id, prettifyModelId(id), false));
+                triggerBackgroundProbe(id);
+            }
+            // If broken but not yet hidden (failures < PROBE_FAILS_TO_HIDE), don't show it
+        }
+
+        // Sort: current model first, then by recommended rank, then by label
+        result.sort(Comparator.<AiModelOption, Boolean>comparing(
+                m -> m.id().equals(model), Comparator.reverseOrder())
+                .thenComparingInt(m -> recommendedRank(m.id()))
+                .thenComparing(AiModelOption::label));
+
+        LOG.info("Model catalog (fast): " + result.size() + " models returned"
+                + " (" + result.stream().filter(m -> "available".equals(m.status())).count() + " available"
+                + ", " + result.stream().filter(m -> "checking".equals(m.status())).count() + " checking)");
+        return result;
+    }
+
+    /** Triggers a health probe in the background without blocking the caller. */
+    private void triggerBackgroundProbe(String id) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                healthyOption(id);
+            } catch (Exception e) {
+                LOG.fine("Background probe failed for " + id + ": " + e.getMessage());
+            }
+        }, PROBE_POOL);
     }
 
     /**
@@ -538,7 +630,7 @@ public class NimAiProvider implements AiProvider {
      * Only sustained, repeated failures (≥ {@link #PROBE_FAILS_TO_HIDE} consecutive rounds) hide it. */
     protected AiModelOption healthyOrNotYetBroken(ModelHealth health, String id) {
         if (health.ok() || health.failures() < PROBE_FAILS_TO_HIDE) {
-            return new AiModelOption(id, prettifyModelId(id), isRecommended(id));
+            return AiModelOption.available(id, prettifyModelId(id), isRecommended(id));
         }
         return null;
     }

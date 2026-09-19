@@ -26,6 +26,16 @@ public interface AiProvider {
     /** The models this account can currently call, fetched live from the provider — never a hardcoded list. */
     List<AiModelOption> listModels();
 
+    /**
+     * Returns models with availability status. Curated/recommended models are returned immediately
+     * (status=available or checking) without waiting for health probes. Live-discovered models that
+     * haven't been probed yet get status=checking. Already-probed models get status=available or
+     * status=unavailable. This method should return quickly — it must not block on full health probing.
+     */
+    default List<AiModelOption> listModelsWithStatus() {
+        return listModels();
+    }
+
     /** Receives each token/chunk as it arrives during {@link #chatStream}. */
     interface StreamHandler {
         void onDelta(String text);

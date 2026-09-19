@@ -152,6 +152,8 @@ export interface AiModelOption {
   id: string;
   label: string;
   recommended?: boolean;
+  /** "available" = confirmed healthy, "checking" = probe in progress, null = unknown */
+  status?: string | null;
 }
 
 export interface AiProviderOption {

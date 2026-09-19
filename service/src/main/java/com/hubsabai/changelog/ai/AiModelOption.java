@@ -6,9 +6,18 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record AiModelOption(
         @JsonProperty("id") String id,
         @JsonProperty("label") String label,
-        @JsonProperty("recommended") boolean recommended) {
+        @JsonProperty("recommended") boolean recommended,
+        @JsonProperty("status") String status) {
 
     public static AiModelOption of(String id, String label) {
-        return new AiModelOption(id, label, false);
+        return new AiModelOption(id, label, false, null);
+    }
+
+    public static AiModelOption available(String id, String label, boolean recommended) {
+        return new AiModelOption(id, label, recommended, "available");
+    }
+
+    public static AiModelOption checking(String id, String label, boolean recommended) {
+        return new AiModelOption(id, label, recommended, "checking");
     }
 }
