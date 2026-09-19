@@ -43,7 +43,7 @@ import { RepoHeaderBar } from "@/components/RepoHeaderBar";
 import { RestoreConfirmDialog } from "@/components/RestoreConfirmDialog";
 import { ErrorView } from "@/components/StatusView";
 import { VersionTable } from "@/components/VersionTable";
-import { Badge } from "@/components/ui/badge";
+import { AiModelSelect } from "@/components/AiModelSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -802,30 +802,13 @@ export function GenerateChangelogPage() {
                                 </p>
                               </div>
                               <div className="flex items-center gap-2">
-                                <Select value={model} onValueChange={setModel} disabled={generating !== null || !!selectedHistoryRow}>
-                                  <SelectTrigger className="h-8 w-fit text-xs">
-                                    <SelectValue placeholder="Select a model…">
-                                      {models.status === "success"
-                                        ? models.data.find((m) => m.id === model)?.label
-                                        : undefined}
-                                    </SelectValue>
-                                  </SelectTrigger>
-                                  <SelectContent className="min-w-60" side="bottom" align="start">
-                                    {models.status === "success" &&
-                                      models.data.map((m) => (
-                                        <SelectItem key={m.id} value={m.id} className="pr-8">
-                                          <span className="flex min-w-0 items-center gap-2">
-                                            <span className="min-w-0 truncate">{m.label}</span>
-                                            {m.recommended && (
-                                              <Badge variant="outline" className="shrink-0 text-[10px] leading-none px-1.5 py-0 text-amber-500 border-amber-500/40">
-                                                Recommended
-                                              </Badge>
-                                            )}
-                                          </span>
-                                        </SelectItem>
-                                      ))}
-                                  </SelectContent>
-                                </Select>
+                                <AiModelSelect
+                                  models={models.status === "success" ? models.data : []}
+                                  status={models.status}
+                                  value={model}
+                                  onChange={setModel}
+                                  disabled={generating !== null || !!selectedHistoryRow}
+                                />
                                 {/* Generating mutates the CURRENT text — blocked while browsing any
                                     past revision (whichever audience it belongs to), since that's a
                                     "look, don't touch" mode until you go back to current. */}
@@ -923,25 +906,14 @@ export function GenerateChangelogPage() {
                           </div>
                           {models.status === "success" && (
                             <div className="flex items-center gap-1">
-                              <Select value={model} onValueChange={setModel} disabled={generating !== null || !!selectedHistoryRow}>
-                                <SelectTrigger className="h-7 w-fit gap-1.5 text-xs font-medium px-2.5">
-                                  <SelectValue placeholder="Model">
-                                    {models.data.find((m) => m.id === model)?.label}
-                                  </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent side="bottom" align="end">
-                                  {models.data.map((m) => (
-                                    <SelectItem key={m.id} value={m.id} className="pr-8 text-xs">
-                                      <span className="flex min-w-0 items-center gap-2">
-                                        <span className="min-w-0 truncate">{m.label}</span>
-                                        {m.recommended && (
-                                          <Badge variant="outline" className="shrink-0 text-[9px] leading-none px-1 py-0 text-amber-500 border-amber-500/40">Recommended</Badge>
-                                        )}
-                                      </span>
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <AiModelSelect
+                                models={models.data}
+                                status={models.status}
+                                value={model}
+                                onChange={setModel}
+                                disabled={generating !== null || !!selectedHistoryRow}
+                                triggerClassName="h-7 text-xs font-medium"
+                              />
                               {/* Blocked while browsing any past revision, even one belonging to
                                   a DIFFERENT audience than this tab — selectedHistoryRow doesn't
                                   clear on a tab switch, so without this check Regen would still
@@ -976,25 +948,14 @@ export function GenerateChangelogPage() {
                             </div>
                             {models.status === "success" && (
                               <div className="flex items-center gap-1">
-                                <Select value={model} onValueChange={setModel} disabled={generating !== null || !!selectedHistoryRow}>
-                                  <SelectTrigger className="h-7 w-fit gap-1.5 text-xs font-medium px-2.5">
-                                    <SelectValue placeholder="Model">
-                                      {models.data.find((m) => m.id === model)?.label}
-                                    </SelectValue>
-                                  </SelectTrigger>
-                                  <SelectContent side="bottom" align="end">
-                                    {models.data.map((m) => (
-                                      <SelectItem key={m.id} value={m.id} className="pr-8 text-xs">
-                                        <span className="flex min-w-0 items-center gap-2">
-                                          <span className="min-w-0 truncate">{m.label}</span>
-                                          {m.recommended && (
-                                            <Badge variant="outline" className="shrink-0 text-[9px] leading-none px-1 py-0 text-amber-500 border-amber-500/40">Recommended</Badge>
-                                          )}
-                                        </span>
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
+                                <AiModelSelect
+                                  models={models.data}
+                                  status={models.status}
+                                  value={model}
+                                  onChange={setModel}
+                                  disabled={generating !== null || !!selectedHistoryRow}
+                                  triggerClassName="h-7 text-xs font-medium"
+                                />
                                 {/* Same cross-tab guard as Developer's Regen above — blocked while
                                     ANY audience's past revision is selected, not just this tab's. */}
                                 <Button size="sm" variant="outline" className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
@@ -1233,7 +1194,7 @@ export function GenerateChangelogPage() {
             </Card>
           ) : (
             <div className="grid min-h-0 flex-1 auto-rows-max content-start items-stretch gap-4 xl:auto-rows-fr xl:grid-cols-2">
-              <div className="flex min-h-0 max-h-[30rem] min-w-0 flex-col xl:max-h-none">
+              <div className="flex min-h-0 min-w-0 flex-col xl:max-h-none">
                 <h3 className="mb-2 flex shrink-0 items-center gap-1.5 text-xs font-semibold text-foreground">
                   <Rocket className="size-3.5" />
                   Pipeline runs
@@ -1255,7 +1216,7 @@ export function GenerateChangelogPage() {
                   />
                 )}
               </div>
-              <div className="flex min-h-0 max-h-[30rem] min-w-0 flex-col xl:max-h-none">
+              <div className="flex min-h-0 min-w-0 flex-col xl:max-h-none">
                 <h3 className="mb-2 flex shrink-0 items-center gap-1.5 text-xs font-semibold text-foreground">
                   <History className="size-3.5" />
                   Version history

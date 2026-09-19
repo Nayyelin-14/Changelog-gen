@@ -19,12 +19,10 @@ import {
   type LucideIcon,
   Loader2,
   Pencil,
-  RefreshCw,
   Sparkles,
   Terminal,
   Upload,
   User,
-  Wand2,
   PictureInPicture,
 } from "lucide-react";
 
@@ -36,7 +34,6 @@ import {
   getChangelogRepoText,
   getPullRequestDetails,
   getRecordedRunChanges,
-  listAiModels,
   listBranches,
   listHistory,
   pushChangelog,
@@ -49,11 +46,11 @@ import type {
   PullRequestWorkItemSummary,
   ReleaseVersionResolution,
 } from "@/api/types";
-import { useResolvedAiProvider } from "@/hooks/useAiProvider";
+import { useAiModels } from "@/hooks/useAiModels";
 import {
-  getStoredAiProvider,
-  setStoredAiProvider,
-} from "@/lib/aiProvider";
+  AiGenerationControls,
+} from "@/components/AiGenerationControls";
+import { AiGenerationResult } from "@/components/AiGenerationResult";
 import { Badge } from "@/components/ui/badge";
 import { ChangelogBody } from "@/components/ChangelogBody";
 import { Button } from "@/components/ui/button";
@@ -73,7 +70,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@/hooks/useQuery";
 import { isBotAuthor } from "@/lib/bots";
 import { getStoredProvider } from "@/lib/provider";
@@ -389,10 +385,7 @@ export function GenerateNewChangelogPage() {
 
   const [version, setVersion] = useState("");
   const [runNumber, setRunNumber] = useState<string | undefined>(undefined);
-  const [model, setModel] = useState<string | undefined>(undefined);
-  // AI provider (NVIDIA, Gemini, …) — the admin decides which are available server-side; the
-  // user picks between them here and it persists for the whole session.
-  const [aiProvider, setAiProvider] = useState<string>(() => getStoredAiProvider());
+  const ai = useAiModels();
   const [status, setStatus] = useState<Status>("idle");
   const [audienceTexts, setAudienceTexts] = useState<
     Partial<Record<Audience, string>>
@@ -644,13 +637,6 @@ export function GenerateNewChangelogPage() {
   // When a pipeline run is selected (buildIdParam), version is deliberately NOT resolved
   // automatically — the design keeps the dashboard version-free: the version is only ever chosen
   // by a human in the push modal, or supplied by the pipeline itself (versionParam).
-  const { options: providerOptions, enabled: enabledProviders } = useResolvedAiProvider();
-
-  const models = useQuery(
-    useCallback(() => listAiModels(aiProvider), [aiProvider]),
-    [aiProvider],
-    { cacheKey: `ai-models-${aiProvider}`, ttlMs: 5 * 60_000 },
-  );
   const branches = useQuery(
     useCallback(
       () =>
@@ -760,25 +746,6 @@ export function GenerateNewChangelogPage() {
   useEffect(() => {
     if (!buildIdParam) setChangeItems((prev) => (prIdParam ? prev : []));
   }, [buildIdParam, prIdParam]);
-
-  useEffect(() => {
-    if (models.status !== "success") return;
-    const list = models.data;
-    if (list.length > 0 && !model) setModel(list[0].id);
-  }, [models.status, models, model]);
-
-  // Provider switched (or the stored one vanished from the admin's enabled set), so the picker
-  // couldn't have kept it — fall back to a real one; the models effect above picks its model.
-  useEffect(() => {
-    if (enabledProviders.length > 0 && !enabledProviders.includes(aiProvider)) {
-      setAiProvider(enabledProviders[0]);
-    }
-  }, [enabledProviders, aiProvider]);
-
-  useEffect(() => {
-    setModel(undefined);
-    setResultModel(undefined);
-  }, [aiProvider]);
 
   useEffect(() => {
     setAudienceTexts({});
@@ -897,8 +864,7 @@ export function GenerateNewChangelogPage() {
     setError(null);
     setSaved(false);
     setSaveError(null);
-    setResultModel(model);
-    setStoredAiProvider(aiProvider);
+    setResultModel(ai.model);
     // Previous audienceTexts are deliberately left in place (not cleared here) — a Regen keeps
     // showing the prior result until each audience's fresh text streams in and overwrites it
     // (see onAudience below), instead of blanking the whole panel for the duration of the call.
@@ -929,8 +895,8 @@ export function GenerateNewChangelogPage() {
             setStatus("error");
           },
         },
-        model,
-        aiProvider,
+        ai.model,
+        ai.provider,
         version || undefined,
         branchParam,
         undefined,
@@ -946,12 +912,6 @@ export function GenerateNewChangelogPage() {
       );
       setStatus("error");
     }
-  }
-
-  /** Persists the AI provider choice and applies it to the current page + generation. */
-  function changeAiProvider(id: string) {
-    setStoredAiProvider(id);
-    setAiProvider(id);
   }
 
   function startEdit(audience: Audience) {
@@ -1000,7 +960,7 @@ export function GenerateNewChangelogPage() {
           repo,
           "",
           editingTab,
-          resultModel ?? model ?? "",
+          resultModel ?? ai.model ?? "",
           editText,
           branchParam,
           0,
@@ -1584,13 +1544,13 @@ export function GenerateNewChangelogPage() {
         )}
 
         {/* ── Action bar ── */}
-        <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-card/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3">
           {commitText ? (
             <Dialog>
               <DialogTrigger asChild>
                 <button
                   type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 text-left text-[11px] text-muted-foreground/60 transition-colors hover:text-foreground/80"
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-border/40 bg-card/50 px-4 py-3 text-left text-[11px] text-muted-foreground/60 transition-colors hover:text-foreground/80"
                 >
                   <FileCode className="size-3.5 shrink-0" />
                   <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -1644,88 +1604,12 @@ export function GenerateNewChangelogPage() {
             </span>
           )}
 
-          <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
-            {providerOptions.length > 1 && (
-              // Provider switch — which AI backend generates the changelog. Only shown when the
-              // admin has enabled more than one (the selector is pointless with one option).
-              <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
-                <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto">
-                  <SelectValue placeholder="Provider…" />
-                </SelectTrigger>
-                <SelectContent className="min-w-[180px]" side="bottom" align="end">
-                  {providerOptions.map((p) => (
-                    <SelectItem key={p.id} value={p.id} className="pr-8">
-                      <span className="flex items-center gap-2">
-                        <span className="truncate">{p.label}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            {models.status === "loading" ? (
-              <Skeleton className="h-8 w-full sm:w-32" />
-            ) : (
-              models.status === "success" && (
-                // Disabled (not hidden) once a result exists — this is the first-generation
-                // control; once there's something on screen, Regen (with its own model picker,
-                // below) is the only way forward. Kept visible as a record of what produced the
-                // preview, same reasoning as the Generate button beside it.
-                <Select
-                  value={model}
-                  onValueChange={setModel}
-                  disabled={status === "loading" || hasResult}
-                >
-                  <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto">
-                    <SelectValue placeholder="Select model…" />
-                  </SelectTrigger>
-                  <SelectContent
-                    className="min-w-[180px]"
-                    side="bottom"
-                    align="end"
-                  >
-                    {models.data.map((m) => (
-                      <SelectItem key={m.id} value={m.id} className="pr-8">
-                        <span className="flex items-center gap-2">
-                          <span className="truncate">{m.label}</span>
-                          {m.recommended && (
-                            <Badge
-                              variant="outline"
-                              className="shrink-0 text-[9px] leading-none px-1.5 py-0 text-amber-500 border-amber-500/40"
-                            >
-                              Recommended
-                            </Badge>
-                          )}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )
-            )}
-            <Button
-              onClick={() => handleGenerate(false)}
-              disabled={!canSubmit || hasResult}
-              className={cn(
-                "gap-1.5 px-4 text-xs h-8 transition-all whitespace-nowrap",
-                status === "loading" && !hasResult && "animate-pulse",
-              )}
-            >
-              {/* Only ever this button's OWN action (the first generation) shows as active —
-                  once hasResult is true, a loading `status` means Regen (below) is the one
-                  running, so this stays a plain disabled "Generate" instead of spinning in sync
-                  with a request it didn't start. */}
-              {status === "loading" && !hasResult ? (
-                <>
-                  <Loader2 className="size-3.5 animate-spin" /> Generating…
-                </>
-              ) : (
-                <>
-                  <Wand2 className="size-3.5" /> Generate
-                </>
-              )}
-            </Button>
-          </div>
+          <AiGenerationControls
+            ai={ai}
+            onGenerate={() => handleGenerate(false)}
+            generating={status === "loading" && !hasResult}
+            disabled={!canSubmit || hasResult}
+          />
         </div>
 
         {/* ── Generating progress (first generation only — a Regen keeps the result panel below
@@ -1823,63 +1707,15 @@ export function GenerateNewChangelogPage() {
 
         {/* ── Result panel (stays mounted through a Regen — see showResultPanel) ── */}
         {showResultPanel && (
-          <div
-            ref={resultRef}
-            className="animate-in fade-in slide-in-from-bottom-4 flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm"
-          >
-            {/* Status banner */}
-            <div
-              className={cn(
-                "flex flex-col gap-2 border-b border-border/30 px-4 py-3 transition-colors duration-300 sm:flex-row sm:items-center sm:justify-between",
-                status === "loading"
-                  ? "bg-linear-to-r from-primary/6 to-primary/2"
-                  : "bg-linear-to-r from-emerald-500/6 to-emerald-500/2",
-              )}
+          <div ref={resultRef}>
+            <AiGenerationResult
+              metadata={{
+                model: resultModel,
+                durationMs: streamDuration || undefined,
+                totalTokens: streamTokens || undefined,
+              }}
+              generating={status === "loading"}
             >
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                {status === "loading" ? (
-                  <span className="inline-flex items-center gap-1.5 text-primary">
-                    <Loader2 className="size-3 shrink-0 animate-spin" />
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                    <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-                    <span className="font-medium">
-                      Changelog generated for Run - {runNumber}
-                    </span>
-                  </span>
-                )}
-                {status === "success" && (
-                  <>
-                    <span className="hidden text-muted-foreground/40 sm:inline">
-                      ·
-                    </span>
-                    <span className="text-muted-foreground/60">
-                      {(streamDuration / 1000).toFixed(1)}s
-                    </span>
-                    <span className="hidden text-muted-foreground/40 sm:inline">
-                      ·
-                    </span>
-                    <span className="text-muted-foreground/60">
-                      {streamTokens} tokens
-                    </span>
-                    {resultModel && (
-                      <>
-                        <span className="hidden text-muted-foreground/40 sm:inline">
-                          ·
-                        </span>
-                        <span className="text-muted-foreground/60">
-                          {(models.status === "success" &&
-                            models.data.find((m) => m.id === resultModel)
-                              ?.label) ||
-                            resultModel}
-                        </span>
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
 
             {/* Tabs — hidden when there's only one generated audience (Developer); nothing to
                 switch between until QA/Business are generated from the history panel instead. */}
@@ -1990,82 +1826,12 @@ export function GenerateNewChangelogPage() {
                   >
                     <Pencil className="size-3" /> Edit
                   </Button>
-                  {models.status === "success" && (
-                    <div className="flex items-center gap-1">
-                      {/* Locked while a (re)generation is in flight — otherwise switching models
-                          mid-request leaves it ambiguous which model actually produced whatever
-                          streams back in. */}
-                      {providerOptions.length > 1 && (
-                        <Select value={aiProvider} onValueChange={changeAiProvider} disabled={status === "loading"}>
-                          <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
-                            <SelectValue placeholder="Provider">
-                              {providerOptions.find((p) => p.id === aiProvider)?.label}
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent side="bottom" align="end">
-                            {providerOptions.map((p) => (
-                              <SelectItem key={p.id} value={p.id} className="pr-8 text-xs">
-                                <span className="flex min-w-0 items-center gap-2">
-                                  <span className="min-w-0 truncate">{p.label}</span>
-                                </span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                      <Select
-                        value={model}
-                        onValueChange={setModel}
-                        disabled={status === "loading"}
-                      >
-                        <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
-                          <SelectValue placeholder="Model">
-                            {models.data.find((m) => m.id === model)?.label}
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent side="bottom" align="end">
-                          {models.data.map((m) => (
-                            <SelectItem
-                              key={m.id}
-                              value={m.id}
-                              className="pr-8 text-xs"
-                            >
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span className="min-w-0 truncate">
-                                  {m.label}
-                                </span>
-                                {m.recommended && (
-                                  <Badge
-                                    variant="outline"
-                                    className="shrink-0 text-[9px] leading-none px-1 py-0 text-amber-500 border-amber-500/40"
-                                  >
-                                    Recommended
-                                  </Badge>
-                                )}
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
-                        onClick={() => handleGenerate(true)}
-                        disabled={status === "loading" || !model}
-                      >
-                        {status === "loading" ? (
-                          <>
-                            <Loader2 className="size-3 animate-spin" /> Regen…
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="size-3" /> Regen
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  )}
+                  <AiGenerationControls
+                    ai={ai}
+                    onGenerate={() => handleGenerate(true)}
+                    generating={status === "loading"}
+                    variant="inline"
+                  />
                   {activeAudience === "developer" && !saved && (
                     <Button
                       size="sm"
@@ -2109,6 +1875,7 @@ export function GenerateNewChangelogPage() {
                 </div>
               </div>
             )}
+            </AiGenerationResult>
           </div>
         )}
 

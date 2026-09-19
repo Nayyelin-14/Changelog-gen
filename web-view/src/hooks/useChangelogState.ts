@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   getChangelogMeta,
   getChangelogText,
-  listAiModels,
 } from "@/api/client";
-import { useResolvedAiProvider } from "@/hooks/useAiProvider";
+import { useAiModels } from "@/hooks/useAiModels";
 import type { GenerationRecord } from "@/api/types";
 import { DEVELOPER_TAB, GENERATED_TABS } from "@/lib/historyTabs";
 import type { GeneratedAudience, GeneratedContent, GeneratedMeta } from "@/lib/historyTabs";
-import { useQuery } from "@/hooks/useQuery";
 
 export type EditableTab = "developer" | GeneratedAudience;
 export type { GeneratedMeta };
@@ -29,7 +27,7 @@ export function useChangelogState(
   selectedEntry: GenerationRecord | undefined,
 ) {
   const [activeTab, setActiveTab] = useState<EditableTab>("developer");
-  const [model, setModel] = useState<string | undefined>(undefined);
+  const ai = useAiModels();
 
   // Keyed by entryId — switching versions and coming back must reuse what's already been
   // loaded/generated/edited this session, not wipe it and re-fetch/re-generate from scratch.
@@ -48,18 +46,6 @@ export function useChangelogState(
   // /history) — this is the only override needed for it. qa/business reuse the existing
   // `generated` slot for edits/restores too, since the view once something exists is the same either way.
   const [developerOverrides, setDeveloperOverrides] = useState<Record<string, string>>({});
-
-  const { provider } = useResolvedAiProvider();
-  const models = useQuery(
-    useCallback(() => listAiModels(provider), [provider]),
-    [provider],
-    { cacheKey: `ai-models-${provider}` },
-  );
-  useEffect(() => {
-    if (models.status === "success" && models.data.length > 0 && !model) {
-      setModel(models.data[0].id);
-    }
-  }, [models.status, models, model]);
 
   const entryId = selectedEntry?.id;
   const developerOverride = entryId ? developerOverrides[entryId] : undefined;
@@ -188,10 +174,10 @@ export function useChangelogState(
     // State
     activeTab,
     setActiveTab,
-    model,
-    setModel,
-    models,
-    provider,
+    model: ai.model,
+    setModel: ai.setModel,
+    models: { status: ai.modelsStatus, data: ai.models } as any,
+    provider: ai.provider,
     developerOverride,
     generated,
     checked,
