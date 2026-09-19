@@ -1014,7 +1014,7 @@ export function GenerateNewChangelogPage() {
         repo,
         version || "",
         "developer",
-        resultModel ?? model ?? "",
+        resultModel ?? ai.model ?? "",
         text,
         branchParam,
         streamTokens,
