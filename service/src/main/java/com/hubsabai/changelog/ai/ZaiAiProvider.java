@@ -33,6 +33,10 @@ public class ZaiAiProvider extends NimAiProvider {
         super(baseUrl, model, apiKey, fallbackModels, allowedModels, developerPrompt, qaPrompt, businessPrompt);
     }
 
+    /**
+     * Synchronous model listing — probes all candidates and returns only confirmed-healthy models.
+     * For UI dropdown, use {@link #listModelsWithStatus()} which returns curated models immediately.
+     */
     @Override
     public List<AiModelOption> listModels() {
         // Get live-discovered models (may be empty on failure)
@@ -59,10 +63,38 @@ public class ZaiAiProvider extends NimAiProvider {
                 .toList();
     }
 
+    @Override
+    public List<AiModelOption> listModelsWithStatus() {
+        // Always include curated free Flash models — Z.AI-specific, never another provider's list
+        List<AiModelOption> curated = new ArrayList<>();
+        for (AiModelOption m : ZaiModelCatalog.FREE_MODELS) {
+            curated.add(AiModelOption.available(m.id(), m.label(), m.recommended()));
+        }
+
+        // Best-effort live discovery (may be empty on failure)
+        List<AiModelOption> live = tryLiveDiscoveryWithStatus();
+
+        // Merge: curated models first (they're free), then live models that aren't already in curated
+        Set<String> curatedIds = curated.stream().map(AiModelOption::id).collect(Collectors.toSet());
+        List<AiModelOption> merged = new ArrayList<>(curated);
+        for (AiModelOption liveModel : live) {
+            if (!curatedIds.contains(liveModel.id())) {
+                merged.add(liveModel);
+            }
+        }
+
+        // Sort: requested model first, then curated free models (by recommendedRank), then others
+        return merged.stream()
+                .sorted(Comparator.<AiModelOption, Boolean>comparing(
+                        m -> m.id().equals(model), Comparator.reverseOrder())
+                        .thenComparingInt(m -> recommendedRank(m.id()))
+                        .thenComparing(AiModelOption::label))
+                .toList();
+    }
+
     /**
-     * Attempts live model discovery via {@code /models} endpoint and health probes.
-     * Returns empty list on any failure (HTTP error, parse error, network error, or all models unhealthy).
-     * Does NOT throw — caller merges with curated fallback.
+     * Synchronous live model discovery — probes all candidates and returns only confirmed-healthy models.
+     * Returns empty list on any failure.
      */
     private List<AiModelOption> tryLiveDiscovery() {
         String modelsUrl = baseUrl.replace("/chat/completions", "/models");
@@ -79,11 +111,9 @@ public class ZaiAiProvider extends NimAiProvider {
                     .filter(id -> !EXCLUDED_MODELS.contains(id))
                     .toList();
         } catch (Exception e) {
-            // Live discovery failed — return empty, curated models will be used
             return List.of();
         }
 
-        // Apply admin-configured allow-list
         List<String> probe = allowedModels.isEmpty()
                 ? candidateIds
                 : candidateIds.stream().filter(allowedModels::contains).toList();
@@ -103,6 +133,51 @@ public class ZaiAiProvider extends NimAiProvider {
         }
 
         return healthy;
+    }
+
+    /**
+     * Async-discovery model listing — returns curated models immediately (status=available),
+     * live models as status=checking. Probes run in background without blocking the UI.
+     */
+    private List<AiModelOption> tryLiveDiscoveryWithStatus() {
+        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
+        List<String> candidateIds;
+        try {
+            Response raw = client.target(modelsUrl)
+                    .request(MediaType.APPLICATION_JSON)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .get();
+            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
+            candidateIds = response.dataOrEmpty().stream()
+                    .map(NvidiaModelsResponse.NvidiaModel::getId)
+                    .filter(NimAiProvider::looksLikeChatModel)
+                    .filter(id -> !EXCLUDED_MODELS.contains(id))
+                    .toList();
+        } catch (Exception e) {
+            return List.of();
+        }
+
+        List<String> probe = allowedModels.isEmpty()
+                ? candidateIds
+                : candidateIds.stream().filter(allowedModels::contains).toList();
+
+        long now = System.currentTimeMillis();
+        List<AiModelOption> result = new ArrayList<>();
+
+        for (String id : probe) {
+            ModelHealth cached = MODEL_HEALTH.get(id);
+            if (cached != null && cached.ok() && (now - cached.checkedAtMillis() < PROBE_OK_TTL_MS)) {
+                result.add(AiModelOption.available(id, prettifyModelId(id), false));
+            } else {
+                // Not yet probed or cache expired — show as checking, probe in background
+                result.add(AiModelOption.checking(id, prettifyModelId(id), false));
+                CompletableFuture.runAsync(() -> {
+                    try { healthyOption(id); } catch (Exception ignored) {}
+                }, PROBE_POOL);
+            }
+        }
+
+        return result;
     }
 
     // Z.AI-specific recommended model ranking

@@ -15,9 +15,9 @@ public final class ZaiModelCatalog {
 
     /** Health-checked OK against https://api.z.ai/api/paas/v4/chat/completions (when not rate-limited). */
     public static final List<AiModelOption> FREE_MODELS = List.of(
-            new AiModelOption("glm-4.7-flash", "GLM 4.7 Flash", true),
-            new AiModelOption("glm-4.5-flash", "GLM 4.5 Flash", true),
-            new AiModelOption("glm-4.6v-flash", "GLM 4.6V Flash", true));
+            AiModelOption.available("glm-4.7-flash", "GLM 4.7 Flash", true),
+            AiModelOption.available("glm-4.5-flash", "GLM 4.5 Flash", true),
+            AiModelOption.available("glm-4.6v-flash", "GLM 4.6V Flash", true));
 
     private ZaiModelCatalog() {
     }

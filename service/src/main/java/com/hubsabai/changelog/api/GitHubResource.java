@@ -1168,11 +1168,10 @@ public class GitHubResource {
     }
 
     /**
-     * Provider-scoped model listing. Only {@code nvidia} (the default) may fall back to the curated
-     * {@link AiModelCatalog#FREE_MODELS} when its live list is empty or unreachable — those entries
-     * are health-checked against NVIDIA's endpoint, so the substitution stays true to the provider.
-     * Any other provider returns its own live models or a clear error: it must never render another
-     * provider's model IDs in the picker (that masks real failures as healthy NVIDIA options).
+     * Provider-scoped model listing. Uses {@code listModelsWithStatus()} which returns curated
+     * models immediately (status=available or checking) without waiting for health probes.
+     * Live-discovered models get status=checking until probed in the background.
+     * Falls back to curated list only for NVIDIA when the live call completely fails.
      */
     @GET
     @Path("/ai/models")
@@ -1181,17 +1180,21 @@ public class GitHubResource {
                 ? AiProviderRegistry.DEFAULT_PROVIDER
                 : provider.trim().toLowerCase(Locale.ROOT);
         try {
-            List<AiModelOption> live = aiProviderRegistry.resolve(id).listModels();
-            if (!live.isEmpty()) {
-                return live;
+            List<AiModelOption> models = aiProviderRegistry.resolve(id).listModelsWithStatus();
+            if (!models.isEmpty()) {
+                return models;
             }
             if (AiProviderRegistry.DEFAULT_PROVIDER.equals(id)) {
-                return AiModelCatalog.FREE_MODELS;
+                return AiModelCatalog.FREE_MODELS.stream()
+                        .map(m -> AiModelOption.available(m.id(), m.label(), m.recommended()))
+                        .toList();
             }
             throw new AiException("AI provider '" + id + "' returned an empty model list.");
         } catch (Exception e) {
             if (AiProviderRegistry.DEFAULT_PROVIDER.equals(id)) {
-                return AiModelCatalog.FREE_MODELS;
+                return AiModelCatalog.FREE_MODELS.stream()
+                        .map(m -> AiModelOption.available(m.id(), m.label(), m.recommended()))
+                        .toList();
             }
             if (e instanceof AiException ai) {
                 throw ai;
