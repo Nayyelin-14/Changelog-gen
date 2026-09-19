@@ -1,3 +1,5 @@
+## v1.0.12 — 2026-09-19 (promoted build.43)
+
 ## v1.0.11 — 2026-07-24
 
 - fix: recreate generated_changelog and raw_release tables for old entity compatibility
