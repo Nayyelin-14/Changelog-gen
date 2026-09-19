@@ -23,7 +23,6 @@ import {
   Terminal,
   Upload,
   User,
-  PictureInPicture,
 } from "lucide-react";
 
 import {
@@ -289,9 +288,7 @@ function WorkItemCard({ wi }: { wi: PullRequestWorkItemSummary }) {
 }
 
 /* ──────────────────────────────────────────────── */
-/*  Source data section — a card that opens a popup  */
-/*  with the full detail list, instead of expanding   */
-/*  in place.                                        */
+/*  Source data section — compact inline expand/collapse */
 /* ──────────────────────────────────────────────── */
 function SourceDataSection({
   title,
@@ -310,49 +307,44 @@ function SourceDataSection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2.5 rounded-xl border border-border/40 bg-card px-4 py-3 text-left transition-colors hover:border-border/60 hover:bg-muted/30"
+    <div className="rounded-lg border border-border/30 bg-card/50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+      >
+        <div
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-md",
+            iconBgClass,
+          )}
         >
-          <div
-            className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-lg",
-              iconBgClass,
-            )}
-          >
-            <Icon className={cn("size-3.5", iconColorClass)} />
-          </div>
-          <span className="text-sm font-semibold text-foreground/85">
-            {title}
-          </span>
-          <span className="text-xs text-muted-foreground/50">{count}</span>
-          <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
-        </button>
-      </DialogTrigger>
-      <DialogContent className="flex max-h-[80vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="shrink-0 border-b border-border/30 px-5 py-4">
-          <DialogTitle className="flex items-center gap-2">
-            <div
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md",
-                iconBgClass,
-              )}
-            >
-              <Icon className={cn("size-3.5", iconColorClass)} />
-            </div>
-            {title}
-            <span className="text-xs font-normal text-muted-foreground/50">
-              {count}
-            </span>
-          </DialogTitle>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-5">
-          {children}
+          <Icon className={cn("size-3", iconColorClass)} />
         </div>
-      </DialogContent>
-    </Dialog>
+        <span className="text-xs font-semibold text-foreground/85">
+          {title}
+        </span>
+        <span className="text-[10px] text-muted-foreground/50">{count}</span>
+        <ChevronRight
+          className={cn(
+            "ml-auto size-3 shrink-0 text-muted-foreground/40 transition-transform duration-200",
+            open && "rotate-90",
+          )}
+        />
+      </button>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-200 ease-in-out",
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="space-y-1.5 border-t border-border/20 px-3 py-2.5">
+            {children}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1137,7 +1129,7 @@ export function GenerateNewChangelogPage() {
   /*  Render                                          */
   /* ──────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-6 pb-10">
+    <div className="flex flex-col gap-4 pb-8">
       {/* ═══════════ HEADER ═══════════ */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
@@ -1207,9 +1199,9 @@ export function GenerateNewChangelogPage() {
 
       {/* ═══════════ ERROR ═══════════ */}
       {status === "error" && error && (
-        <div className="animate-in fade-in slide-in-from-top-1 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <div className="animate-in fade-in slide-in-from-top-1 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
             <div className="min-w-0 text-sm">
               <p className="font-medium text-destructive">Generation failed</p>
               <p className="mt-0.5 text-xs text-muted-foreground">{error}</p>
@@ -1227,9 +1219,9 @@ export function GenerateNewChangelogPage() {
       {/* ═══════════ PR CARD ═══════════ */}
       {prDetails && (
         <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card to-muted/20">
-          <div className="flex items-start gap-3.5 p-4">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-950">
-              <GitPullRequest className="size-4.5 text-violet-600 dark:text-violet-400" />
+          <div className="flex items-start gap-3 p-3.5">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-950">
+              <GitPullRequest className="size-4 text-violet-600 dark:text-violet-400" />
             </div>
             <div className="min-w-0 flex-1 space-y-1.5">
               <div className="flex items-center gap-2 text-sm">
@@ -1273,13 +1265,13 @@ export function GenerateNewChangelogPage() {
       )}
 
       {/* ═══════════ MAIN CONTENT ═══════════ */}
-      <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-4">
         {/* ── Source data ── */}
         {(hasSourceData || loadingCommits) && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3">
+          <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <div className="flex size-6 items-center justify-center rounded-md bg-primary/10">
-                <Layers className="size-3.5 text-primary" />
+              <div className="flex size-5 items-center justify-center rounded-md bg-primary/10">
+                <Layers className="size-3 text-primary" />
               </div>
               <span className="text-xs font-semibold text-foreground/80">
                 Source data
@@ -1298,8 +1290,8 @@ export function GenerateNewChangelogPage() {
             </div>
 
             {loadingCommits ? (
-              <div className="flex items-center justify-center gap-3 rounded-xl border border-dashed border-border/40 py-12">
-                <Loader2 className="size-5 animate-spin text-muted-foreground/30" />
+              <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border/40 py-8">
+                <Loader2 className="size-4 animate-spin text-muted-foreground/30" />
                 <span className="text-xs text-muted-foreground/50">
                   {buildIdParam
                     ? "Loading pipeline run details…"
@@ -1307,10 +1299,9 @@ export function GenerateNewChangelogPage() {
                 </span>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {/* Commits, PRs, work items — each a card that opens its full detail list in a
-                    popup, one row of three on wide screens, stacking on narrow ones. */}
-                <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="flex flex-col gap-2">
+                {/* Commits, PRs, work items — each a compact inline expand/collapse section. */}
+                <div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2 xl:grid-cols-3">
                   {/* Commits */}
                   {commitsForDisplay.length > 0 && (
                     <SourceDataSection
@@ -1532,8 +1523,8 @@ export function GenerateNewChangelogPage() {
                           ))}
                     </SourceDataSection>
                   ) : prDetails && prDetails.workItems.length === 0 ? (
-                    <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/30 px-4 py-3 text-[11px] text-muted-foreground/50">
-                      <Layers className="size-3" />
+                    <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border/30 px-3 py-2 text-[10px] text-muted-foreground/50">
+                      <Layers className="size-2.5" />
                       No work items linked
                     </div>
                   ) : null}
@@ -1544,15 +1535,15 @@ export function GenerateNewChangelogPage() {
         )}
 
         {/* ── Action bar ── */}
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           {commitText ? (
             <Dialog>
               <DialogTrigger asChild>
                 <button
                   type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-border/40 bg-card/50 px-4 py-3 text-left text-[11px] text-muted-foreground/60 transition-colors hover:text-foreground/80"
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/40 bg-card/50 px-3 py-2.5 text-left text-[11px] text-muted-foreground/60 transition-colors hover:text-foreground/80"
                 >
-                  <FileCode className="size-3.5 shrink-0" />
+                  <FileCode className="size-3 shrink-0" />
                   <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="font-medium text-foreground/70">
                       Raw data sent to AI
@@ -1574,7 +1565,6 @@ export function GenerateNewChangelogPage() {
                         <span className="text-muted-foreground/40">
                           · {commitText.length} chars
                         </span>
-                        <PictureInPicture className="ml-auto size-3.5 shrink-0 text-muted-foreground cursor-pointer" />
                       </span>
                     )}
                   </span>
@@ -1620,7 +1610,7 @@ export function GenerateNewChangelogPage() {
             className="animate-in fade-in slide-in-from-bottom-4 overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm"
           >
             {/* Animated gradient bar */}
-            <div className="h-1 w-full overflow-hidden bg-muted">
+            <div className="h-0.5 w-full overflow-hidden bg-muted">
               <div
                 className="h-full w-full animate-gradient-pan"
                 style={{
@@ -1631,21 +1621,21 @@ export function GenerateNewChangelogPage() {
               />
             </div>
 
-            <div className="p-5">
+            <div className="p-4">
               <div className="flex items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10">
-                  <Sparkles className="size-5 text-primary animate-glow-pulse" />
+                <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
+                  <Sparkles className="size-4 text-primary animate-glow-pulse" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-foreground/90">
                     Generating changelog
                   </p>
                 </div>
-                <Loader2 className="size-5 animate-spin text-primary/50" />
+                <Loader2 className="size-4 animate-spin text-primary/50" />
               </div>
 
               {/* Audience generation steps */}
-              <div className="mt-5 space-y-2">
+              <div className="mt-3 space-y-1.5">
                 {GENERATED_AUDIENCES.map((tab, i) => {
                   const isDone = !audienceLoading.has(tab.key);
                   const isLoading = audienceLoading.has(tab.key);
@@ -1654,7 +1644,7 @@ export function GenerateNewChangelogPage() {
                       key={tab.key}
                       style={{ animationDelay: `${i * 80}ms` }}
                       className={cn(
-                        "animate-in fade-in slide-in-from-left-1 flex items-center gap-3 rounded-lg border px-3.5 py-2.5 text-xs transition-all duration-300",
+                        "animate-in fade-in slide-in-from-left-1 flex items-center gap-2.5 rounded-md border px-3 py-2 text-xs transition-all duration-300",
                         isDone
                           ? "border-emerald-200/50 bg-emerald-50/50 dark:border-emerald-900/30 dark:bg-emerald-950/20"
                           : isLoading
@@ -1664,7 +1654,7 @@ export function GenerateNewChangelogPage() {
                     >
                       <div
                         className={cn(
-                          "flex size-6 shrink-0 items-center justify-center rounded-md",
+                          "flex size-5 shrink-0 items-center justify-center rounded-md",
                           isDone
                             ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400"
                             : isLoading
@@ -1673,11 +1663,11 @@ export function GenerateNewChangelogPage() {
                         )}
                       >
                         {isDone ? (
-                          <Check className="size-3.5" strokeWidth={3} />
+                          <Check className="size-3" strokeWidth={3} />
                         ) : isLoading ? (
-                          <Loader2 className="size-3.5 animate-spin" />
+                          <Loader2 className="size-3 animate-spin" />
                         ) : (
-                          <tab.icon className="size-3.5" />
+                          <tab.icon className="size-3" />
                         )}
                       </div>
                       <span
@@ -1758,7 +1748,7 @@ export function GenerateNewChangelogPage() {
             )}
 
             {/* Content */}
-            <div className={cn("p-5", editingTab !== null && "pb-0")}>
+            <div className={cn("p-4", editingTab !== null && "pb-0")}>
               {editingTab === activeAudience ? (
                 <textarea
                   value={editText}
@@ -1777,7 +1767,7 @@ export function GenerateNewChangelogPage() {
 
             {/* Actions */}
             {editingTab === activeAudience ? (
-              <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-3">
+              <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5">
                 <div className="flex justify-end gap-2">
                   <Button
                     size="sm"
@@ -1804,7 +1794,7 @@ export function GenerateNewChangelogPage() {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-3 border-t border-border/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {activeAudience === "developer" && pushResult && (
                     <a
@@ -1883,8 +1873,8 @@ export function GenerateNewChangelogPage() {
 
         {/* ── Empty hint ── */}
         {status === "idle" && !hasSourceData && !loadingCommits && (
-          <div className="flex items-center gap-3 rounded-xl border border-dashed border-border/30 bg-muted/10 px-4 py-3 text-xs text-muted-foreground/60">
-            <Layers className="size-4 shrink-0" />
+          <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/30 bg-muted/10 px-3 py-2.5 text-[11px] text-muted-foreground/60">
+            <Layers className="size-3.5 shrink-0" />
             <span>
               No source data loaded yet. Paste changes manually in the text area
               to generate a changelog. You can also{" "}
