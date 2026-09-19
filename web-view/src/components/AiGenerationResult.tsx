@@ -40,20 +40,20 @@ export function AiGenerationResult({
       {/* Status banner */}
       <div
         className={cn(
-          "flex flex-col gap-2 border-b border-border/30 px-4 py-3 transition-colors duration-300 sm:flex-row sm:items-center sm:justify-between",
+          "flex flex-col gap-1.5 border-b border-border/30 px-4 py-2.5 transition-colors duration-300 sm:flex-row sm:items-center sm:justify-between",
           generating
             ? "bg-linear-to-r from-primary/6 to-primary/2"
             : "bg-linear-to-r from-emerald-500/6 to-emerald-500/2",
         )}
       >
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs">
           {generating ? (
             <span className="inline-flex items-center gap-1.5 text-primary">
               <Loader2 className="size-3 shrink-0 animate-spin" />
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-              <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+              <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
               <span className="font-medium">
                 Changelog generated{runNumber != null ? ` for Run - ${runNumber}` : ""}
               </span>

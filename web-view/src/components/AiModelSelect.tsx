@@ -22,9 +22,18 @@ interface AiModelSelectProps {
   triggerClassName?: string;
 }
 
-/** Reusable model dropdown that correctly shows loading, empty, and populated states.
- *  Models are always scoped to the currently selected provider — the parent owns that relationship.
- *  When models have status="checking", a subtle indicator shows background health probing. */
+/**
+ * Reusable model dropdown.
+ *
+ * Status semantics:
+ * - Recommended/curated models are ALWAYS shown as available (green dot) — they're
+ *   immediately selectable even on cold cache. The backend marks them "checking" when
+ *   no health cache entry exists yet, but recommended ≠ unhealthy.
+ * - Non-curated models that haven't been probed show a subtle spinner only on the model
+ *   row itself.
+ * - A single "Checking additional models…" indicator appears at the bottom when ANY
+ *   non-curated model is still being probed — avoids spinners on every row.
+ */
 export function AiModelSelect({
   models,
   status,
@@ -35,7 +44,10 @@ export function AiModelSelect({
   className,
   triggerClassName,
 }: AiModelSelectProps) {
-  const hasChecking = models.some((m) => m.status === "checking");
+  // Only non-curated models that are still being checked get visual attention
+  const hasCheckingNonCurated = models.some(
+    (m) => m.status === "checking" && !m.recommended,
+  );
 
   if (status === "loading" && models.length === 0) {
     return (
@@ -68,31 +80,42 @@ export function AiModelSelect({
         <SelectTrigger className={cn("h-8 w-full gap-1.5 text-xs sm:w-auto", triggerClassName)}>
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
-        <SelectContent className="min-w-[220px]" side="bottom" align="end">
-          {models.map((m) => (
-            <SelectItem key={m.id} value={m.id} className="pr-8">
-              <span className="flex min-w-0 items-center gap-2">
-                {m.status === "checking" ? (
-                  <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground/40" />
-                ) : m.status === "available" ? (
-                  <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                ) : null}
-                <span className="min-w-0 truncate">{m.label}</span>
-                {m.recommended && (
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 border-amber-500/40 px-1.5 py-0 text-[9px] leading-none text-amber-500"
-                  >
-                    Recommended
-                  </Badge>
-                )}
-              </span>
-            </SelectItem>
-          ))}
+        <SelectContent className="min-w-[240px]" side="bottom" align="end">
+          {models.map((m) => {
+            // Recommended models always show as available — they're curated and safe to use
+            // even before health probing completes. Non-curated models show their actual status.
+            const isAvailable = m.recommended || m.status === "available" || m.status == null;
+            return (
+              <SelectItem key={m.id} value={m.id} className="pr-8">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      isAvailable
+                        ? "bg-emerald-500"
+                        : "bg-muted-foreground/30",
+                    )}
+                  />
+                  <span className="min-w-0 truncate" title={m.id}>
+                    {m.label}
+                  </span>
+                  {m.recommended && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 border-amber-500/40 px-1.5 py-0 text-[9px] leading-none text-amber-500"
+                    >
+                      Recommended
+                    </Badge>
+                  )}
+                </span>
+              </SelectItem>
+            );
+          })}
         </SelectContent>
       </Select>
-      {hasChecking && (
-        <span className="pl-1 text-[10px] text-muted-foreground/40">
+      {hasCheckingNonCurated && (
+        <span className="flex items-center gap-1 pl-1 text-[10px] text-muted-foreground/40">
+          <Loader2 className="size-2.5 animate-spin" />
           Checking additional models…
         </span>
       )}

@@ -40,7 +40,7 @@ export function AiGenerationControls({
 
   if (variant === "inline") {
     return (
-      <div className={cn("flex items-center gap-2", className)}>
+      <div className={cn("flex items-center gap-1.5", className)}>
         {showProvider && (
           <Select value={ai.provider} onValueChange={ai.setProvider} disabled={generating}>
             <SelectTrigger className="h-7 w-fit gap-1.5 px-2.5 text-xs font-medium">
@@ -90,11 +90,11 @@ export function AiGenerationControls({
       "flex flex-col gap-3 rounded-xl border border-border/40 bg-card/50 p-3 sm:flex-row sm:items-center sm:justify-between",
       className,
     )}>
-      {/* Left side: provider + model selects */}
-      <div className="flex w-full items-center gap-2 sm:w-auto">
+      {/* Left side: provider + model selects — aligned to same height */}
+      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-2">
         {showProvider && (
           <Select value={ai.provider} onValueChange={ai.setProvider} disabled={generating}>
-            <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto">
+            <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto sm:min-w-[140px]">
               <SelectValue placeholder="Provider…" />
             </SelectTrigger>
             <SelectContent className="min-w-[180px]" side="bottom" align="end">
@@ -122,7 +122,7 @@ export function AiGenerationControls({
         onClick={onGenerate}
         disabled={!canGenerate}
         className={cn(
-          "gap-1.5 px-4 text-xs transition-all whitespace-nowrap",
+          "h-8 gap-1.5 px-4 text-xs transition-all whitespace-nowrap sm:w-auto",
           generating && "animate-pulse",
         )}
       >
