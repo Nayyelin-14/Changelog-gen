@@ -1,3 +1,5 @@
+## v1.0.15 — 2026-09-20 (promoted build.48)
+
 ## v1.0.14 — 2026-09-19
 
 - **fix(web-view)**: Fixed model spinner UX by removing per-model spinners and replacing them with a single 'Checking additional models…' indicator, and tightened page layout with stacked layout on mobile and side-by-side on desktop.
