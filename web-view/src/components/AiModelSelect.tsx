@@ -29,10 +29,7 @@ interface AiModelSelectProps {
  * - Recommended/curated models are ALWAYS shown as available (green dot) — they're
  *   immediately selectable even on cold cache. The backend marks them "checking" when
  *   no health cache entry exists yet, but recommended ≠ unhealthy.
- * - Non-curated models that haven't been probed show a subtle spinner only on the model
- *   row itself.
- * - A single "Checking additional models…" indicator appears at the bottom when ANY
- *   non-curated model is still being probed — avoids spinners on every row.
+ * - Non-curated models show a gray dot when health is unknown/unavailable.
  */
 export function AiModelSelect({
   models,
@@ -44,11 +41,6 @@ export function AiModelSelect({
   className,
   triggerClassName,
 }: AiModelSelectProps) {
-  // Only non-curated models that are still being checked get visual attention
-  const hasCheckingNonCurated = models.some(
-    (m) => m.status === "checking" && !m.recommended,
-  );
-
   if (status === "loading" && models.length === 0) {
     return (
       <div className={cn("flex items-center gap-1.5", className)}>
@@ -113,12 +105,6 @@ export function AiModelSelect({
           })}
         </SelectContent>
       </Select>
-      {hasCheckingNonCurated && (
-        <span className="flex items-center gap-1 pl-1 text-[10px] text-muted-foreground/40">
-          <Loader2 className="size-2.5 animate-spin" />
-          Checking additional models…
-        </span>
-      )}
     </div>
   );
 }

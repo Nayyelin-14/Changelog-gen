@@ -31,18 +31,22 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @QuarkusTestResource(WireMockGitHubAuthResource.class)
 class GitHubAuthResourceTest {
 
-    // Fixtures — mirrored from service/src/test/resources/application.properties.
-    private static final String APP_BASE = "https://test.example.com";
     private static final String ACCESS_TOKEN = "gho_test_access";
 
     @Inject
     UserTransaction utx;
 
-    // The effective OAuth client id (service/.env may override the test fixture, so stubs and
-    // redirect assertions must follow whatever the app actually loaded).
     @Inject
     @ConfigProperty(name = "github.oauth.client-id")
     String clientId;
+
+    @Inject
+    @ConfigProperty(name = "github.oauth.app-base")
+    String appBase;
+
+    @Inject
+    @ConfigProperty(name = "github.oauth.redirect-uri")
+    String redirectUri;
 
     @BeforeEach
     void reset() throws Exception {
@@ -73,7 +77,7 @@ class GitHubAuthResourceTest {
                 .header("Location", containsString("/login/oauth/authorize"))
                 .header("Location", containsString("client_id=" + clientId))
                 .header("Location", containsString("redirect_uri=" + URLEncoder.encode(
-                        "https://test.example.com/api/auth/github/callback", StandardCharsets.UTF_8)))
+                        redirectUri, StandardCharsets.UTF_8)))
                 .header("Location", containsString("scope=repo"));
         String state = response.cookie("cc_oauth");
         assertNotNull(state);
@@ -95,7 +99,7 @@ class GitHubAuthResourceTest {
                 .queryParam("state", nonce + ":https://evil.example/steal")
                 .when().get("/api/auth/github/callback")
                 .then().statusCode(302)
-                .header("Location", equalTo(APP_BASE + "/#/dev"));
+                .header("Location", equalTo(appBase + "/#/dev"));
     }
 
     // --- callback: the full sign-in round-trip ---
@@ -117,7 +121,7 @@ class GitHubAuthResourceTest {
 
         callback.then()
                 .statusCode(302)
-                .header("Location", equalTo(APP_BASE + "/#/dev"));
+                .header("Location", equalTo(appBase + "/#/dev"));
 
         String session = callback.cookie("cc_session");
         assertNotNull(session, "a session cookie must be issued");

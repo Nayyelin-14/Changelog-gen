@@ -166,7 +166,7 @@ function handleProviderClick(next: Provider) {
           )}
         </nav>
 
-        {role && (
+        {role && user && (
           <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-0.5">
             {ROLES.map((r) => {
               const Icon = r.icon;
@@ -191,63 +191,64 @@ function handleProviderClick(next: Provider) {
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={() => handleProviderClick(provider === 'github' ? 'azure' : 'github')}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          aria-label={provider === 'github' ? 'Switch to Azure DevOps' : 'Switch to GitHub'}
-        >
-          {provider === 'github' ? <GitBranch className="size-4" /> : <Terminal className="size-4" />}
-          <span className="hidden sm:inline">{provider === 'github' ? 'GitHub' : 'Azure'}</span>
-        </button>
+        {user && (
+          <button
+            type="button"
+            onClick={() => handleProviderClick(provider === 'github' ? 'azure' : 'github')}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            aria-label={provider === 'github' ? 'Switch to Azure DevOps' : 'Switch to GitHub'}
+          >
+            {provider === 'github' ? <GitBranch className="size-4" /> : <Terminal className="size-4" />}
+            <span className="hidden sm:inline">{provider === 'github' ? 'GitHub' : 'Azure'}</span>
+          </button>
+        )}
 
-        {provider === 'github' && (
-          <div className="flex items-center">
-            {loading ? (
-              <div className="size-7 animate-pulse rounded-full bg-muted" />
-            ) : user ? (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setAccountMenuOpen((open) => !open)}
-                  className="flex cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1 transition-colors hover:bg-accent"
-                  aria-label="Account menu"
-                  aria-expanded={accountMenuOpen}
-                >
-                  {user.avatarUrl ? (
-                    <img src={user.avatarUrl} alt="" className="size-7 rounded-full" />
-                  ) : (
-                    <span className="flex size-7 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
-                      {user.login.charAt(0).toUpperCase()}
-                    </span>
-                  )}
-                  <ChevronDown className="size-3.5 text-muted-foreground" />
-                </button>
+        <div className="flex items-center">
+          {loading ? (
+            <div className="size-7 animate-pulse rounded-full bg-muted" />
+          ) : user ? (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setAccountMenuOpen((open) => !open)}
+                className="flex cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1 transition-colors hover:bg-accent"
+                aria-label="Account menu"
+                aria-expanded={accountMenuOpen}
+              >
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt="" className="size-7 rounded-full" />
+                ) : (
+                  <span className="flex size-7 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                    {user.login.charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              </button>
 
-                {accountMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-20" onClick={() => setAccountMenuOpen(false)} />
-                    <div className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-lg border border-border/60 bg-card shadow-lg">
-                      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2.5">
-                        {user.avatarUrl ? (
-                          <img src={user.avatarUrl} alt="" className="size-8 rounded-full" />
-                        ) : (
-                          <span className="flex size-8 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
-                            {user.login.charAt(0).toUpperCase()}
-                          </span>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-foreground">{user.login}</p>
-                          <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
-                        </div>
+              {accountMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setAccountMenuOpen(false)} />
+                  <div className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-lg border border-border/60 bg-card shadow-lg">
+                    <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2.5">
+                      {user.avatarUrl ? (
+                        <img src={user.avatarUrl} alt="" className="size-8 rounded-full" />
+                      ) : (
+                        <span className="flex size-8 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                          {user.login.charAt(0).toUpperCase()}
+                        </span>
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-foreground">{user.login}</p>
+                        <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
                       </div>
+                    </div>
 
-                      <button
-                        type="button"
-                        onClick={handleSignOut}
-                        className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent"
-                      >
-                        <LogOut className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent"
+                    >
+                      <LogOut className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                         <span>
                           <span className="block text-sm font-medium text-foreground">Sign out</span>
                           <span className="block text-[11px] leading-snug text-muted-foreground">
@@ -286,7 +287,6 @@ function handleProviderClick(next: Provider) {
               </Button>
             )}
           </div>
-        )}
 
         <button
           type="button"

@@ -92,11 +92,11 @@ export function useChangelogGeneration(
     setConfirmingGenerate(true);
     setGenError(null);
     try {
-      // Run-keyed drafts have no version yet. Developer's regeneration persists onto the recorded
-      // run (keyed by buildId) so it survives a refresh; qa/business stay in memory only — the run
-      // row has a single draft slot that the Developer view owns (push is developer-only).
+      // Version-free draft runs: persist ALL audiences via the per-audience recorded_run_draft
+      // table. Each audience has its own independent row — saving QA never overwrites Developer
+      // or Business. The buildId tells the backend to key the draft on the pipeline run.
       if (!selectedEntry.version) {
-        if (buildId && tab === "developer") {
+        if (buildId) {
           await commitChangelog(
             project,
             repo,
@@ -122,10 +122,9 @@ export function useChangelogGeneration(
           [entryId]: { ...prev[entryId], [tab]: { source: "ai", model: usedModel, tokens, durationMs } },
         }));
         toast.success(`${TAB_LABELS[tab]} changelog ${force ? "regenerated" : "generated"}`, {
-          description:
-            buildId && tab === "developer"
-              ? "Saved to the draft — it will be written to the repo when you Push."
-              : "Draft has no version yet — it will be saved to the repo when you Push.",
+          description: buildId
+            ? "Saved to the draft — it will be written to the repo when you Push."
+            : "Draft has no version yet — it will be saved to the repo when you Push.",
         });
         setMutationCount((c) => c + 1);
         setConfirmingGenerate(false);

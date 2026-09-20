@@ -63,13 +63,17 @@ export function useChangelogState(
   // Peek whatever's already saved for qa/business the moment a tab opens — otherwise a version
   // generated/edited in an earlier session (or by the pipeline) would show the "click Generate"
   // empty state even though real content already exists in Postgres. No AI call: this only ever
-  // reads what's already there.
+  // reads what's already there. For version-free draft runs (id starts with "run-"), pass buildId
+  // so the backend reads from the per-audience recorded_run_draft table.
   useEffect(() => {
     if (!project || !repo || !selectedEntry || activeTab === "developer") return;
     if (generatedByEntry[selectedEntry.id]?.[activeTab]) return;
     if (checkedByEntry[selectedEntry.id]?.[activeTab]) return;
     let cancelled = false;
-    getChangelogText(project, repo, selectedEntry.version ?? "", activeTab)
+    const buildId = selectedEntry.id.startsWith("run-")
+      ? Number(selectedEntry.id.slice("run-".length)) || undefined
+      : undefined;
+    getChangelogText(project, repo, selectedEntry.version ?? "", activeTab, buildId)
       .then((text) => {
         if (cancelled) return;
         if (text) {
