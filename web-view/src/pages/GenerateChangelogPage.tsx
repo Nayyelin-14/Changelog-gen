@@ -3,6 +3,8 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   FileText,
   FileWarning,
@@ -30,6 +32,7 @@ import {
   listRepositories,
   pushChangelog,
   resolveReleaseVersion,
+  ApiError,
 } from "@/api/client";
 import type { GenerationRecord, ReleaseVersionResolution } from "@/api/types";
 import type { HistoryRow } from "@/components/ChangelogEditHistoryPanel";
@@ -70,6 +73,29 @@ const TABS = [DEVELOPER_TAB, ...GENERATED_TABS];
 function shortBranchName(ref: string | null): string | undefined {
   if (!ref) return undefined;
   return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+}
+
+/** Maps raw backend/API push errors to user-friendly messages. */
+function friendlyPushError(raw: string, apiStatus?: number): string {
+  const msg = raw
+    .replace(/^GitHub push failed for [^:]+:\s*/i, "")
+    .replace(/^GitHub\s+\w+\s+failed\s*\([^)]*\):\s*/i, "")
+    .trim();
+  const statusMatch = msg.match(/^(\d{3})\b/);
+  const status = apiStatus ?? (statusMatch ? parseInt(statusMatch[1], 10) : 0);
+  if (raw.includes("You must be signed in") || status === 401)
+    return "GitHub authentication failed. Please sign in again.";
+  if (status === 403 && (msg.toLowerCase().includes("branch") || msg.toLowerCase().includes("protected")))
+    return "Branch protection prevents direct pushes to this branch. Try pushing to a different branch or use a PR.";
+  if (status === 403) return "You don't have permission to push to this repository.";
+  if (status === 404) return "Repository not found. Check the repository name and your access.";
+  if (status === 429) return "GitHub API rate limit exceeded. Try again in a few minutes.";
+  if (status >= 500) return "GitHub server error. Try again later.";
+  if (msg) {
+    const firstSentence = msg.split(/\.\s/)[0];
+    return firstSentence.endsWith(".") ? firstSentence : firstSentence + ".";
+  }
+  return "Push failed. Check the technical details below.";
 }
 
 export function GenerateChangelogPage() {
@@ -357,6 +383,8 @@ export function GenerateChangelogPage() {
   // Keyed by entryId so switching versions doesn't lose a just-opened PR link.
   const [pushing, setPushing] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
+  const [pushErrorStatus, setPushErrorStatus] = useState<number | undefined>(undefined);
+  const [pushDetailsOpen, setPushDetailsOpen] = useState(false);
   const [pushResultByEntry, setPushResultByEntry] = useState<Record<string, string>>({});
   const pushResult = effectiveEntryId ? pushResultByEntry[effectiveEntryId] : undefined;
 
@@ -408,7 +436,7 @@ export function GenerateChangelogPage() {
   }
 
   async function handlePushModalConfirm() {
-    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken) return;
+    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken || pushing) return;
     setPushing(true);
     setPushError(null);
     try {
@@ -430,9 +458,9 @@ export function GenerateChangelogPage() {
         action: { label: "View commit", onClick: () => window.open(res.commitUrl, "_blank", "noreferrer") },
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to push to repo.";
-      setPushError(message);
-      toast.error("Failed to push to the repo", { description: message });
+      const rawMessage = e instanceof Error ? e.message : "Failed to push to repo.";
+      setPushErrorStatus(e instanceof ApiError ? e.status : undefined);
+      setPushError(rawMessage);
     } finally {
       setPushing(false);
     }
@@ -443,6 +471,10 @@ export function GenerateChangelogPage() {
     setPushError(null);
     setSelectedHistoryRow(null);
   }, [effectiveEntryId]);
+
+  useEffect(() => {
+    if (!pushError) setPushDetailsOpen(false);
+  }, [pushError]);
 
   useEffect(() => {
     if (mutationCount > 0) setSelectedHistoryRow(null);
@@ -1046,8 +1078,25 @@ export function GenerateChangelogPage() {
                             </Select>
                           </div>
                           {pushError && (
-                            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                              {pushError}
+                            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive space-y-1">
+                              <p className="break-words">
+                                {friendlyPushError(pushError, pushErrorStatus)}
+                              </p>
+                              {(pushError.includes("\n") || pushError.length > 120) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setPushDetailsOpen(!pushDetailsOpen)}
+                                  className="inline-flex items-center gap-1 text-xs text-destructive/70 hover:text-destructive transition-colors"
+                                >
+                                  {pushDetailsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                                  Technical details
+                                </button>
+                              ) : null}
+                              {pushDetailsOpen && (
+                                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-destructive/80 leading-relaxed">
+                                  {pushError}
+                                </pre>
+                              )}
                             </div>
                           )}
                         </div>

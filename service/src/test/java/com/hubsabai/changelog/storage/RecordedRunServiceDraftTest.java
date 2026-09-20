@@ -30,7 +30,9 @@ class RecordedRunServiceDraftTest {
     @Transactional
     void cleanUp() {
         TestDatabaseGuard.assertNotProductionDatabase(entityManager);
-        entityManager.createNativeQuery("TRUNCATE TABLE recorded_pipeline_run RESTART IDENTITY").executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM recorded_run_draft").executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM recorded_pipeline_run").executeUpdate();
+        entityManager.createNativeQuery("ALTER TABLE recorded_pipeline_run ALTER COLUMN id RESTART WITH 1").executeUpdate();
     }
 
     private void seedRun(long buildId) {

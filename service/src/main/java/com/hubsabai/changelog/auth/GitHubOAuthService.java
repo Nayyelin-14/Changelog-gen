@@ -46,12 +46,21 @@ public class GitHubOAuthService {
             @ConfigProperty(name = "github.oauth.client-secret", defaultValue = "") String clientSecret,
             @ConfigProperty(name = "github.oauth.redirect-uri", defaultValue = "") String redirectUri,
             @ConfigProperty(name = "github.oauth.github-base-url", defaultValue = "https://github.com") String githubBaseUrl,
-            @ConfigProperty(name = "github.oauth.api-base-url", defaultValue = "https://api.github.com") String apiBaseUrl) {
+            @ConfigProperty(name = "github.oauth.api-base-url", defaultValue = "https://api.github.com") String apiBaseUrl,
+            @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String profile) {
         this.clientId = clientId;
         this.clientSecret = clientSecret;
-        this.redirectUri = redirectUri;
         this.githubBaseUrl = stripTrailingSlash(githubBaseUrl);
         this.apiBaseUrl = stripTrailingSlash(apiBaseUrl);
+        // In dev profile, force localhost redirect regardless of env var — env vars always
+        // beat %dev prefix properties in Quarkus, so we must override here.
+        if (profile.contains("dev")) {
+            this.redirectUri = "http://localhost:8081/api/auth/github/callback";
+        } else {
+            this.redirectUri = redirectUri;
+        }
+        LOG.info("GitHubOAuthService initialised — profile=" + profile
+                + ", redirectUri=" + this.redirectUri + ", enabled=" + enabled());
     }
 
     /** Sign-in is only offered once the operator registered an OAuth App AND set a session secret. */

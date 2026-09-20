@@ -10,14 +10,13 @@ import com.hubsabai.changelog.connector.github.dto.GitHubBlob;
 import com.hubsabai.changelog.connector.github.dto.GitHubBranch;
 import com.hubsabai.changelog.connector.github.dto.GitHubCommit;
 import com.hubsabai.changelog.connector.github.dto.GitHubCommit.GitHubFile;
-import com.hubsabai.changelog.connector.github.dto.GitHubCreatedPullRequest;
-import com.hubsabai.changelog.connector.github.dto.GitHubCreatePullRequest;
-import com.hubsabai.changelog.connector.github.dto.GitHubCreateRef;
+import com.hubsabai.changelog.connector.github.dto.GitHubCommitSha;
 import com.hubsabai.changelog.connector.github.dto.GitHubFileContent;
 import com.hubsabai.changelog.connector.github.dto.GitHubOrgUser;
 import com.hubsabai.changelog.connector.github.dto.GitHubPullRequest;
 import com.hubsabai.changelog.connector.github.dto.GitHubRepository;
 import com.hubsabai.changelog.connector.github.dto.GitHubTag;
+import com.hubsabai.changelog.connector.github.dto.GitHubTree;
 import com.hubsabai.changelog.connector.github.dto.GitHubWorkflowRun;
 import com.hubsabai.changelog.connector.github.dto.GitHubWorkflowRunsResponse;
 import com.hubsabai.changelog.connector.azuredevops.ChangeCategoryClassifier;
@@ -1316,8 +1315,13 @@ public class GitHubOrgConnector {
     private GitHubCommit getCommitFromClient(String owner, String repo, String sha) {
         try {
             return client.getCommit(owner, repo, sha);
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            LOG.warning("GitHub get commit failed for " + owner + "/" + repo + " @ " + sha
+                    + " — HTTP " + e.getResponse().getStatus()
+                    + ": " + e.getResponse().readEntity(String.class));
+            return null;
         } catch (Exception e) {
-            LOG.warning("GitHub get commit failed: " + e);
+            LOG.warning("GitHub get commit failed for " + owner + "/" + repo + " @ " + sha + ": " + e);
             return null;
         }
     }
@@ -1421,24 +1425,39 @@ public class GitHubOrgConnector {
         }
     }
 
-    // ---- push as PR ----
+    // ---- push directly to branch ----
 
     /**
-     * Pushes the Developer changelog as a branch + PR (GitHub has no direct-commit push for a
-     * foreign file, unlike Azure's single-commit API). Re-fetches the live CHANGELOG.md, applies
-     * the same edit/create logic as Azure, then opens a PR back into {@code branch}.
+     * Commits the Developer changelog directly to {@code branch} (no PR, no intermediate branch).
+     * Re-fetches the live CHANGELOG.md, applies the edit, creates a Git commit object via the
+     * GitHub Data API, then advances the branch ref.  If the branch moved since the read,
+     * the caller can retry (the frontend handles stale-base detection).
      *
-     * @return the PR's html_url. Failures propagate as unchecked exceptions.
+     * @return the commit's html_url. Failures propagate as unchecked exceptions whose messages
+     *         contain keywords ({@code stale}, {@code base commit}, {@code conflict}) the
+     *         frontend uses for retry logic.
      */
     public String pushChangelogEdit(String project, String repo, String branch, String version, String newBody) {
-        // 1. Re-fetch current file at the target branch tip.
+        String userLogin = currentUser.isResolvable() && currentUser.get() != null
+                ? currentUser.get().login().orElse("unknown") : "anonymous";
+
+        // 1. Resolve the target branch and its current HEAD.
         String resolvedBranch = branch != null ? branch : defaultBranch(project, repo);
+        String baseBranchSha = resolveBranchHead(project, repo, resolvedBranch);
+        if (baseBranchSha == null) {
+            throw new IllegalStateException("Branch '" + resolvedBranch + "' not found on " + project + "/" + repo + ".");
+        }
+
+        // 2. Re-fetch the current CHANGELOG.md at that exact commit.
         ChangelogFile file = fetchChangelogFile(project, repo, resolvedBranch);
         boolean fileExists = file != null;
         String filename = fileExists ? file.filename() : ChangelogMarkdown.CHANGELOG_FILENAMES.get(0);
         String existingContent = fileExists ? file.content() : null;
 
-        Optional<String> replaced = fileExists ? ChangelogMarkdown.replaceChangelogEntryBody(existingContent, version, newBody) : Optional.empty();
+        // 3. Apply the edit (replace existing entry or insert a new one).
+        Optional<String> replaced = fileExists
+                ? ChangelogMarkdown.replaceChangelogEntryBody(existingContent, version, newBody)
+                : Optional.empty();
         boolean isNewEntry = replaced.isEmpty();
         String updated;
         if (isNewEntry) {
@@ -1453,85 +1472,142 @@ public class GitHubOrgConnector {
             updated = replaced.get();
         }
 
-        String baseBranchSha = resolveBranchHead(project, repo, resolvedBranch);
-        if (baseBranchSha == null) {
-            throw new IllegalStateException("Branch '" + resolvedBranch + "' not found on " + project + "/" + repo + ".");
-        }
-
-        String branchName = "changelog/" + version + "-" + baseBranchSha.substring(0, Math.min(8, baseBranchSha.length()));
-        String fullRef = "refs/heads/" + branchName;
+        LOG.info("Push v" + version + " to " + project + "/" + repo + " branch " + resolvedBranch + " by " + userLogin);
 
         try {
-            // 2. Create a branch off the target branch's current tip (409 if it already exists —
-            // e.g. an earlier push for the same version; that's a re-push, so just continue).
-            try (Response create = client.createRef(project, repo, new GitHubCreateRef(fullRef, baseBranchSha))) {
-                if (create.getStatus() >= 300 && create.getStatus() != 422) {
-                    throw new IllegalStateException("Failed to create branch '" + branchName
-                            + "' (HTTP " + create.getStatus() + ").");
-                }
+            // 4. Create a blob with the updated content.
+            String contentB64 = java.util.Base64.getEncoder()
+                    .encodeToString(updated.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            GitHubBlob blob;
+            try {
+                blob = client.createBlob(project, repo,
+                        MAPPER.writeValueAsString(Map.of("content", contentB64, "encoding", "base64")));
+            } catch (WebApplicationException e) {
+                String body = safeReadBody(e);
+                throw new GitHubPushException(e.getResponse().getStatus(), "createBlob", body);
             }
-
-            // 3. Create a blob carrying the new CHANGELOG.md content.
-            String contentB64 = java.util.Base64.getEncoder().encodeToString(updated.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            GitHubBlob blob = client.createBlob(project, repo,
-                    MAPPER.writeValueAsString(Map.of("content", contentB64, "encoding", "base64")));
             if (blob == null || blob.sha() == null) {
-                throw new IllegalStateException("Failed to create blob: response was null or missing sha");
+                throw new GitHubPushException(0, "createBlob", "GitHub returned null or missing blob sha");
             }
             String blobSha = blob.sha();
 
-            // 4. Build a tree: the base commit's own tree plus the changed CHANGELOG.md.
+            // 5. Build a tree based on the target branch's current tree.
             String baseTreeSha = fetchBaseTreeSha(project, repo, baseBranchSha);
             if (baseTreeSha == null) {
-                throw new IllegalStateException("Failed to fetch base tree sha for commit " + baseBranchSha);
-            }
-            if (filename == null) {
-                throw new IllegalStateException("Filename is null");
+                throw new IllegalStateException("Failed to fetch base tree sha for commit " + baseBranchSha
+                        + " on " + project + "/" + repo
+                        + " — check the server logs for the actual GitHub API error (HTTP status, timeout, or auth failure).");
             }
             String treeJson = MAPPER.writeValueAsString(Map.of(
                     "base_tree", baseTreeSha,
                     "tree", List.of(Map.of("path", filename, "mode", "100644", "type", "blob", "sha", blobSha))));
-            String treeSha = client.createTree(project, repo, treeJson).sha();
+            GitHubTree tree;
+            try {
+                tree = client.createTree(project, repo, treeJson);
+            } catch (WebApplicationException e) {
+                String body = safeReadBody(e);
+                throw new GitHubPushException(e.getResponse().getStatus(), "createTree", body);
+            }
+            if (tree == null || tree.sha() == null) {
+                throw new GitHubPushException(0, "createTree", "GitHub returned null or missing tree sha");
+            }
+            String treeSha = tree.sha();
 
-            // 5. Create a commit on that tree with the target branch tip as parent.
+            // 6. Create a commit whose parent is the branch HEAD.
             String commitJson = MAPPER.writeValueAsString(Map.of(
-                    "message", "Add v" + version + " developer changelog (via dashboard)",
+                    "message", "changelog: add v" + version + " (via dashboard)",
                     "tree", treeSha,
                     "parents", List.of(baseBranchSha)));
-            String commitSha = client.createCommit(project, repo, commitJson).sha();
+            GitHubCommitSha createdCommit;
+            try {
+                createdCommit = client.createCommit(project, repo, commitJson);
+            } catch (WebApplicationException e) {
+                String body = safeReadBody(e);
+                throw new GitHubPushException(e.getResponse().getStatus(), "createCommit", body);
+            }
+            if (createdCommit == null || createdCommit.sha() == null) {
+                throw new GitHubPushException(0, "createCommit", "GitHub returned null or missing commit sha");
+            }
+            String commitSha = createdCommit.sha();
 
-            // 6. Point the new branch at the new commit.
-            try (Response update = client.updateRef(project, repo, branchName,
-                    MAPPER.writeValueAsString(Map.of("sha", commitSha, "force", true)))) {
-                if (update.getStatus() >= 300) {
-                    throw new IllegalStateException("Failed to update GitHub branch '" + branchName
-                            + "' (HTTP " + update.getStatus() + ").");
+            // 7. Advance the branch ref to the new commit.
+            //    Use force=false so a concurrent push (stale base) fails with a clear 422
+            //    instead of silently overwriting someone else's work.
+            String refPath = "heads/" + resolvedBranch;
+            try (Response update = client.updateRef(project, repo, refPath,
+                    MAPPER.writeValueAsString(Map.of("sha", commitSha, "force", false)))) {
+                int status = update.getStatus();
+                if (status == 422 || status == 409) {
+                    // The branch moved since we read it — tell the caller so the frontend can retry.
+                    throw new IllegalStateException(
+                            "The branch '" + resolvedBranch + "' has moved since the CHANGELOG.md was read "
+                            + "(base commit " + baseBranchSha.substring(0, Math.min(8, baseBranchSha.length()))
+                            + " is stale) — please refresh and try again.");
+                }
+                if (status >= 300) {
+                    String body = safeReadBody(update);
+                    throw new GitHubPushException(status, "updateRef", body);
                 }
             }
 
-            // 7. Open a PR back into the source branch.
-            GitHubCreatedPullRequest created = client.createPullRequest(project, repo, new GitHubCreatePullRequest(
-                    "Add v" + version + " developer changelog",
-                    "Automated changelog update via Changelog Composer.",
-                    branchName, resolvedBranch));
-            return created.htmlUrl();
-        } catch (WebApplicationException e) {
-            throw new IllegalStateException("GitHub push failed for " + project + "/" + repo + ": " + e.getMessage());
+            // 8. Return the commit URL.
+            String commitUrl = "https://github.com/" + project + "/" + repo + "/commit/" + commitSha;
+            LOG.info("Push succeeded — commit " + commitSha.substring(0, Math.min(8, commitSha.length()))
+                    + " on " + resolvedBranch + " by " + userLogin);
+            return commitUrl;
+        } catch (IllegalStateException e) {
+            throw e; // re-throw stale-branch and validation errors as-is (frontend retry logic)
+        } catch (GitHubPushException e) {
+            LOG.warning("Push v" + version + " to " + project + "/" + repo + " branch " + resolvedBranch
+                    + " by " + userLogin + " failed at " + e.getOperation()
+                    + " — HTTP " + e.getHttpStatus() + ": " + e.getGithubMessage());
+            throw e;
         } catch (Exception e) {
-            throw new IllegalStateException("GitHub push failed for " + project + "/" + repo + ": " + e.getMessage(), e);
+            LOG.warning("Push v" + version + " to " + project + "/" + repo + " branch " + resolvedBranch
+                    + " by " + userLogin + " failed: " + e.getMessage());
+            throw new GitHubPushException(0, "unknown", e.getMessage(), e);
         }
+    }
+
+    /** Safely read the response body from a JAX-RS WebApplicationException. */
+    private static String safeReadBody(WebApplicationException e) {
+        try { return e.getResponse().readEntity(String.class); } catch (Exception ignored) { return e.getMessage(); }
+    }
+
+    /** Safely read the body from a Response. */
+    private static String safeReadBody(Response response) {
+        try { return response.readEntity(String.class); } catch (Exception ignored) { return ""; }
     }
 
     /** The tree sha a commit's tree points at — read from the commit detail. */
     private String fetchBaseTreeSha(String project, String repo, String commitSha) {
         if (commitSha == null) return null;
         try {
-            GitHubCommit commit = getCommitFromClient(project, repo, commitSha);
-            if (commit == null) return null;
-            return commit.tree() != null ? commit.tree().sha() : null;
+            GitHubCommit commit = client.getCommit(project, repo, commitSha);
+            if (commit == null) {
+                throw new IllegalStateException("getCommit returned null for " + commitSha);
+            }
+            // GitHub nests the tree sha inside commit.commit.tree — NOT at the top level.
+            if (commit.commit() != null && commit.commit().tree() != null
+                    && commit.commit().tree().sha() != null) {
+                return commit.commit().tree().sha();
+            }
+            // Fallback: some responses include tree at the top level too.
+            if (commit.tree() != null && commit.tree().sha() != null) {
+                return commit.tree().sha();
+            }
+            throw new IllegalStateException("commit " + commitSha
+                    + " has no tree sha in either commit.tree or top-level tree");
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            String body = "";
+            try { body = e.getResponse().readEntity(String.class); } catch (Exception ignored) {}
+            throw new IllegalStateException("GitHub get commit failed for " + project + "/" + repo
+                    + " @ " + commitSha + " — HTTP " + e.getResponse().getStatus() + ": " + body);
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            LOG.warning("fetchBaseTreeSha failed for " + project + "/" + repo + ": " + e);
-            return null;
+            throw new IllegalStateException("GitHub get commit failed for " + project + "/" + repo
+                    + " @ " + commitSha + " — " + e.getMessage(), e);
         }
     }
 }

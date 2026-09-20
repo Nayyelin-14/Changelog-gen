@@ -253,4 +253,12 @@ public interface GitHubOrgRestClient {
             @PathParam("owner") String owner,
             @PathParam("repo") String repo,
             GitHubCreatePullRequest body);
+
+    @GET
+    @Path("/repos/{owner}/{repo}/pulls")
+    Response listPullRequests(
+            @PathParam("owner") String owner,
+            @PathParam("repo") String repo,
+            @QueryParam("state") String state,
+            @QueryParam("head") String head);
 }

@@ -3,6 +3,8 @@ package com.hubsabai.changelog.api;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hubsabai.changelog.ai.AiException;
+import com.hubsabai.changelog.auth.CurrentUser;
+import jakarta.ws.rs.WebApplicationException;
 import com.hubsabai.changelog.ai.AiMessage;
 import com.hubsabai.changelog.ai.AiModelCatalog;
 import com.hubsabai.changelog.ai.AiModelOption;
@@ -116,6 +118,9 @@ public class GitHubResource {
 
     @Inject
     RunChangeDataReader runChangeDataReader;
+
+    @Inject
+    CurrentUser currentUser;
 
     // --- navigation ---
 
@@ -813,14 +818,23 @@ public class GitHubResource {
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             @QueryParam("version") String version,
-            @QueryParam("audience") String audience) {
+            @QueryParam("audience") String audience,
+            @QueryParam("buildId") Long buildId) {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
-        if (version == null || version.isBlank()) {
-            throw new AiException("A version is required.");
-        }
         Map<String, String> response = new LinkedHashMap<>();
+        // Version-free draft run: read per-audience text from the new recorded_run_draft table
+        if ((version == null || version.isBlank()) && buildId != null && buildId > 0) {
+            String draftText = recordedRunService.getAiDraft("github", project, repo, buildId, audience)
+                    .map(d -> d.draftText)
+                    .orElse(null);
+            response.put("text", draftText);
+            return response;
+        }
+        if (version == null || version.isBlank()) {
+            throw new AiException("A version or a pipeline build ID is required.");
+        }
         response.put("text", cacheService.getCurrentText(project, repo, version, audience).orElse(null));
         return response;
     }
@@ -1090,6 +1104,11 @@ public class GitHubResource {
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             GenerateCommitRequest request) {
+        if (!currentUser.isPresent()) {
+            throw new WebApplicationException(
+                    "You must be signed in with GitHub to push changes.",
+                    Response.Status.UNAUTHORIZED);
+        }
         String audience = request.getAudience();
         String version = request.getVersion();
         String branch = request.getBranch();
@@ -1110,7 +1129,7 @@ public class GitHubResource {
                 : cacheService.getCurrentText(project, repo, version, "developer")
                         .orElseThrow(() -> new AiException("Nothing generated or edited yet for v" + version + " — nothing to push."));
 
-        String prUrl = orgConnector.pushChangelogEdit(project, repo, branch, version, text);
+        String commitUrl = orgConnector.pushChangelogEdit(project, repo, branch, version, text);
 
         if (needsCaching) {
             String inputHash = null;
@@ -1128,7 +1147,7 @@ public class GitHubResource {
             long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
             changelogService.createSnapshot(vid, "developer", text, "ai", model, 0, 0, null);
         }
-        cacheService.markPushed(project, repo, version, "developer", text, prUrl);
+        cacheService.markPushed(project, repo, version, "developer", text, commitUrl);
 
         // Version-free save → push-modal flow: fill the human-chosen version into the recorded
         // run the draft was saved against, and clear the now-obsolete draft.
@@ -1137,8 +1156,7 @@ public class GitHubResource {
         }
 
         Map<String, String> response = new LinkedHashMap<>();
-        response.put("pullRequestUrl", prUrl);
-        response.put("commitUrl", prUrl);
+        response.put("commitUrl", commitUrl);
         return response;
     }
 

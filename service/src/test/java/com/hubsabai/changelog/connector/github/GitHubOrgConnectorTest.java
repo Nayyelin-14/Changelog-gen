@@ -312,7 +312,7 @@ class GitHubOrgConnectorTest {
     }
 
     @Test
-    void shouldPushChangelogAsBranchAndPullRequest() {
+    void shouldPushChangelogDirectlyToBranch() {
         // Stub owner resolution (getOrg -> 404, then getUser)
         WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/orgs/test-owner"))
                 .willReturn(aResponse().withStatus(404)));
@@ -361,11 +361,7 @@ class GitHubOrgConnectorTest {
                                 {"sha":"base123","commit":{"author":{"name":"a","date":"2026-07-01T00:00:00Z"},
                                   "committer":{"name":"a","date":"2026-07-01T00:00:00Z"},"message":"base",
                                   "tree":{"sha":"treeparent"}},"tree":{"sha":"treeparent"},"html_url":"u"}""")));
-        // git data API write chain.
-        WireMockGitHubOrgResource.server().stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
-                urlPathEqualTo("/repos/test-owner/repo-one/git/refs"))
-                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
-                        .withBody("{\"ref\":\"refs/heads/changelog/1.1.0-base123\",\"sha\":\"base123\"}")));
+        // git data API write chain — direct commit to target branch (no intermediate branch).
         WireMockGitHubOrgResource.server().stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
                 urlPathEqualTo("/repos/test-owner/repo-one/git/blobs"))
                 .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
@@ -378,18 +374,16 @@ class GitHubOrgConnectorTest {
                 urlPathEqualTo("/repos/test-owner/repo-one/git/commits"))
                 .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
                         .withBody("{\"sha\":\"commitsha\"}")));
+        // updateRef: advance the target branch head (force=false for stale detection).
+        // RESTEasy Reactive URL-encodes the {ref} path param: "heads/main" → "heads%2Fmain".
         WireMockGitHubOrgResource.server().stubFor(com.github.tomakehurst.wiremock.client.WireMock.put(
-                urlPathEqualTo("/repos/test-owner/repo-one/git/refs/changelog%2F1.1.0-base123"))
+                urlPathEqualTo("/repos/test-owner/repo-one/git/refs/heads%2Fmain"))
                 .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json")
-                        .withBody("{\"ref\":\"refs/heads/changelog/1.1.0-base123\",\"sha\":\"commitsha\"}")));
-        WireMockGitHubOrgResource.server().stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
-                urlPathEqualTo("/repos/test-owner/repo-one/pulls"))
-                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
-                        .withBody("{\"number\":7,\"html_url\":\"https://github.com/test-owner/repo-one/pull/7\"}")));
+                        .withBody("{\"ref\":\"refs/heads/main\",\"sha\":\"commitsha\"}")));
 
-        String prUrl = connector.pushChangelogEdit("test-owner", "repo-one", "main", "1.1.0",
+        String commitUrl = connector.pushChangelogEdit("test-owner", "repo-one", "main", "1.1.0",
                 "- fixed the thing\n- added a feature");
 
-        assertEquals("https://github.com/test-owner/repo-one/pull/7", prUrl);
+        assertEquals("https://github.com/test-owner/repo-one/commit/commitsha", commitUrl);
     }
 }

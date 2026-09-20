@@ -64,29 +64,26 @@ export function useChangelogEdit(
       setEditSaving(true);
       setEditError(null);
       const role = getStoredRole() ?? undefined;
-      // A version-free run draft has a single draft slot owned by Developer; qa/business edits on
-      // it stay local-only rather than clobbering the Developer draft.
-      const shouldPersist = !!selectedEntry.version || tab === "developer";
       try {
-        const res = shouldPersist
-          ? await saveChangelogEdit(
-              project,
-              repo,
-              selectedEntry.version ?? "",
-              tab,
-              editText,
-              role,
-              selectedEntry.branch ?? undefined,
-              buildId,
-            )
-          : null;
+        // Version-free draft runs: ALL audiences are persisted via the per-audience
+        // recorded_run_draft table. Each audience has its own independent row.
+        const res = await saveChangelogEdit(
+          project,
+          repo,
+          selectedEntry.version ?? "",
+          tab,
+          editText,
+          role,
+          selectedEntry.branch ?? undefined,
+          buildId,
+        );
         const editedAt = new Date().toISOString();
         if (tab === "developer") {
           setDeveloperOverrides((prev) => ({ ...prev, [entryId]: editText }));
           setGeneratedByEntry((prev) => {
             const entryMap = { ...prev[entryId] };
-            if (res?.qa) entryMap.qa = { text: res.qa };
-            if (res?.business) entryMap.business = { text: res.business };
+            if (res.qa) entryMap.qa = { text: res.qa };
+            if (res.business) entryMap.business = { text: res.business };
             return { ...prev, [entryId]: entryMap };
           });
           setMetaByEntry((prev) => {
@@ -110,9 +107,9 @@ export function useChangelogEdit(
         setSaveConfirmingTab(null);
         setMutationCount((c) => c + 1);
         toast.success(`${TAB_LABELS[tab]} changelog edit saved${selectedEntry.version ? ` for v${selectedEntry.version}` : ""}`, {
-          description: shouldPersist
+          description: selectedEntry.version
             ? "Saved to the database. Nothing has been pushed to the repo yet."
-            : "Applied locally — this run has no version yet, so it isn't saved until Developer pushes.",
+            : "Saved to the draft — it will be written to the repo when you Push.",
         });
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to save edit.";

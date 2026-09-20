@@ -8,6 +8,7 @@ import com.hubsabai.changelog.core.model.PipelineRunSummary;
 import com.hubsabai.changelog.core.model.ReleaseData;
 import com.hubsabai.changelog.generation.RunChangeContext;
 import com.hubsabai.changelog.storage.RecordedPipelineRun;
+import com.hubsabai.changelog.storage.RecordedRunDraft;
 import com.hubsabai.changelog.storage.RecordedRunService;
 import com.hubsabai.changelog.storage.RawReleaseService;
 import jakarta.inject.Inject;
@@ -96,11 +97,22 @@ public class PipelineRunResource {
             @QueryParam("provider") String provider,
             @QueryParam("project") String project,
             @QueryParam("repo") String repo,
-            @PathParam("runId") Long runId) {
+            @PathParam("runId") Long runId,
+            @QueryParam("audience") String audience) {
         if (project == null || repo == null || runId == null) {
             return new AiDraftDto(null, null, null, null, null);
         }
         String effectiveProvider = provider != null ? provider : "azure";
+        String effectiveAudience = audience != null ? audience : "developer";
+        // Try per-audience draft first (new recorded_run_draft table)
+        Optional<RecordedRunDraft> draft = recordedRunService.getAiDraft(effectiveProvider, project, repo, runId, effectiveAudience);
+        if (draft.isPresent()) {
+            RecordedRunDraft d = draft.get();
+            return new AiDraftDto(d.audience, d.draftText, d.draftModel,
+                    d.draftTokens != null ? d.draftTokens.intValue() : null,
+                    d.draftDurationMs != null ? d.draftDurationMs.intValue() : null);
+        }
+        // Fall back to legacy single-slot fields on the run row
         Optional<RecordedPipelineRun> run = recordedRunService.getAiDraft(effectiveProvider, project, repo, runId);
         return run
                 .map(r -> new AiDraftDto(r.aiDraftAudience, r.aiDraftText, r.aiDraftModel,

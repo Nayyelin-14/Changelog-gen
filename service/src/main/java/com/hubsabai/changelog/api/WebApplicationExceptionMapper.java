@@ -63,6 +63,19 @@ public class WebApplicationExceptionMapper implements ExceptionMapper<WebApplica
         }
 
         int upstreamStatus = exception.getResponse() != null ? exception.getResponse().getStatus() : 502;
+
+        // Only intercept Azure DevOps upstream failures (the default/root resource).
+        // GitHubResource and other providers throw WebApplicationException with their own
+        // status codes — those should pass through with their original status + message.
+        boolean isGitHubPath = path != null && path.contains("/github");
+        if (isGitHubPath && upstreamStatus != 502) {
+            String msg = exception.getMessage() != null ? exception.getMessage() : "Request failed.";
+            return Response.status(upstreamStatus)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("error", msg))
+                    .build();
+        }
+
         LOG.log(Level.WARNING, "Azure DevOps call failed with HTTP " + upstreamStatus + " for our API path: " + (path != null ? path : "unknown"));
 
         if (upstreamStatus == 404) {

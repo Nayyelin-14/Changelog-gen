@@ -19,6 +19,7 @@ public record GitHubCommit(
             @JsonProperty("author") GitHubCommitIdentity author,
             @JsonProperty("committer") GitHubCommitIdentity committer,
             @JsonProperty("message") String message,
+            @JsonProperty("tree") GitHubTree tree,
             @JsonProperty("parents") List<GitHubCommitParent> parents) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)

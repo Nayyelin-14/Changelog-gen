@@ -1248,14 +1248,23 @@ public class AzureDevOpsResource {
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             @QueryParam("version") String version,
-            @QueryParam("audience") String audience) {
+            @QueryParam("audience") String audience,
+            @QueryParam("buildId") Long buildId) {
         if (!"developer".equals(audience) && !"qa".equals(audience) && !"business".equals(audience)) {
             throw new AiException("audience must be 'developer', 'qa', or 'business'.");
         }
-        if (version == null || version.isBlank()) {
-            throw new AiException("A version is required.");
-        }
         Map<String, String> response = new LinkedHashMap<>();
+        // Version-free draft run: read per-audience text from the new recorded_run_draft table
+        if ((version == null || version.isBlank()) && buildId != null && buildId > 0) {
+            String draftText = recordedRunService.getAiDraft("azure", project, repo, buildId, audience)
+                    .map(d -> d.draftText)
+                    .orElse(null);
+            response.put("text", draftText);
+            return response;
+        }
+        if (version == null || version.isBlank()) {
+            throw new AiException("A version or a pipeline build ID is required.");
+        }
         response.put("text", cacheService.getCurrentText(project, repo, version, audience).orElse(null));
         return response;
     }

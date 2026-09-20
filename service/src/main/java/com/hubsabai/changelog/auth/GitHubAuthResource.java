@@ -53,11 +53,20 @@ public class GitHubAuthResource {
 
     @Inject
     @ConfigProperty(name = "github.oauth.app-base", defaultValue = "")
-    String appBase;
+    String configuredAppBase;
+
+    @Inject
+    @ConfigProperty(name = "quarkus.profile", defaultValue = "prod")
+    String profile;
 
     @Inject
     @ConfigProperty(name = "auth.cookie.secure", defaultValue = "true")
-    boolean secureCookies;
+    boolean configuredSecureCookies;
+
+    /** In dev profile, never set Secure flag — dev runs over plain HTTP. */
+    private boolean secureCookies() {
+        return profile.contains("dev") ? false : configuredSecureCookies;
+    }
 
     /** Starts the authorization-code dance. {@code next} is the frontend route to land on after the
      * OAuth round-trip (must be a same-site relative path — see {@link #sanitizeNext}). */
@@ -107,7 +116,7 @@ public class GitHubAuthResource {
             var session = sessions.create(user.id);
             return Response.status(Response.Status.FOUND)
                     .location(URI.create(appBase() + "/#" + next))
-                    .cookie(sessions.sessionCookie(session.token(), session.maxAgeSeconds(), secureCookies),
+                    .cookie(sessions.sessionCookie(session.token(), session.maxAgeSeconds(), secureCookies()),
                             clearStateCookie())
                     .build();
         } catch (RuntimeException e) {
@@ -132,7 +141,7 @@ public class GitHubAuthResource {
     public Response logout(@Context HttpHeaders headers) {
         SessionService.readCookie(headers, SessionService.COOKIE_NAME)
                 .ifPresent(sessions::delete);
-        return Response.noContent().cookie(sessions.clearSessionCookie(secureCookies)).build();
+        return Response.noContent().cookie(sessions.clearSessionCookie(secureCookies())).build();
     }
 
     /** Deletes the user's credentials (db row + all sessions cascade) and revokes the GitHub token
@@ -156,7 +165,7 @@ public class GitHubAuthResource {
         user.delete();
         currentUser.clear();
         return Response.noContent()
-                .cookie(sessions.clearSessionCookie(secureCookies), clearStateCookie())
+                .cookie(sessions.clearSessionCookie(secureCookies()), clearStateCookie())
                 .build();
     }
 
@@ -200,7 +209,7 @@ public class GitHubAuthResource {
     }
 
     private NewCookie cookie(String name, String value, int maxAgeSeconds) {
-        return new NewCookie(name, value, "/", null, 1, null, maxAgeSeconds, null, secureCookies, true, NewCookie.SameSite.LAX);
+        return new NewCookie(name, value, "/", null, 1, null, maxAgeSeconds, null, secureCookies(), true, NewCookie.SameSite.LAX);
     }
 
     private Map<String, Object> mePayload(GithubUser u) {
@@ -216,7 +225,10 @@ public class GitHubAuthResource {
     }
 
     private String appBase() {
-        return appBase == null || appBase.isBlank() ? "" : appBase;
+        if (profile.contains("dev")) {
+            return "http://localhost:5173";
+        }
+        return configuredAppBase == null || configuredAppBase.isBlank() ? "" : configuredAppBase;
     }
 
     /** Relative, single-slash, no-scheme return paths only — prevents open-redirect via {@code next}. */
