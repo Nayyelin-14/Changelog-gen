@@ -94,6 +94,11 @@ jobs:
                   print(f'KEEP  | {vid} | {tag_str} | newest build')
                   continue
 
+              # Delete ALL untagged images (attestation layers, not runnable)
+              if not tags or not build_tags:
+                  print(f'DELETE| {vid} | {tag_str} | untagged attestation layer')
+                  continue
+
               # Delete if older than retention period
               if age_seconds > retention:
                   print(f'DELETE| {vid} | {tag_str} | age={int(age_seconds/86400)}d')
