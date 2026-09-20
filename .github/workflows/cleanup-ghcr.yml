@@ -1,0 +1,131 @@
+name: Cleanup old GHCR images
+
+on:
+  schedule:
+    # Weekly on Sundays at 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview deletions without actually deleting'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old GHCR image versions
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN }}
+          RETENTION_DAYS: '7'
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${{ github.repository_owner }}"
+          PKG="changelog-composer"
+          RETENTION_SECONDS=$((RETENTION_DAYS * 86400))
+          NOW=$(date +%s)
+
+          echo "Fetching package versions..."
+          VERSIONS=$(curl -sf \
+            -H "Authorization: Bearer $GHCR_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/${PKG}/versions?per_page=100")
+
+          # Find the currently deployed image tag on production VM
+          echo "Detecting current production image..."
+          PROD_TAG=$(curl -sf https://changelog-gen.duckdns.org/q/health >/dev/null 2>&1 && echo "healthy" || echo "unreachable")
+
+          # Always keep the newest tagged build (it's either deployed or the latest candidate)
+          NEWEST_TAG=$(echo "$VERSIONS" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          tagged = []
+          for v in data:
+              tags = v.get('metadata',{}).get('container',{}).get('tags',[]) or []
+              build_tags = [t for t in tags if t.startswith('build.')]
+              if build_tags:
+                  tagged.append((v['created_at'], v['id'], build_tags[0]))
+          tagged.sort(reverse=True)
+          if tagged:
+              print(tagged[0][2])
+          " 2>/dev/null || echo "")
+
+          echo "Newest build tag: $NEWEST_TAG"
+          echo "Production health: $PROD_TAG"
+          echo ""
+
+          DELETE_COUNT=0
+          KEEP_COUNT=0
+
+          echo "$VERSIONS" | python3 -c "
+          import json, sys
+          from datetime import datetime, timezone
+
+          data = json.load(sys.stdin)
+          now = datetime.now(timezone.utc)
+          retention = $RETENTION_SECONDS
+          newest_tag = '$NEWEST_TAG'
+
+          for v in data:
+              vid = v['id']
+              created = v.get('created_at', '')
+              tags = v.get('metadata',{}).get('container',{}).get('tags',[]) or []
+              build_tags = [t for t in tags if t.startswith('build.')]
+              tag_str = ', '.join(tags) if tags else 'untagged'
+
+              # Parse creation time
+              try:
+                  created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                  age_seconds = (now - created_dt).total_seconds()
+              except:
+                  age_seconds = 0
+
+              # Always keep the newest tagged build
+              if newest_tag and newest_tag in build_tags:
+                  print(f'KEEP  | {vid} | {tag_str} | newest build')
+                  continue
+
+              # Delete if older than retention period
+              if age_seconds > retention:
+                  print(f'DELETE| {vid} | {tag_str} | age={int(age_seconds/86400)}d')
+              else:
+                  print(f'KEEP  | {vid} | {tag_str} | age={int(age_seconds/86400)}d')
+          " | tee /tmp/cleanup-plan.txt
+
+          echo ""
+          echo "--- Summary ---"
+          DELETE_COUNT=$(grep -c '^DELETE' /tmp/cleanup-plan.txt || echo 0)
+          KEEP_COUNT=$(grep -c '^KEEP' /tmp/cleanup-plan.txt || echo 0)
+          echo "To delete: $DELETE_COUNT | To keep: $KEEP_COUNT"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo ""
+            echo "DRY RUN — no deletions performed."
+            exit 0
+          fi
+
+          if [ "$DELETE_COUNT" -eq 0 ]; then
+            echo "Nothing to delete."
+            exit 0
+          fi
+
+          echo ""
+          echo "Deleting..."
+          grep '^DELETE' /tmp/cleanup-plan.txt | while IFS='|' read -r _action vid _rest; do
+            vid=$(echo "$vid" | tr -d ' ')
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X DELETE \
+              -H "Authorization: Bearer $GHCR_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/packages/container/${PKG}/versions/$vid")
+            echo "  Deleted $vid: HTTP $status"
+          done
+
+          echo "Done."
