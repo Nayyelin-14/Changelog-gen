@@ -1,4 +1,5 @@
-import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { ChangelogDiff } from "@/components/ChangelogDiff";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ export function ConfirmDialog({
   pendingLabel,
   loading,
   error,
+  friendlyError,
   confirmDisabled,
   onConfirm,
   onCancel,
@@ -38,11 +40,15 @@ export function ConfirmDialog({
   pendingLabel: string;
   loading: boolean;
   error: string | null;
+  /** User-friendly error message — shown as the primary message. Falls back to first line of `error`. */
+  friendlyError?: string | null;
   /** Extra gate for the confirm button beyond `loading` — e.g. a validation failure in `children`. */
   confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   return (
     <Dialog
       open={open}
@@ -50,7 +56,7 @@ export function ConfirmDialog({
         if (!next) onCancel();
       }}
     >
-      <DialogContent className={diff ? "flex max-h-[85vh] flex-col overflow-hidden sm:max-w-4xl" : undefined}>
+      <DialogContent className={diff ? "flex max-h-[85vh] flex-col overflow-hidden sm:max-w-4xl" : "sm:max-w-lg"}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -65,8 +71,25 @@ export function ConfirmDialog({
         )}
 
         {error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {error}
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive space-y-1">
+            <p className="break-words">
+              {friendlyError ?? error.split("\n")[0]}
+            </p>
+            {(error.includes("\n") || error.length > 120) ? (
+              <button
+                type="button"
+                onClick={() => setDetailsOpen(!detailsOpen)}
+                className="inline-flex items-center gap-1 text-xs text-destructive/70 hover:text-destructive transition-colors"
+              >
+                {detailsOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                Technical details
+              </button>
+            ) : null}
+            {detailsOpen && (
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-destructive/80 leading-relaxed">
+                {error}
+              </pre>
+            )}
           </div>
         )}
 

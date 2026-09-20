@@ -187,33 +187,38 @@ public class RecordedRunService {
                 provider, project, repo).list();
     }
 
-    /** Recorded runs that carry a saved (version-free) AI draft — the Save action's artifact. Used
-     * by {@code /history} so a saved draft shows up on the dashboard even before it has a version. */
+    /** Recorded runs that carry at least one saved per-audience draft — the Save action's artifact.
+     * Used by {@code /history} so a saved draft shows up on the dashboard even before it has a
+     * version. Checks the new per-audience {@code recorded_run_draft} table. */
     public List<RecordedPipelineRun> listDraftRuns(String provider, String project, String repo) {
-        return RecordedPipelineRun.find(
-                "provider = ?1 and project = ?2 and repo = ?3 and aiDraftText is not null and aiDraftText != '' order by aiDraftAt desc",
+        List<RecordedPipelineRun> runs = RecordedPipelineRun.find(
+                "provider = ?1 and project = ?2 and repo = ?3 order by createdAt desc",
                 provider, project, repo).list();
+        return runs.stream()
+                .filter(r -> RecordedRunDraft.findAllByRun(r.id).stream()
+                        .anyMatch(d -> d.draftText != null && !d.draftText.isBlank()))
+                .toList();
     }
 
     /** One point-in-time draft revision for a version-free recorded run — mirrors the shape the
      * UI already shows for a version's {@link com.hubsabai.changelog.api.ChangelogRevisionDto}, but
-     * scoped to a run's single audience (only the audience that changed exists at each sequence). */
+     * scoped to a single audience. */
     public record DraftRevision(Long sequence, String audience, String source, String model, Long tokens,
             Long durationMs, String editedBy, String text, String createdAt) {}
 
-    /** How many prior drafts to keep in {@code ai_draft_history}; the current text is excluded. */
+    /** How many prior drafts to keep in {@code draft_history}; the current text is excluded. */
     private static final int MAX_DRAFT_HISTORY = 25;
 
     @SuppressWarnings("unchecked")
-    private static List<DraftRevision> readDraftHistory(RecordedPipelineRun run) {
-        if (run.aiDraftHistory == null || run.aiDraftHistory.isBlank()) {
+    private static List<DraftRevision> readDraftHistory(RecordedRunDraft draft) {
+        if (draft.draftHistory == null || draft.draftHistory.isBlank()) {
             return new ArrayList<>();
         }
         try {
-            return MAPPER.readValue(run.aiDraftHistory, new TypeReference<List<DraftRevision>>() {});
+            return MAPPER.readValue(draft.draftHistory, new TypeReference<List<DraftRevision>>() {});
         } catch (Exception e) {
-            LOG.warning("Could not parse ai_draft_history for build " + run.buildId + " — starting fresh: "
-                    + e.getMessage());
+            LOG.warning("Could not parse draft_history for run " + draft.run.id + " audience " + draft.audience
+                    + " — starting fresh: " + e.getMessage());
             return new ArrayList<>();
         }
     }
@@ -225,21 +230,16 @@ public class RecordedRunService {
         try {
             return MAPPER.writeValueAsString(history);
         } catch (Exception e) {
-            LOG.warning("Could not serialize ai_draft_history — dropping it: " + e.getMessage());
+            LOG.warning("Could not serialize draft_history — dropping it: " + e.getMessage());
             return null;
         }
     }
 
-    private static long nextDraftSequence(List<DraftRevision> history) {
-        return history.stream().mapToLong(DraftRevision::sequence).max().orElse(0L) + 1;
-    }
-
     /**
-     * Persists a version-free AI draft onto the recorded run row for {@code buildId} — the Save
-     * action for a manual dashboard generation that has no version yet. Version is deliberately
-     * left untouched here: it only gets decided by a human in the push modal later, never by the
-     * dashboard itself. The previous current text is first pushed into the row's draft history so
-     * a run's past drafts stay browsable and restorable (see {@link #listDraftRevisions}).
+     * Persists a version-free AI draft for a specific audience on a recorded pipeline run.
+     * Each audience has its own independent row in {@code recorded_run_draft} — saving QA
+     * never overwrites Developer or Business. The previous current text for that audience is
+     * pushed into its draft history so past drafts stay browsable and restorable.
      */
     @Transactional
     public void saveAiDraft(String provider, String project, String repo, Long buildId,
@@ -250,47 +250,59 @@ public class RecordedRunService {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to save a draft against.");
         }
-        List<DraftRevision> history = readDraftHistory(run);
-        // Keep the previous current draft as a history entry so edits/regens restore back to it.
-        if (run.aiDraftText != null && !run.aiDraftText.isBlank() && !run.aiDraftText.equals(text)) {
-            long next = history.stream().mapToLong(DraftRevision::sequence).max().orElse(0L) + 1;
-            history.add(new DraftRevision(next, run.aiDraftAudience, run.aiDraftSource, run.aiDraftModel,
-                    run.aiDraftTokens, run.aiDraftDurationMs, run.aiDraftEditedBy, run.aiDraftText,
-                    run.aiDraftAt != null ? run.aiDraftAt.toString() : null));
-            if (history.size() > MAX_DRAFT_HISTORY) {
-                history = new ArrayList<>(history.subList(history.size() - MAX_DRAFT_HISTORY, history.size()));
+        RecordedRunDraft draft = RecordedRunDraft.findByRunAndAudience(run.id, audience);
+        if (draft == null) {
+            draft = new RecordedRunDraft();
+            draft.run = run;
+            draft.audience = audience;
+        } else {
+            // Push the existing current text into history before overwriting
+            if (draft.draftText != null && !draft.draftText.isBlank() && !draft.draftText.equals(text)) {
+                List<DraftRevision> history = readDraftHistory(draft);
+                long next = history.stream().mapToLong(DraftRevision::sequence).max().orElse(0L) + 1;
+                history.add(new DraftRevision(next, draft.audience, draft.draftSource, draft.draftModel,
+                        draft.draftTokens, draft.draftDurationMs, draft.draftEditedBy, draft.draftText,
+                        draft.draftAt != null ? draft.draftAt.toString() : null));
+                if (history.size() > MAX_DRAFT_HISTORY) {
+                    history = new ArrayList<>(history.subList(history.size() - MAX_DRAFT_HISTORY, history.size()));
+                }
+                draft.draftHistory = writeDraftHistory(history);
             }
         }
-        run.aiDraftHistory = writeDraftHistory(history);
-        run.aiDraftAudience = audience;
-        run.aiDraftText = text;
-        run.aiDraftSource = source;
-        run.aiDraftEditedBy = editedBy;
-        run.aiDraftModel = model;
-        run.aiDraftTokens = tokens != null ? tokens.longValue() : null;
-        run.aiDraftDurationMs = durationMs != null ? durationMs.longValue() : null;
-        run.aiDraftAt = OffsetDateTime.now();
+        draft.draftText = text;
+        draft.draftSource = source;
+        draft.draftEditedBy = editedBy;
+        draft.draftModel = model;
+        draft.draftTokens = tokens != null ? tokens.longValue() : null;
+        draft.draftDurationMs = durationMs != null ? durationMs.longValue() : null;
+        draft.draftAt = OffsetDateTime.now();
+        draft.persist();
+
+        // Update the parent run's updatedAt
         run.updatedAt = OffsetDateTime.now();
         run.persist();
     }
 
-    /** Every draft revision for a run — stored history first, then the current text as the last
-     * entry — ordered ascending by sequence, so the final element is the live draft. */
+    /** Every draft revision for a specific audience on a run — stored history first, then the
+     * current text as the last entry — ordered ascending by sequence. */
     public List<DraftRevision> listDraftRevisions(String provider, String project, String repo, Long buildId) {
         RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
         if (run == null) {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to show a draft history for.");
         }
-        List<DraftRevision> revisions = readDraftHistory(run);
-        if (run.aiDraftText != null && !run.aiDraftText.isBlank()) {
-            long next = nextDraftSequence(revisions);
-            revisions = new ArrayList<>(revisions);
-            revisions.add(new DraftRevision(next, run.aiDraftAudience, run.aiDraftSource, run.aiDraftModel,
-                    run.aiDraftTokens, run.aiDraftDurationMs, run.aiDraftEditedBy, run.aiDraftText,
-                    run.aiDraftAt != null ? run.aiDraftAt.toString() : null));
+        List<DraftRevision> all = new ArrayList<>();
+        for (RecordedRunDraft draft : RecordedRunDraft.findAllByRun(run.id)) {
+            List<DraftRevision> history = readDraftHistory(draft);
+            all.addAll(history);
+            if (draft.draftText != null && !draft.draftText.isBlank()) {
+                long next = all.stream().mapToLong(DraftRevision::sequence).max().orElse(0L) + 1;
+                all.add(new DraftRevision(next, draft.audience, draft.draftSource, draft.draftModel,
+                        draft.draftTokens, draft.draftDurationMs, draft.draftEditedBy, draft.draftText,
+                        draft.draftAt != null ? draft.draftAt.toString() : null));
+            }
         }
-        return revisions;
+        return all;
     }
 
     /** Restores a run's draft to one of its stored history revisions — the current text is bumped
@@ -302,7 +314,7 @@ public class RecordedRunService {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to restore a draft revision for.");
         }
-        DraftRevision target = readDraftHistory(run).stream()
+        DraftRevision target = listDraftRevisions(provider, project, repo, buildId).stream()
                 .filter(r -> r.sequence().equals(sequence))
                 .findFirst()
                 .orElseThrow(() -> new AiException("Revision #" + sequence + " not found for this run's draft."));
@@ -311,18 +323,36 @@ public class RecordedRunService {
         return target.text();
     }
 
-    /** The saved AI draft for a recorded run, if any — used by push to know what a version-free
-     * save produced before the human picked the version in the push modal. */
+    /** The saved AI draft for a recorded run and specific audience, if any. */
+    public Optional<RecordedRunDraft> getAiDraft(String provider, String project, String repo, Long buildId, String audience) {
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        if (run == null) return Optional.empty();
+        RecordedRunDraft draft = RecordedRunDraft.findByRunAndAudience(run.id, audience);
+        return draft != null && draft.draftText != null && !draft.draftText.isBlank()
+                ? Optional.of(draft)
+                : Optional.empty();
+    }
+
+    /** Legacy single-audience getter for backward compat with {@link PipelineRunResource#getAiDraft}. */
     public Optional<RecordedPipelineRun> getAiDraft(String provider, String project, String repo, Long buildId) {
         RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
-        return run != null && run.aiDraftText != null && !run.aiDraftText.isBlank()
+        if (run == null) return Optional.empty();
+        // Check new per-audience table first
+        List<RecordedRunDraft> drafts = RecordedRunDraft.findAllByRun(run.id);
+        if (!drafts.isEmpty()) {
+            // Return the run if any audience has a draft (for backward compat)
+            boolean anyDraft = drafts.stream().anyMatch(d -> d.draftText != null && !d.draftText.isBlank());
+            return anyDraft ? Optional.of(run) : Optional.empty();
+        }
+        // Fall back to legacy single-slot fields on the run row itself
+        return run.aiDraftText != null && !run.aiDraftText.isBlank()
                 ? Optional.of(run)
                 : Optional.empty();
     }
 
     /**
      * Fills the human-chosen version into a recorded run row after a successful push, clearing
-     * the now-obsolete AI draft — the final step of the version-free Save → push-modal flow.
+     * all per-audience drafts — the final step of the version-free Save → push-modal flow.
      */
     @Transactional
     public void applyPushedVersion(String provider, String project, String repo, Long buildId, String version) {
@@ -331,6 +361,7 @@ public class RecordedRunService {
             return;
         }
         run.version = version;
+        // Clear legacy single-slot fields
         run.aiDraftAudience = null;
         run.aiDraftText = null;
         run.aiDraftModel = null;
@@ -339,6 +370,8 @@ public class RecordedRunService {
         run.aiDraftAt = null;
         run.updatedAt = OffsetDateTime.now();
         run.persist();
+        // Delete all per-audience draft rows
+        RecordedRunDraft.delete("run.id = ?1", run.id);
     }
 
     /** Result of a GitHub workflow run capture: the fetched data, the raw changelog and the persisted row. */

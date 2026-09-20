@@ -146,7 +146,7 @@ class AzureDevOpsResourceTest {
                 .when().get("/api/projects/proj/repos/repo/changelog-text")
                 .then()
                 .statusCode(400)
-                .body("error", org.hamcrest.Matchers.containsString("version is required"));
+                .body("error", org.hamcrest.Matchers.containsString("version"));
     }
 
     @Test

@@ -413,10 +413,11 @@ export async function getChangelogText(
   repo: string,
   version: string,
   audience: ChangelogAudience,
+  buildId?: number,
 ): Promise<string | null> {
   const { data } = await apiClient.get<{ text: string | null }>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-text`,
-    { params: { version, audience } },
+    { params: { version, audience, buildId } },
   );
   return data.text;
 }

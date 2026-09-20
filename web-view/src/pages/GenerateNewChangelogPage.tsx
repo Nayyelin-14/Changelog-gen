@@ -38,6 +38,7 @@ import {
   pushChangelog,
   resolveReleaseVersion,
   saveChangelogEdit,
+  ApiError,
 } from "@/api/client";
 import type {
   ChangeItem,
@@ -225,6 +226,32 @@ function formatAsAiPrompt(items: ChangeItem[], project: string): string {
 
 type Status = "idle" | "loading" | "success" | "error";
 
+/** Maps raw backend/API push errors to user-friendly messages. */
+function friendlyPushError(raw: string, apiStatus?: number): string {
+  const msg = raw
+    .replace(/^GitHub push failed for [^:]+:\s*/i, "")
+    .replace(/^GitHub\s+\w+\s+failed\s*\([^)]*\):\s*/i, "")
+    .trim();
+  // HTTP status: prefer the explicit API status, fall back to parsing from message
+  const statusMatch = msg.match(/^(\d{3})\b/);
+  const status = apiStatus ?? (statusMatch ? parseInt(statusMatch[1], 10) : 0);
+  if (raw.includes("You must be signed in") || status === 401)
+    return "GitHub authentication failed. Please sign in again.";
+  if (status === 403 && (msg.toLowerCase().includes("branch") || msg.toLowerCase().includes("protected")))
+    return "Branch protection prevents direct pushes to this branch. Try pushing to a different branch or use a PR.";
+  if (status === 403) return "You don't have permission to push to this repository.";
+  if (status === 404) return "Repository not found. Check the repository name and your access.";
+  if (status === 422 && (msg.toLowerCase().includes("stale") || msg.toLowerCase().includes("moved")))
+    return msg; // preserve stale-branch message for frontend retry logic
+  if (status === 429) return "GitHub API rate limit exceeded. Try again in a few minutes.";
+  if (status >= 500) return "GitHub server error. Try again later.";
+  if (msg) {
+    const firstSentence = msg.split(/\.\s/)[0];
+    return firstSentence.endsWith(".") ? firstSentence : firstSentence + ".";
+  }
+  return "Push failed. Check the technical details below.";
+}
+
 /* ──────────────────────────────────────────────── */
 /*  File path pill                                   */
 /* ──────────────────────────────────────────────── */
@@ -411,6 +438,7 @@ export function GenerateNewChangelogPage() {
   // Separate from `error`/`status` — those belong to the generate flow, and setting status to
   // "error" on a failed push would wrongly blow away the already-generated preview on screen.
   const [pushError, setPushError] = useState<string | null>(null);
+  const [pushErrorStatus, setPushErrorStatus] = useState<number | undefined>(undefined);
   const [pushConfirmOpen, setPushConfirmOpen] = useState(false);
   const [pushRepoText, setPushRepoText] = useState("");
   const [pushRepoTextLoading, setPushRepoTextLoading] = useState(false);
@@ -503,7 +531,7 @@ export function GenerateNewChangelogPage() {
       (!!pushLatestVersion && pushVersionNormalized === pushLatestVersion));
 
   async function handlePush() {
-    if (!project || !repo || !pushVersion || !pushBranch || pushVersionTaken) return;
+    if (!project || !repo || !pushVersion || !pushBranch || pushVersionTaken || pushLoading) return;
     setPushLoading(true);
     setPushError(null);
     // Detect push mode based on whether version already has a CHANGELOG.md entry
@@ -532,14 +560,17 @@ export function GenerateNewChangelogPage() {
         },
       });
     } catch (e) {
-      const message =
+      const rawMessage =
         e instanceof Error ? e.message : "Failed to push changelog.";
+      const apiStatus = e instanceof ApiError ? e.status : undefined;
+      setPushErrorStatus(apiStatus);
       // Check for SHA conflict (stale base commit) — if the branch moved since we fetched
       // the CHANGELOG.md, we need to handle this differently based on push mode.
       if (
-        message.includes("stale") ||
-        message.includes("base commit") ||
-        message.includes("conflict")
+        rawMessage.includes("stale") ||
+        rawMessage.includes("base commit") ||
+        rawMessage.includes("conflict") ||
+        rawMessage.includes("moved")
       ) {
         if (mode === "UPDATE_EXISTING") {
           // For UPDATE_EXISTING: do NOT auto-retry. Stop and show conflict message,
@@ -610,17 +641,17 @@ export function GenerateNewChangelogPage() {
             },
           );
         } catch (retryError) {
-          const retryMessage =
+          const retryRaw =
             retryError instanceof Error
               ? retryError.message
               : "Failed to push changelog on retry";
-          setPushError(retryMessage);
+          setPushError(retryRaw);
         } finally {
           setPushRepoTextLoading(false);
         }
       } else {
         // Non-SHA-conflict error — show inline in the dialog
-        setPushError(message);
+        setPushError(rawMessage);
       }
     } finally {
       setPushLoading(false);
@@ -1129,7 +1160,7 @@ export function GenerateNewChangelogPage() {
   /*  Render                                          */
   /* ──────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-4 pb-8">
+    <div className="flex flex-col gap-5 pb-8">
       {/* ═══════════ HEADER ═══════════ */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
@@ -1181,19 +1212,6 @@ export function GenerateNewChangelogPage() {
               Pipeline run number: #{runNumber}
             </Badge>
           )}
-          {/* <label className="flex items-center gap-1.5">
-            <span className="flex items-center rounded-md border border-input bg-background pl-2 shadow-xs focus-within:ring-1 focus-within:ring-ring">
-              <Input
-                value={version}
-                onChange={(e) => setVersion(e.target.value)}
-                disabled={status === "loading"}
-                placeholder="e.g. 1.0.5"
-                title="Semantic release version to generate the changelog for — auto-filled from history or CHANGELOG.md"
-                size={Math.max(8, version.length + 1)}
-                className="h-7 border-0 bg-transparent px-1 py-0 text-xs font-mono font-medium shadow-none focus-visible:ring-0"
-              />
-            </span>
-          </label> */}
         </div>
       </div>
 
@@ -1216,326 +1234,324 @@ export function GenerateNewChangelogPage() {
         </div>
       )}
 
-      {/* ═══════════ PR CARD ═══════════ */}
-      {prDetails && (
-        <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card to-muted/20">
-          <div className="flex items-start gap-3 p-3.5">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-950">
-              <GitPullRequest className="size-4 text-violet-600 dark:text-violet-400" />
-            </div>
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <div className="flex items-center gap-2 text-sm">
-                <Badge
-                  variant="secondary"
-                  className="text-[10px] font-medium px-1.5 py-0"
-                >
-                  PR #{prDetails.prId}
-                </Badge>
-                <span className="truncate font-semibold text-foreground/90">
-                  {prDetails.title ?? ""}
-                </span>
-              </div>
-              {prDetails.description &&
-                prDetails.description !== prDetails.title && (
-                  <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                    {stripHtml(prDetails.description)}
-                  </p>
-                )}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                {prDetails.author && (
-                  <span className="inline-flex items-center gap-1">
-                    <User className="size-3" />
-                    {prDetails.author}
-                  </span>
-                )}
-                <span className="inline-flex items-center gap-1">
-                  <GitCommit className="size-3" />
-                  {commitCount} commit{commitCount !== 1 ? "s" : ""}
-                </span>
-                {workItemCount > 0 && (
-                  <span className="inline-flex items-center gap-1">
-                    <Layers className="size-3" />
-                    {workItemCount} work item{workItemCount !== 1 ? "s" : ""}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════ MAIN CONTENT ═══════════ */}
-      <div className="flex flex-col gap-4">
-        {/* ── Source data ── */}
-        {(hasSourceData || loadingCommits) && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <div className="flex size-5 items-center justify-center rounded-md bg-primary/10">
-                <Layers className="size-3 text-primary" />
-              </div>
-              <span className="text-xs font-semibold text-foreground/80">
-                Source data
-              </span>
-              {hasSourceData && (
-                <span className="text-[10px] text-muted-foreground/60">
-                  —{" "}
-                  {prDetails
-                    ? `PR #${prDetails.prId} — ${commitCount} commit${commitCount !== 1 ? "s" : ""}${workItemCount > 0 ? ` + ${workItemCount} work item${workItemCount !== 1 ? "s" : ""}` : ""}`
-                    : `${rawBreakdown.commits} commit${rawBreakdown.commits !== 1 ? "s" : ""}, ${rawBreakdown.prs} PR${rawBreakdown.prs !== 1 ? "s" : ""}${rawBreakdown.workItems > 0 ? `, ${rawBreakdown.workItems} work item${rawBreakdown.workItems !== 1 ? "s" : ""}` : ""}`}
-                </span>
-              )}
-              {loadingCommits && (
-                <Loader2 className="size-3 animate-spin text-muted-foreground/40" />
-              )}
-            </div>
-
-            {loadingCommits ? (
-              <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border/40 py-8">
-                <Loader2 className="size-4 animate-spin text-muted-foreground/30" />
-                <span className="text-xs text-muted-foreground/50">
-                  {buildIdParam
-                    ? "Loading pipeline run details…"
-                    : "Loading PR details…"}
-                </span>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {/* Commits, PRs, work items — each a compact inline expand/collapse section. */}
-                <div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2 xl:grid-cols-3">
-                  {/* Commits */}
-                  {commitsForDisplay.length > 0 && (
-                    <SourceDataSection
-                      title="Commits"
-                      icon={GitCommit}
-                      iconBgClass="bg-sky-100 dark:bg-sky-900/40"
-                      iconColorClass="text-sky-600 dark:text-sky-400"
-                      count={commitsForDisplay.length}
+      {/* ═══════════ 2-COLUMN WORKSPACE ═══════════ */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        {/* ── LEFT COLUMN: Source context ── */}
+        <div className="flex flex-col gap-4">
+          {/* PR Card */}
+          {prDetails && (
+            <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card to-muted/20">
+              <div className="flex items-start gap-3 p-3.5">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-950">
+                  <GitPullRequest className="size-4 text-violet-600 dark:text-violet-400" />
+                </div>
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Badge
+                      variant="secondary"
+                      className="text-[10px] font-medium px-1.5 py-0"
                     >
-                      {commitsForDisplay.map((item, i) => {
-                        const idx = i;
-                        const isExpanded = expandedItems.has(idx);
-                        return (
-                          <div
-                            key={idx}
-                            className={cn(
-                              "rounded-lg border border-border/30 transition-all duration-200",
-                              isExpanded
-                                ? "bg-muted/40"
-                                : "bg-card hover:bg-muted/20",
-                            )}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => toggleItem(idx)}
-                              className="flex w-full items-start gap-2.5 px-3 py-2 text-left"
-                            >
-                              <span className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-400/50" />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  {item.category && (
-                                    <Badge
-                                      variant="outline"
-                                      className={cn(
-                                        "text-[9px] font-medium px-1 py-0 leading-none",
-                                        catColors[item.category] ??
-                                          "bg-muted text-muted-foreground",
-                                      )}
-                                    >
-                                      {item.category}
-                                    </Badge>
-                                  )}
-                                  {item.author && (
-                                    <span className="truncate text-[10px] text-muted-foreground/50">
-                                      {item.author}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="mt-0.5 break-words text-sm font-medium text-foreground/80">
-                                  {item.title ?? "(no message)"}
-                                </p>
-                              </div>
-                              <div className="shrink-0 text-muted-foreground/30 transition-transform duration-200">
-                                <ChevronRight
-                                  className={cn(
-                                    "size-3.5 transition-transform duration-200",
-                                    isExpanded && "rotate-90",
-                                  )}
-                                />
-                              </div>
-                            </button>
+                      PR #{prDetails.prId}
+                    </Badge>
+                    <span className="truncate font-semibold text-foreground/90">
+                      {prDetails.title ?? ""}
+                    </span>
+                  </div>
+                  {prDetails.description &&
+                    prDetails.description !== prDetails.title && (
+                      <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                        {stripHtml(prDetails.description)}
+                      </p>
+                    )}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                    {prDetails.author && (
+                      <span className="inline-flex items-center gap-1">
+                        <User className="size-3" />
+                        {prDetails.author}
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-1">
+                      <GitCommit className="size-3" />
+                      {commitCount} commit{commitCount !== 1 ? "s" : ""}
+                    </span>
+                    {workItemCount > 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Layers className="size-3" />
+                        {workItemCount} work item{workItemCount !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Source data */}
+          {(hasSourceData || loadingCommits) && (
+            <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <div className="flex size-5 items-center justify-center rounded-md bg-primary/10">
+                  <Layers className="size-3 text-primary" />
+                </div>
+                <span className="text-xs font-semibold text-foreground/80">
+                  Source data
+                </span>
+                {hasSourceData && (
+                  <span className="text-[10px] text-muted-foreground/60">
+                    —{" "}
+                    {prDetails
+                      ? `PR #${prDetails.prId} — ${commitCount} commit${commitCount !== 1 ? "s" : ""}${workItemCount > 0 ? ` + ${workItemCount} work item${workItemCount !== 1 ? "s" : ""}` : ""}`
+                      : `${rawBreakdown.commits} commit${rawBreakdown.commits !== 1 ? "s" : ""}, ${rawBreakdown.prs} PR${rawBreakdown.prs !== 1 ? "s" : ""}${rawBreakdown.workItems > 0 ? `, ${rawBreakdown.workItems} work item${rawBreakdown.workItems !== 1 ? "s" : ""}` : ""}`}
+                  </span>
+                )}
+                {loadingCommits && (
+                  <Loader2 className="size-3 animate-spin text-muted-foreground/40" />
+                )}
+              </div>
+
+              {loadingCommits ? (
+                <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border/40 py-8">
+                  <Loader2 className="size-4 animate-spin text-muted-foreground/30" />
+                  <span className="text-xs text-muted-foreground/50">
+                    {buildIdParam
+                      ? "Loading pipeline run details…"
+                      : "Loading PR details…"}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                    {/* Commits */}
+                    {commitsForDisplay.length > 0 && (
+                      <SourceDataSection
+                        title="Commits"
+                        icon={GitCommit}
+                        iconBgClass="bg-sky-100 dark:bg-sky-900/40"
+                        iconColorClass="text-sky-600 dark:text-sky-400"
+                        count={commitsForDisplay.length}
+                      >
+                        {commitsForDisplay.map((item, i) => {
+                          const idx = i;
+                          const isExpanded = expandedItems.has(idx);
+                          return (
                             <div
+                              key={idx}
                               className={cn(
-                                "grid transition-[grid-template-rows] duration-200 ease-in-out",
+                                "rounded-lg border border-border/30 transition-all duration-200",
                                 isExpanded
-                                  ? "grid-rows-[1fr]"
-                                  : "grid-rows-[0fr]",
+                                  ? "bg-muted/40"
+                                  : "bg-card hover:bg-muted/20",
                               )}
                             >
-                              <div className="overflow-hidden">
-                                <div className="space-y-2 border-t border-border/20 px-3 py-2.5">
-                                  {item.description &&
-                                    item.description !== item.title && (
-                                      <p className="text-xs leading-relaxed text-muted-foreground/70">
-                                        {item.description}
-                                      </p>
+                              <button
+                                type="button"
+                                onClick={() => toggleItem(idx)}
+                                className="flex w-full items-start gap-2.5 px-3 py-2 text-left"
+                              >
+                                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-400/50" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    {item.category && (
+                                      <Badge
+                                        variant="outline"
+                                        className={cn(
+                                          "text-[9px] font-medium px-1 py-0 leading-none",
+                                          catColors[item.category] ??
+                                            "bg-muted text-muted-foreground",
+                                        )}
+                                      >
+                                        {item.category}
+                                      </Badge>
                                     )}
-                                  {item.filePaths &&
-                                    item.filePaths.length > 0 && (
-                                      <div className="flex flex-wrap gap-1">
-                                        {item.filePaths.map((fp, j) => (
-                                          <FilePill key={j} path={fp} />
-                                        ))}
-                                      </div>
+                                    {item.author && (
+                                      <span className="truncate text-[10px] text-muted-foreground/50">
+                                        {item.author}
+                                      </span>
                                     )}
-                                  {item.links?.[0] && (
+                                  </div>
+                                  <p className="mt-0.5 break-words text-sm font-medium text-foreground/80">
+                                    {item.title ?? "(no message)"}
+                                  </p>
+                                </div>
+                                <div className="shrink-0 text-muted-foreground/30 transition-transform duration-200">
+                                  <ChevronRight
+                                    className={cn(
+                                      "size-3.5 transition-transform duration-200",
+                                      isExpanded && "rotate-90",
+                                    )}
+                                  />
+                                </div>
+                              </button>
+                              <div
+                                className={cn(
+                                  "grid transition-[grid-template-rows] duration-200 ease-in-out",
+                                  isExpanded
+                                    ? "grid-rows-[1fr]"
+                                    : "grid-rows-[0fr]",
+                                )}
+                              >
+                                <div className="overflow-hidden">
+                                  <div className="space-y-2 border-t border-border/20 px-3 py-2.5">
+                                    {item.description &&
+                                      item.description !== item.title && (
+                                        <p className="text-xs leading-relaxed text-muted-foreground/70">
+                                          {item.description}
+                                        </p>
+                                      )}
+                                    {item.filePaths &&
+                                      item.filePaths.length > 0 && (
+                                        <div className="flex flex-wrap gap-1">
+                                          {item.filePaths.map((fp, j) => (
+                                            <FilePill key={j} path={fp} />
+                                          ))}
+                                        </div>
+                                      )}
+                                    {item.links?.[0] && (
+                                      <a
+                                        href={item.links[0]}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
+                                      >
+                                        <ExternalLink className="size-2.5" />
+                                        View commit
+                                      </a>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </SourceDataSection>
+                    )}
+
+                    {/* PRs */}
+                    {prsForDisplay.length > 0 && (
+                      <SourceDataSection
+                        title="Pull requests"
+                        icon={GitMerge}
+                        iconBgClass="bg-violet-100 dark:bg-violet-900/40"
+                        iconColorClass="text-violet-600 dark:text-violet-400"
+                        count={prsForDisplay.length}
+                      >
+                        {prsForDisplay.map((item, i) => (
+                          <div
+                            key={item.id ?? i}
+                            className="rounded-lg border border-border/30 bg-card p-3 transition-all hover:border-border/60 hover:bg-muted/20"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-[10px] font-medium px-1.5 py-0",
+                                  typeColors.PULL_REQUEST,
+                                )}
+                              >
+                                PR
+                              </Badge>
+                              <span className="font-semibold text-foreground/80">
+                                #{item.id}
+                              </span>
+                              {item.author && (
+                                <span className="truncate text-[11px] text-muted-foreground/60">
+                                  {item.author}
+                                </span>
+                              )}
+                              {item.links?.[0] && (
+                                <a
+                                  href={item.links[0]}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
+                                >
+                                  <ExternalLink className="size-3" />
+                                </a>
+                              )}
+                            </div>
+                            <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
+                              {item.title ?? "(no title)"}
+                            </p>
+                            {item.description &&
+                              item.description !== item.title && (
+                                <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
+                                  {stripHtml(item.description)}
+                                </p>
+                              )}
+                          </div>
+                        ))}
+                      </SourceDataSection>
+                    )}
+
+                    {/* Work items */}
+                    {(prDetails?.workItems.length ?? 0) > 0 ||
+                    buildWorkItems.length > 0 ? (
+                      <SourceDataSection
+                        title="Work items"
+                        icon={Bug}
+                        iconBgClass="bg-amber-100 dark:bg-amber-900/40"
+                        iconColorClass="text-amber-600 dark:text-amber-400"
+                        count={
+                          prDetails
+                            ? prDetails.workItems.length
+                            : buildWorkItems.length
+                        }
+                      >
+                        {prDetails
+                          ? prDetails.workItems.map((wi) => (
+                              <WorkItemCard key={wi.id} wi={wi} />
+                            ))
+                          : buildWorkItems.map((wi, i) => (
+                              <div
+                                key={wi.id ?? i}
+                                className="rounded-lg border border-border/30 bg-card p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/20"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <Badge
+                                    variant="outline"
+                                    className={cn(
+                                      "text-[10px] font-medium px-1.5 py-0",
+                                      typeColors.WORK_ITEM,
+                                    )}
+                                  >
+                                    Work item
+                                  </Badge>
+                                  <span className="font-semibold text-foreground/80">
+                                    #{wi.id}
+                                  </span>
+                                  {wi.links?.[0] && (
                                     <a
-                                      href={item.links[0]}
+                                      href={wi.links[0]}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
+                                      className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
                                     >
-                                      <ExternalLink className="size-2.5" />
-                                      View commit
+                                      <ExternalLink className="size-3" />
                                     </a>
                                   )}
                                 </div>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </SourceDataSection>
-                  )}
-
-                  {/* PRs */}
-                  {prsForDisplay.length > 0 && (
-                    <SourceDataSection
-                      title="Pull requests"
-                      icon={GitMerge}
-                      iconBgClass="bg-violet-100 dark:bg-violet-900/40"
-                      iconColorClass="text-violet-600 dark:text-violet-400"
-                      count={prsForDisplay.length}
-                    >
-                      {prsForDisplay.map((item, i) => (
-                        <div
-                          key={item.id ?? i}
-                          className="rounded-lg border border-border/30 bg-card p-3 transition-all hover:border-border/60 hover:bg-muted/20"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                "text-[10px] font-medium px-1.5 py-0",
-                                typeColors.PULL_REQUEST,
-                              )}
-                            >
-                              PR
-                            </Badge>
-                            <span className="font-semibold text-foreground/80">
-                              #{item.id}
-                            </span>
-                            {item.author && (
-                              <span className="truncate text-[11px] text-muted-foreground/60">
-                                {item.author}
-                              </span>
-                            )}
-                            {item.links?.[0] && (
-                              <a
-                                href={item.links[0]}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
-                              >
-                                <ExternalLink className="size-3" />
-                              </a>
-                            )}
-                          </div>
-                          <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
-                            {item.title ?? "(no title)"}
-                          </p>
-                          {item.description &&
-                            item.description !== item.title && (
-                              <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
-                                {stripHtml(item.description)}
-                              </p>
-                            )}
-                        </div>
-                      ))}
-                    </SourceDataSection>
-                  )}
-
-                  {/* Work items */}
-                  {(prDetails?.workItems.length ?? 0) > 0 ||
-                  buildWorkItems.length > 0 ? (
-                    <SourceDataSection
-                      title="Work items"
-                      icon={Bug}
-                      iconBgClass="bg-amber-100 dark:bg-amber-900/40"
-                      iconColorClass="text-amber-600 dark:text-amber-400"
-                      count={
-                        prDetails
-                          ? prDetails.workItems.length
-                          : buildWorkItems.length
-                      }
-                    >
-                      {prDetails
-                        ? prDetails.workItems.map((wi) => (
-                            <WorkItemCard key={wi.id} wi={wi} />
-                          ))
-                        : buildWorkItems.map((wi, i) => (
-                            <div
-                              key={wi.id ?? i}
-                              className="rounded-lg border border-border/30 bg-card p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/20"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className={cn(
-                                    "text-[10px] font-medium px-1.5 py-0",
-                                    typeColors.WORK_ITEM,
-                                  )}
-                                >
-                                  Work item
-                                </Badge>
-                                <span className="font-semibold text-foreground/80">
-                                  #{wi.id}
-                                </span>
-                                {wi.links?.[0] && (
-                                  <a
-                                    href={wi.links[0]}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
-                                  >
-                                    <ExternalLink className="size-3" />
-                                  </a>
+                                <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
+                                  {wi.title ?? ""}
+                                </p>
+                                {wi.description && (
+                                  <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
+                                    {stripHtml(wi.description)}
+                                  </p>
                                 )}
                               </div>
-                              <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
-                                {wi.title ?? ""}
-                              </p>
-                              {wi.description && (
-                                <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
-                                  {stripHtml(wi.description)}
-                                </p>
-                              )}
-                            </div>
-                          ))}
-                    </SourceDataSection>
-                  ) : prDetails && prDetails.workItems.length === 0 ? (
-                    <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border/30 px-3 py-2 text-[10px] text-muted-foreground/50">
-                      <Layers className="size-2.5" />
-                      No work items linked
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+                            ))}
+                      </SourceDataSection>
+                    ) : prDetails && prDetails.workItems.length === 0 ? (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border/30 px-3 py-2 text-[10px] text-muted-foreground/50">
+                        <Layers className="size-2.5" />
+                        No work items linked
+                      </div>
+                    ) : null}
+                  </div>
+              )}
+            </div>
+          )}
 
-        {/* ── Action bar ── */}
-        <div className="flex flex-col gap-2">
+          {/* Raw data dialog */}
           {commitText ? (
             <Dialog>
               <DialogTrigger asChild>
@@ -1594,410 +1610,407 @@ export function GenerateNewChangelogPage() {
             </span>
           )}
 
+          {/* Empty hint */}
+          {status === "idle" && !hasSourceData && !loadingCommits && (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/30 bg-muted/10 px-3 py-2.5 text-[11px] text-muted-foreground/60">
+              <Layers className="size-3.5 shrink-0" />
+              <span>
+                No source data loaded yet. Paste changes manually in the text
+                area to generate a changelog. You can also{" "}
+                <button
+                  type="button"
+                  onClick={() => navigate(backHref)}
+                  className="underline underline-offset-2 hover:text-foreground/80"
+                >
+                  go back to the dashboard
+                </button>{" "}
+                and select a pipeline run or a pending PR.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* ── RIGHT COLUMN: AI configuration + results ── */}
+        <div className="flex flex-col gap-4">
           <AiGenerationControls
             ai={ai}
             onGenerate={() => handleGenerate(false)}
             generating={status === "loading" && !hasResult}
             disabled={!canSubmit || hasResult}
           />
-        </div>
 
-        {/* ── Generating progress (first generation only — a Regen keeps the result panel below
-             mounted instead of swapping to this) ── */}
-        {status === "loading" && !hasResult && (
-          <div
-            ref={resultRef}
-            className="animate-in fade-in slide-in-from-bottom-4 overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm"
-          >
-            {/* Animated gradient bar */}
-            <div className="h-0.5 w-full overflow-hidden bg-muted">
-              <div
-                className="h-full w-full animate-gradient-pan"
-                style={{
-                  background:
-                    "linear-gradient(90deg, oklch(0.58 0.18 255), oklch(0.68 0.14 220), oklch(0.52 0.18 275), oklch(0.58 0.18 255))",
-                  backgroundSize: "300% 100%",
-                }}
-              />
-            </div>
-
-            <div className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
-                  <Sparkles className="size-4 text-primary animate-glow-pulse" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-foreground/90">
-                    Generating changelog
-                  </p>
-                </div>
-                <Loader2 className="size-4 animate-spin text-primary/50" />
-              </div>
-
-              {/* Audience generation steps */}
-              <div className="mt-3 space-y-1.5">
-                {GENERATED_AUDIENCES.map((tab, i) => {
-                  const isDone = !audienceLoading.has(tab.key);
-                  const isLoading = audienceLoading.has(tab.key);
-                  return (
-                    <div
-                      key={tab.key}
-                      style={{ animationDelay: `${i * 80}ms` }}
-                      className={cn(
-                        "animate-in fade-in slide-in-from-left-1 flex items-center gap-2.5 rounded-md border px-3 py-2 text-xs transition-all duration-300",
-                        isDone
-                          ? "border-emerald-200/50 bg-emerald-50/50 dark:border-emerald-900/30 dark:bg-emerald-950/20"
-                          : isLoading
-                            ? "border-primary/30 bg-primary/3"
-                            : "border-border/30 bg-muted/20",
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "flex size-5 shrink-0 items-center justify-center rounded-md",
-                          isDone
-                            ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400"
-                            : isLoading
-                              ? "bg-primary/10 text-primary"
-                              : "bg-muted text-muted-foreground/40",
-                        )}
-                      >
-                        {isDone ? (
-                          <Check className="size-3" strokeWidth={3} />
-                        ) : isLoading ? (
-                          <Loader2 className="size-3 animate-spin" />
-                        ) : (
-                          <tab.icon className="size-3" />
-                        )}
-                      </div>
-                      <span
-                        className={cn(
-                          "font-medium",
-                          isDone && "text-emerald-700 dark:text-emerald-400",
-                          isLoading && "text-foreground/90",
-                          !isDone && !isLoading && "text-muted-foreground/40",
-                        )}
-                      >
-                        {tab.label}
-                      </span>
-                      <span className="ml-auto text-[10px] text-muted-foreground/40">
-                        {isDone
-                          ? "Done"
-                          : isLoading
-                            ? "Generating…"
-                            : "Pending"}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── Result panel (stays mounted through a Regen — see showResultPanel) ── */}
-        {showResultPanel && (
-          <div ref={resultRef}>
-            <AiGenerationResult
-              metadata={{
-                model: resultModel,
-                modelLabel: resultModel ? (ai.models.find((m) => m.id === resultModel)?.label || resultModel) : undefined,
-                durationMs: streamDuration || undefined,
-                totalTokens: streamTokens || undefined,
-              }}
-              generating={status === "loading"}
-              runNumber={runNumber}
+          {/* Generating progress (first generation only) */}
+          {status === "loading" && !hasResult && (
+            <div
+              ref={resultRef}
+              className="animate-in fade-in slide-in-from-bottom-4 overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm"
             >
-
-            {/* Tabs — hidden when there's only one generated audience (Developer); nothing to
-                switch between until QA/Business are generated from the history panel instead. */}
-            {GENERATED_AUDIENCES.length > 1 && (
-              <div
-                role="tablist"
-                className="flex gap-0 overflow-x-auto border-b border-border/40 bg-muted/15"
-              >
-                {GENERATED_AUDIENCES.map((tab) => {
-                  const tabLoading = audienceLoading.has(tab.key);
-                  return (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      role="tab"
-                      aria-selected={activeAudience === tab.key}
-                      onClick={() => setActiveAudience(tab.key)}
-                      className={cn(
-                        "relative flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs transition-colors sm:px-4",
-                        activeAudience === tab.key
-                          ? "font-semibold text-foreground"
-                          : "text-muted-foreground/60 hover:text-foreground/80",
-                      )}
-                    >
-                      {tabLoading ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <tab.icon className="size-3.5" />
-                      )}
-                      {tab.label}
-                      {activeAudience === tab.key && (
-                        <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground transition-all duration-300" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Content */}
-            <div className={cn("p-4", editingTab !== null && "pb-0")}>
-              {editingTab === activeAudience ? (
-                <textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  className="w-full min-h-75 rounded-lg border border-border/50 bg-background p-3.5 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
-                />
-              ) : (
+              <div className="h-0.5 w-full overflow-hidden bg-muted">
                 <div
-                  key={activeAudience}
-                  className="animate-in fade-in duration-200"
-                >
-                  <ChangelogBody text={audienceTexts[activeAudience] ?? ""} />
+                  className="h-full w-full animate-gradient-pan"
+                  style={{
+                    background:
+                      "linear-gradient(90deg, oklch(0.58 0.18 255), oklch(0.68 0.14 220), oklch(0.52 0.18 275), oklch(0.58 0.18 255))",
+                    backgroundSize: "300% 100%",
+                  }}
+                />
+              </div>
+
+              <div className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
+                    <Sparkles className="size-4 text-primary animate-glow-pulse" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-foreground/90">
+                      Generating changelog
+                    </p>
+                  </div>
+                  <Loader2 className="size-4 animate-spin text-primary/50" />
                 </div>
-              )}
+
+                <div className="mt-3 space-y-1.5">
+                  {GENERATED_AUDIENCES.map((tab, i) => {
+                    const isDone = !audienceLoading.has(tab.key);
+                    const isLoading = audienceLoading.has(tab.key);
+                    return (
+                      <div
+                        key={tab.key}
+                        style={{ animationDelay: `${i * 80}ms` }}
+                        className={cn(
+                          "animate-in fade-in slide-in-from-left-1 flex items-center gap-2.5 rounded-md border px-3 py-2 text-xs transition-all duration-300",
+                          isDone
+                            ? "border-emerald-200/50 bg-emerald-50/50 dark:border-emerald-900/30 dark:bg-emerald-950/20"
+                            : isLoading
+                              ? "border-primary/30 bg-primary/3"
+                              : "border-border/30 bg-muted/20",
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "flex size-5 shrink-0 items-center justify-center rounded-md",
+                            isDone
+                              ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400"
+                              : isLoading
+                                ? "bg-primary/10 text-primary"
+                                : "bg-muted text-muted-foreground/40",
+                          )}
+                        >
+                          {isDone ? (
+                            <Check className="size-3" strokeWidth={3} />
+                          ) : isLoading ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <tab.icon className="size-3" />
+                          )}
+                        </div>
+                        <span
+                          className={cn(
+                            "font-medium",
+                            isDone && "text-emerald-700 dark:text-emerald-400",
+                            isLoading && "text-foreground/90",
+                            !isDone && !isLoading && "text-muted-foreground/40",
+                          )}
+                        >
+                          {tab.label}
+                        </span>
+                        <span className="ml-auto text-[10px] text-muted-foreground/40">
+                          {isDone
+                            ? "Done"
+                            : isLoading
+                              ? "Generating…"
+                              : "Pending"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
+          )}
 
-            {/* Actions */}
-            {editingTab === activeAudience ? (
-              <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5">
-                <div className="flex justify-end gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={cancelEdit}
-                    disabled={editSaving}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={requestSaveEdit}
-                    disabled={editSaving || !editText.trim()}
-                  >
-                    {editSaving ? (
-                      <>
-                        <Loader2 className="size-3 animate-spin" /> Saving…
-                      </>
-                    ) : (
-                      "Save"
-                    )}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                  {activeAudience === "developer" && pushResult && (
-                    <a
-                      href={pushResult}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline"
-                    >
-                      <ExternalLink className="size-3" />
-                      Pushed to Azure DevOps
-                    </a>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5"
-                    onClick={() => startEdit(activeAudience)}
-                    disabled={status === "loading"}
-                  >
-                    <Pencil className="size-3" /> Edit
-                  </Button>
-                  <AiGenerationControls
-                    ai={ai}
-                    onGenerate={() => handleGenerate(true)}
-                    generating={status === "loading"}
-                    variant="inline"
-                  />
-                  {activeAudience === "developer" && !saved && (
-                    <Button
-                      size="sm"
-                      variant="default"
-                      className="gap-1.5"
-                      onClick={requestSaveGenerated}
-                      disabled={
-                        saving ||
-                        status === "loading" ||
-                        !audienceTexts.developer
-                      }
-                    >
-                      {saving ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <Check className="size-3" />
-                      )}
-                      Save
-                    </Button>
-                  )}
-                  {activeAudience === "developer" && saved && (
-                    <Button
-                      size="sm"
-                      variant="default"
-                      className="gap-1.5"
-                      onClick={requestPush}
-                      disabled={
-                        pushRepoTextLoading ||
-                        !branchParam ||
-                        status === "loading"
-                      }
-                    >
-                      {pushRepoTextLoading ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <Upload className="size-3" />
-                      )}
-                      Push
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )}
-            </AiGenerationResult>
-          </div>
-        )}
-
-        {/* ── Empty hint ── */}
-        {status === "idle" && !hasSourceData && !loadingCommits && (
-          <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/30 bg-muted/10 px-3 py-2.5 text-[11px] text-muted-foreground/60">
-            <Layers className="size-3.5 shrink-0" />
-            <span>
-              No source data loaded yet. Paste changes manually in the text area
-              to generate a changelog. You can also{" "}
-              <button
-                type="button"
-                onClick={() => navigate(backHref)}
-                className="underline underline-offset-2 hover:text-foreground/80"
+          {/* Result panel */}
+          {showResultPanel && (
+            <div ref={resultRef}>
+              <AiGenerationResult
+                metadata={{
+                  model: resultModel,
+                  modelLabel: resultModel ? (ai.models.find((m) => m.id === resultModel)?.label || resultModel) : undefined,
+                  durationMs: streamDuration || undefined,
+                  totalTokens: streamTokens || undefined,
+                }}
+                generating={status === "loading"}
+                runNumber={runNumber}
               >
-                go back to the dashboard
-              </button>{" "}
-              and select a pipeline run or a pending PR.
-            </span>
-          </div>
-        )}
+                {GENERATED_AUDIENCES.length > 1 && (
+                  <div
+                    role="tablist"
+                    className="flex gap-0 overflow-x-auto border-b border-border/40 bg-muted/15"
+                  >
+                    {GENERATED_AUDIENCES.map((tab) => {
+                      const tabLoading = audienceLoading.has(tab.key);
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          role="tab"
+                          aria-selected={activeAudience === tab.key}
+                          onClick={() => setActiveAudience(tab.key)}
+                          className={cn(
+                            "relative flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs transition-colors sm:px-4",
+                            activeAudience === tab.key
+                              ? "font-semibold text-foreground"
+                              : "text-muted-foreground/60 hover:text-foreground/80",
+                          )}
+                        >
+                          {tabLoading ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <tab.icon className="size-3.5" />
+                          )}
+                          {tab.label}
+                          {activeAudience === tab.key && (
+                            <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground transition-all duration-300" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
-        <ConfirmDialog
-          open={saveConfirmOpen}
-          title={
-            version
-              ? `Save this Developer changelog for v${version}?`
-              : "Save this Developer changelog?"
-          }
-          description="This writes the text below to the database. It won't be pushed to the repo until you confirm a separate Push."
-          confirmLabel="Save"
-          pendingLabel="Saving…"
-          loading={saving}
-          error={saveError}
-          onConfirm={handleSaveGenerated}
-          onCancel={cancelSaveGeneratedConfirm}
-        >
-          <div className="max-h-64 overflow-y-auto rounded-lg border border-border/20 p-3">
-            <ChangelogBody text={audienceTexts.developer ?? ""} />
-          </div>
-        </ConfirmDialog>
+                <div className={cn("p-4", editingTab !== null && "pb-0")}>
+                  {editingTab === activeAudience ? (
+                    <textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      className="w-full min-h-75 rounded-lg border border-border/50 bg-background p-3.5 text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
+                    />
+                  ) : (
+                    <div
+                      key={activeAudience}
+                      className="animate-in fade-in duration-200"
+                    >
+                      <ChangelogBody text={audienceTexts[activeAudience] ?? ""} />
+                    </div>
+                  )}
+                </div>
 
-        <ConfirmDialog
-          open={editSaveConfirmOpen}
-          title={
-            version
-              ? `Save this edit for v${version}?`
-              : "Save this edit?"
-          }
-          description="This writes the edited text below to the database, replacing what's currently saved for Developer."
-          confirmLabel="Save"
-          pendingLabel="Saving…"
-          loading={editSaving}
-          error={editSaveError}
-          onConfirm={saveEdit}
-          onCancel={cancelSaveEditConfirm}
-        >
-          <div className="max-h-64 overflow-y-auto rounded-lg border border-border/20 p-3">
-            <ChangelogBody text={editText} />
-          </div>
-        </ConfirmDialog>
-
-        <ConfirmDialog
-          open={pushConfirmOpen}
-          title={`Push v${pushVersion || "?"} to the repo?`}
-          description={`This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${pushVersion || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
-          diff={{ before: pushRepoText, after: audienceTexts.developer ?? "" }}
-          confirmLabel="Push"
-          pendingLabel="Pushing…"
-          loading={pushLoading}
-          error={pushError}
-          confirmDisabled={pushVersionTaken}
-          onConfirm={handlePush}
-          onCancel={() => {
-            setPushConfirmOpen(false);
-            setPushError(null);
-          }}
-        >
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Version</span>
-              <Input
-                value={pushVersion}
-                onChange={(e) => handlePushVersionChange(e.target.value)}
-                disabled={pushLoading || pushRepoTextLoading}
-                placeholder="e.g. 1.0.5"
-                size={Math.max(8, pushVersion.length + 1)}
-                className="h-8 w-fit min-w-[120px] text-xs font-mono"
-              />
+                {editingTab === activeAudience ? (
+                  <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5">
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={cancelEdit}
+                        disabled={editSaving}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={requestSaveEdit}
+                        disabled={editSaving || !editText.trim()}
+                      >
+                        {editSaving ? (
+                          <>
+                            <Loader2 className="size-3 animate-spin" /> Saving…
+                          </>
+                        ) : (
+                          "Save"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 border-t border-border/30 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {activeAudience === "developer" && pushResult && (
+                        <a
+                          href={pushResult}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline"
+                        >
+                          <ExternalLink className="size-3" />
+                          Pushed to Azure DevOps
+                        </a>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        onClick={() => startEdit(activeAudience)}
+                        disabled={status === "loading"}
+                      >
+                        <Pencil className="size-3" /> Edit
+                      </Button>
+                      <AiGenerationControls
+                        ai={ai}
+                        onGenerate={() => handleGenerate(true)}
+                        generating={status === "loading"}
+                        variant="inline"
+                      />
+                      {activeAudience === "developer" && !saved && (
+                        <Button
+                          size="sm"
+                          variant="default"
+                          className="gap-1.5"
+                          onClick={requestSaveGenerated}
+                          disabled={
+                            saving ||
+                            status === "loading" ||
+                            !audienceTexts.developer
+                          }
+                        >
+                          {saving ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Check className="size-3" />
+                          )}
+                          Save
+                        </Button>
+                      )}
+                      {activeAudience === "developer" && saved && (
+                        <Button
+                          size="sm"
+                          variant="default"
+                          className="gap-1.5"
+                          onClick={requestPush}
+                          disabled={
+                            pushRepoTextLoading ||
+                            !branchParam ||
+                            status === "loading"
+                          }
+                        >
+                          {pushRepoTextLoading ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Upload className="size-3" />
+                          )}
+                          Push
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </AiGenerationResult>
             </div>
-            {(pushLatestVersion || pushResolution?.suggestedNextVersion) && (
-              <p className="text-[11px] text-muted-foreground">
-                {pushLatestVersion && (
-                  <>Latest in the repo: <span className="font-mono">v{pushLatestVersion}</span></>
-                )}
-                {pushLatestVersion && pushResolution?.suggestedNextVersion ? " · " : null}
-                {pushResolution?.suggestedNextVersion && (
-                  <>Suggested next: <span className="font-mono">v{pushResolution.suggestedNextVersion.replace(/^v/i, "")}</span></>
-                )}
-              </p>
-            )}
-            {pushVersionTaken && (
-              <p className="text-[11px] text-destructive">
-                v{pushVersionNormalized} already exists in this repo — choose a new version.
-              </p>
-            )}
-            {branches.status === "success" && branches.data.length > 0 && (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-muted-foreground">Target branch</span>
-                <Select
-                  value={pushBranch}
-                  onValueChange={handlePushBranchChange}
-                  disabled={pushLoading || pushRepoTextLoading}
-                >
-                  <SelectTrigger className="h-8 w-[220px] text-xs">
-                    <SelectValue placeholder="Select a branch" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {branches.data.map((b) => (
-                      <SelectItem key={b} value={b}>
-                        {b}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-        </ConfirmDialog>
+          )}
+        </div>
       </div>
+
+      {/* ═══════════ CONFIRM DIALOGS ═══════════ */}
+      <ConfirmDialog
+        open={saveConfirmOpen}
+        title={
+          version
+            ? `Save this Developer changelog for v${version}?`
+            : "Save this Developer changelog?"
+        }
+        description="This writes the text below to the database. It won't be pushed to the repo until you confirm a separate Push."
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        loading={saving}
+        error={saveError}
+        onConfirm={handleSaveGenerated}
+        onCancel={cancelSaveGeneratedConfirm}
+      >
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-border/20 p-3">
+          <ChangelogBody text={audienceTexts.developer ?? ""} />
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={editSaveConfirmOpen}
+        title={
+          version
+            ? `Save this edit for v${version}?`
+            : "Save this edit?"
+        }
+        description="This writes the edited text below to the database, replacing what's currently saved for Developer."
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        loading={editSaving}
+        error={editSaveError}
+        onConfirm={saveEdit}
+        onCancel={cancelSaveEditConfirm}
+      >
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-border/20 p-3">
+          <ChangelogBody text={editText} />
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={pushConfirmOpen}
+        title={`Push v${pushVersion || "?"} to the repo?`}
+        description={`This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${pushVersion || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
+        diff={{ before: pushRepoText, after: audienceTexts.developer ?? "" }}
+        confirmLabel="Push"
+        pendingLabel="Pushing…"
+        loading={pushLoading}
+        error={pushError}
+        friendlyError={pushError ? friendlyPushError(pushError, pushErrorStatus) : null}
+        confirmDisabled={pushVersionTaken}
+        onConfirm={handlePush}
+        onCancel={() => {
+          setPushConfirmOpen(false);
+          setPushError(null);
+        }}
+      >
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Version</span>
+            <Input
+              value={pushVersion}
+              onChange={(e) => handlePushVersionChange(e.target.value)}
+              disabled={pushLoading || pushRepoTextLoading}
+              placeholder="e.g. 1.0.5"
+              size={Math.max(8, pushVersion.length + 1)}
+              className="h-8 w-fit min-w-[120px] text-xs font-mono"
+            />
+          </div>
+          {(pushLatestVersion || pushResolution?.suggestedNextVersion) && (
+            <p className="text-[11px] text-muted-foreground">
+              {pushLatestVersion && (
+                <>Latest in the repo: <span className="font-mono">v{pushLatestVersion}</span></>
+              )}
+              {pushLatestVersion && pushResolution?.suggestedNextVersion ? " · " : null}
+              {pushResolution?.suggestedNextVersion && (
+                <>Suggested next: <span className="font-mono">v{pushResolution.suggestedNextVersion.replace(/^v/i, "")}</span></>
+              )}
+            </p>
+          )}
+          {pushVersionTaken && (
+            <p className="text-[11px] text-destructive">
+              v{pushVersionNormalized} already exists in this repo — choose a new version.
+            </p>
+          )}
+          {branches.status === "success" && branches.data.length > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Target branch</span>
+              <Select
+                value={pushBranch}
+                onValueChange={handlePushBranchChange}
+                disabled={pushLoading || pushRepoTextLoading}
+              >
+                <SelectTrigger className="h-8 w-[220px] text-xs">
+                  <SelectValue placeholder="Select a branch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {branches.data.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {b}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }
