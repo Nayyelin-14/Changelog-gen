@@ -1,3 +1,10 @@
+## 2026-10-13 — dev (run 53)
+
+- docs: append dev changelog entry (run 51) ***NO_CI***
+- ci: replace bogus PAT length check with token-kind diagnosis
+- docs: append dev changelog entry (run 52) ***NO_CI***
+- Merge remote-tracking branch 'origin/dev'
+
 ## 2026-10-13 — dev (run 52)
 
 - ci: replace bogus PAT length check with token-kind diagnosis
