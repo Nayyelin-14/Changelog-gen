@@ -1,3 +1,5 @@
+## v1.0.17 — 2026-10-13 (promoted build.51)
+
 ## v1.0.16 — 2026-09-20
 
 ci: cleanup also deletes untagged attestation layers
