@@ -1,5 +1,8 @@
 package com.hubsabai.changelog.storage;
 
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
+
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import java.time.OffsetDateTime;
@@ -10,6 +13,23 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class ChangelogCacheService {
+
+    @Inject
+    Instance<com.hubsabai.changelog.auth.CurrentUser> currentUser;
+
+    /**
+     * The owner to stamp on rows this request creates, and the filter every read applies.
+     * {@code null} means "service-owned" — which is also what a caller outside any request
+     * context (a unit test, or a worker thread) gets, deliberately: a missing context must
+     * never widen a read to someone else's rows.
+     */
+    private Long owner() {
+        try {
+            return currentUser.get().ownerUserId();
+        } catch (RuntimeException noRequestContext) {
+            return null;
+        }
+    }
 
     /**
      * The current text if it's still valid to reuse without a fresh AI call: a human edit always
@@ -24,7 +44,7 @@ public class ChangelogCacheService {
 
     @Transactional(Transactional.TxType.SUPPORTS)
     public Optional<String> getCurrent(String provider, String project, String repo, String version, String audience, String inputHash) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry == null) {
             return Optional.empty();
         }
@@ -39,7 +59,7 @@ public class ChangelogCacheService {
      * and so must be left alone by a cascade). */
     @Transactional(Transactional.TxType.SUPPORTS)
     public Optional<String> getEditedText(String project, String repo, String version, String audience) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry("azure", project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry("azure", project, repo, version, audience, owner());
         return entry != null && "edit".equals(entry.currentSource) ? Optional.of(entry.currentText) : Optional.empty();
     }
 
@@ -53,7 +73,7 @@ public class ChangelogCacheService {
 
     @Transactional(Transactional.TxType.SUPPORTS)
     public Optional<String> getCurrentText(String provider, String project, String repo, String version, String audience) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         // Optional.of would NPE if the row exists but currentText is null (e.g. every revision for
         // this version+audience has been deleted) — a real, reachable state, not a bug elsewhere.
         return entry != null ? Optional.ofNullable(entry.currentText) : Optional.empty();
@@ -63,11 +83,11 @@ public class ChangelogCacheService {
      * e.g. whether the current text is an AI generation or a human edit, and by/with what. */
     @Transactional(Transactional.TxType.SUPPORTS)
     public Optional<GeneratedChangelog> getCurrentEntry(String project, String repo, String version, String audience) {
-        return Optional.ofNullable(GeneratedChangelog.findEntry("azure", project, repo, version, audience));
+        return Optional.ofNullable(GeneratedChangelog.findEntry("azure", project, repo, version, audience, owner()));
     }
 
     public Optional<GeneratedChangelog> getCurrentEntry(String provider, String project, String repo, String version, String audience) {
-        return Optional.ofNullable(GeneratedChangelog.findEntry(provider, project, repo, version, audience));
+        return Optional.ofNullable(GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner()));
     }
 
     /** Same as {@link #getCurrentText}, batched over every version of one project/repo/audience —
@@ -78,7 +98,7 @@ public class ChangelogCacheService {
     }
 
     public Map<String, String> getCurrentTextsByVersion(String provider, String project, String repo, String audience) {
-        List<GeneratedChangelog> entries = GeneratedChangelog.findAllForAudience(provider, project, repo, audience);
+        List<GeneratedChangelog> entries = GeneratedChangelog.findAllForAudience(provider, project, repo, audience, owner());
         return entries.stream().collect(Collectors.toMap(e -> e.version, e -> e.currentText, (a, b) -> a));
     }
 
@@ -91,7 +111,7 @@ public class ChangelogCacheService {
     }
 
     public Map<String, String> getCurrentSourcesByVersion(String provider, String project, String repo, String audience) {
-        List<GeneratedChangelog> entries = GeneratedChangelog.findAllForAudience(provider, project, repo, audience);
+        List<GeneratedChangelog> entries = GeneratedChangelog.findAllForAudience(provider, project, repo, audience, owner());
         return entries.stream().collect(Collectors.toMap(e -> e.version, e -> e.currentSource, (a, b) -> a));
     }
 
@@ -106,7 +126,7 @@ public class ChangelogCacheService {
     }
 
     public List<GeneratedChangelog> getDeveloperEntries(String provider, String project, String repo) {
-        return GeneratedChangelog.findAllForAudience(provider, project, repo, "developer");
+        return GeneratedChangelog.findAllForAudience(provider, project, repo, "developer", owner());
     }
 
     /** Saves a human edit as the new current text, rolling whatever was current into history. */
@@ -147,7 +167,7 @@ public class ChangelogCacheService {
 
     @Transactional
     public boolean saveRawInitIfAbsent(String provider, String project, String repo, String version, String audience, String rawText) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry != null && ("ai".equals(entry.currentSource) || "edit".equals(entry.currentSource) || "import".equals(entry.currentSource))) {
             return false;
         }
@@ -169,7 +189,7 @@ public class ChangelogCacheService {
 
     @Transactional
     public Optional<String> restorePrevious(String provider, String project, String repo, String version, String audience) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry == null || entry.previousText == null) {
             return Optional.empty();
         }
@@ -190,7 +210,7 @@ public class ChangelogCacheService {
 
     @Transactional
     public void markPushed(String provider, String project, String repo, String version, String audience, String text, String commitUrl) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry != null) {
             entry.pushedText = text;
             entry.pushedAt = OffsetDateTime.now();
@@ -236,7 +256,7 @@ public class ChangelogCacheService {
 
     @Transactional
     public Optional<String> restoreToPushed(String provider, String project, String repo, String version, String audience) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry == null || entry.pushedText == null) {
             return Optional.empty();
         }
@@ -260,7 +280,7 @@ public class ChangelogCacheService {
 
     @Transactional
     public void saveHistoryEntryIfAbsent(String provider, String project, String repo, String version, String versionDate, String body) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, "developer");
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, "developer", owner());
         if (entry != null) {
             return;
         }
@@ -268,6 +288,7 @@ public class ChangelogCacheService {
 
         // Old table
         GeneratedChangelog gc = new GeneratedChangelog();
+        gc.ownerUserId = owner();
         gc.provider = provider;
         gc.project = project;
         gc.repo = repo;
@@ -279,9 +300,10 @@ public class ChangelogCacheService {
         gc.persist();
 
         // New tables
-        ChangelogVersion cv = ChangelogVersion.findEntry(provider, project, repo, version);
+        ChangelogVersion cv = ChangelogVersion.findEntry(provider, project, repo, version, owner());
         if (cv == null) {
             cv = new ChangelogVersion();
+            cv.ownerUserId = owner();
             cv.provider = provider;
             cv.project = project;
             cv.repo = repo;
@@ -293,6 +315,7 @@ public class ChangelogCacheService {
         ChangelogRevision rev = ChangelogRevision.latest(cv.id, "developer");
         if (rev == null) {
             rev = new ChangelogRevision();
+            rev.ownerUserId = owner();
             rev.version = cv;
             rev.audience = "developer";
             rev.sequence = 0;
@@ -330,7 +353,7 @@ public class ChangelogCacheService {
     @Transactional
     void setCurrent(String provider, String project, String repo, String version, String audience,
             String source, String modelId, String inputHash, String editedBy, String text) {
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(provider, project, repo, version, audience, owner());
         if (entry != null) {
             entry.previousText = entry.currentText;
             entry.previousSource = entry.currentSource;
@@ -347,6 +370,7 @@ public class ChangelogCacheService {
             entry.persist();
         } else {
             GeneratedChangelog gc = new GeneratedChangelog();
+            gc.ownerUserId = owner();
             gc.provider = provider;
             gc.project = project;
             gc.repo = repo;

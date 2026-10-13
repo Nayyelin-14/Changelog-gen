@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
+import { getStoredProvider } from '@/lib/provider';
+
 export type QueryState<T> =
   | { status: 'loading'; refresh: () => void; refreshing: boolean }
   | { status: 'error'; error: Error; refresh: () => void; refreshing: boolean }
@@ -18,6 +20,14 @@ const DEFAULT_TTL_MS = 5 * 60_000;
 const cache = new Map<string, { data: unknown; expiresAt: number }>();
 
 const inFlight = new Map<string, Promise<unknown>>();
+
+/** Drops every cached result and in-flight dedup entry. Called on authentication transitions
+ * (AuthProvider) and on provider switches — one account's (or one provider's) cached data must
+ * never render inside another's session. */
+export function clearQueryCache(): void {
+  cache.clear();
+  inFlight.clear();
+}
 
 function cacheGet<T>(key: string): T | undefined {
   const entry = cache.get(key);
@@ -40,7 +50,10 @@ export function useQuery<T>(
 ): QueryResult<T> {
   const cacheKey = options?.cacheKey;
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
-  const fullKey = cacheKey ? `${cacheKey}:${JSON.stringify(deps)}` : undefined;
+  // Provider-scoped: switching Azure↔GitHub must never serve the other provider's cached
+  // result. getStoredProvider() is read on every render, so a switch changes fullKey (the
+  // effect below re-runs and re-fetches) even when the caller's own deps are unchanged.
+  const fullKey = cacheKey ? `${getStoredProvider()}:${cacheKey}:${JSON.stringify(deps)}` : undefined;
   const [refreshTick, setRefreshTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -115,7 +128,7 @@ export function useQuery<T>(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, refreshTick]);
+  }, [...deps, refreshTick, fullKey]);
 
   return { ...state, refresh, refreshing };
 }

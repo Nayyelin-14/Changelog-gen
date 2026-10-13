@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Loader2, FileWarning, Clock } from "lucide-react";
 
-import { getChangelogLocation, listHistory } from "@/api/client";
+import { ApiError, getChangelogLocation, listHistory } from "@/api/client";
 import { setStoredRole } from "@/lib/role";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,10 +15,13 @@ type State =
 
 /** Deep-link entry point: resolves "PR !1149" to a release via release_pr index and redirects
  * into the matching Dev history entry. Unguarded by RouteGuard — sets the role itself rather
- * than bouncing to role-select on a cold click. */
+ * than bouncing to role-select on a cold click. The API behind it is default-deny like the
+ * rest of the backend, so an unauthenticated visitor is sent through /login and returned
+ * here afterwards (same-state `next` contract as every other gate). */
 export function PrRedirectPage() {
   const { project, repo, prId } = useParams<{ project: string; repo: string; prId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [state, setState] = useState<State>({ kind: "loading" });
 
   useEffect(() => {
@@ -30,15 +33,15 @@ export function PrRedirectPage() {
 
     (async () => {
       try {
-        const location = await getChangelogLocation(project, repo, prId);
+        const location_ = await getChangelogLocation(project, repo, prId);
         if (cancelled) return;
 
-        if (location.status === "not_found") {
+        if (location_.status === "not_found") {
           setState({ kind: "not_found" });
           return;
         }
-        if (location.status === "prerelease") {
-          setState({ kind: "prerelease", version: location.version ?? "?" });
+        if (location_.status === "prerelease") {
+          setState({ kind: "prerelease", version: location_.version ?? "?" });
           return;
         }
 
@@ -47,11 +50,11 @@ export function PrRedirectPage() {
         // few hundred versions, well under this.
         const history = await listHistory(project, repo, undefined, 0, 1000);
         if (cancelled) return;
-        const entry = history.entries.find((e) => e.version === location.version);
+        const entry = history.entries.find((e) => e.version === location_.version);
         if (!entry) {
           setState({
             kind: "error",
-            message: `v${location.version} was reported as released, but no matching history entry was found.`,
+            message: `v${location_.version} was reported as released, but no matching history entry was found.`,
           });
           return;
         }
@@ -63,6 +66,15 @@ export function PrRedirectPage() {
         );
       } catch (e) {
         if (cancelled) return;
+        // Default-deny backend: a cold visitor (no session yet) gets 401 on the lookup itself.
+        // Send them through login and come back to this exact deep link afterwards.
+        if (e instanceof ApiError && e.status === 401) {
+          navigate("/login", {
+            replace: true,
+            state: { next: location.pathname + location.search },
+          });
+          return;
+        }
         const message = e instanceof Error ? e.message : "Failed to resolve this PR's changelog.";
         setState({ kind: "error", message });
       }
@@ -71,7 +83,7 @@ export function PrRedirectPage() {
     return () => {
       cancelled = true;
     };
-  }, [project, repo, prId, navigate]);
+  }, [project, repo, prId, navigate, location.pathname, location.search]);
 
   if (state.kind === "loading") {
     return (

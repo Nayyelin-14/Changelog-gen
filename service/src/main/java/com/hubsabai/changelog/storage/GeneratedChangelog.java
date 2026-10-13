@@ -15,13 +15,22 @@ import java.time.OffsetDateTime;
     name = "generated_changelog",
     uniqueConstraints = @UniqueConstraint(
         name = "uq_generated_changelog",
-        columnNames = {"provider", "project", "repo", "version", "audience"})
+        columnNames = {"owner_user_id", "provider", "project", "repo", "version", "audience"})
 )
 public class GeneratedChangelog extends PanacheEntityBase {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
+
+    /**
+     * The internal app user who owns this row ({@code github_user.id}), or {@code null} when the
+     * row belongs to the service/CI rather than to any one person. This is the ownership key:
+     * never the GitHub login (mutable, and can be recycled by someone else) and never the GitHub
+     * numeric id (an identifier this app does not control).
+     */
+    @Column(name = "owner_user_id")
+    public Long ownerUserId;
 
     /** The source provider this changelog belongs to — {@code "azure"} (Azure DevOps) or
      * {@code "github"}. Keeps a GitHub owner+repo row from colliding with an Azure DevOps
@@ -89,24 +98,28 @@ public class GeneratedChangelog extends PanacheEntityBase {
     @Column(name = "pushed_pull_request_url", columnDefinition = "text")
     public String pushedPullRequestUrl;
 
-    public static GeneratedChangelog findEntry(String project, String repo, String version, String audience) {
-        return findEntry("azure", project, repo, version, audience);
+    /** See {@link ChangelogVersion#OWNER_VISIBLE} for the ownership rule every finder applies. */
+    public static GeneratedChangelog findEntry(String project, String repo, String version, String audience, Long ownerUserId) {
+        return findEntry("azure", project, repo, version, audience, ownerUserId);
     }
 
-    public static GeneratedChangelog findEntry(String provider, String project, String repo, String version, String audience) {
-        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4 and audience = ?5",
-                provider, project, repo, version, audience)
+    public static GeneratedChangelog findEntry(String provider, String project, String repo, String version, String audience, Long ownerUserId) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4 and audience = ?5"
+                        + String.format(ChangelogVersion.OWNER_VISIBLE + ChangelogVersion.OWNER_FIRST, 6, 6),
+                provider, project, repo, version, audience, ownerUserId)
             .firstResult();
     }
 
     /** All entries for one project/repo/audience, in one query — for batch reads like /history,
      * which would otherwise run one query per version. */
-    public static java.util.List<GeneratedChangelog> findAllForAudience(String project, String repo, String audience) {
-        return findAllForAudience("azure", project, repo, audience);
+    public static java.util.List<GeneratedChangelog> findAllForAudience(String project, String repo, String audience, Long ownerUserId) {
+        return findAllForAudience("azure", project, repo, audience, ownerUserId);
     }
 
-    public static java.util.List<GeneratedChangelog> findAllForAudience(String provider, String project, String repo, String audience) {
-        return find("provider = ?1 and project = ?2 and repo = ?3 and audience = ?4", provider, project, repo, audience).list();
+    public static java.util.List<GeneratedChangelog> findAllForAudience(String provider, String project, String repo, String audience, Long ownerUserId) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and audience = ?4"
+                        + String.format(ChangelogVersion.OWNER_VISIBLE + ChangelogVersion.OWNER_FIRST, 5, 5),
+                provider, project, repo, audience, ownerUserId).list();
     }
 
     /**
@@ -117,13 +130,14 @@ public class GeneratedChangelog extends PanacheEntityBase {
      * must look this up beforehand on the request thread, since Panache's entity manager isn't
      * available on threads outside Quarkus's request-scoped context.
      */
-    public static java.util.Set<String> reposWithImportCache(String project) {
-        return reposWithImportCache("azure", project);
+    public static java.util.Set<String> reposWithImportCache(String project, Long ownerUserId) {
+        return reposWithImportCache("azure", project, ownerUserId);
     }
 
-    public static java.util.Set<String> reposWithImportCache(String provider, String project) {
+    public static java.util.Set<String> reposWithImportCache(String provider, String project, Long ownerUserId) {
         java.util.List<GeneratedChangelog> rows = find(
-                "provider = ?1 and project = ?2 and audience = 'developer' and currentSource = 'import'", provider, project).list();
+                "provider = ?1 and project = ?2 and audience = 'developer' and currentSource = 'import'"
+                        + " and (ownerUserId = ?3 or ownerUserId is null)", provider, project, ownerUserId).list();
         java.util.Set<String> repos = new java.util.HashSet<>();
         for (GeneratedChangelog row : rows) {
             repos.add(row.repo);

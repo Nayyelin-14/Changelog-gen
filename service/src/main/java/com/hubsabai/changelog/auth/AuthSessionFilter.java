@@ -13,9 +13,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Resolves the {@code cc_session} cookie into the request-scoped {@link CurrentUser}. Runs for
- * every request (it's a plain {@code @Provider}) but only ever reads — authorization decisions
- * live in the resources and the GitHub client filter, so anonymous traffic keeps its current
- * behavior unchanged.
+ * every request (it's a plain {@code @Provider}) but only ever reads — the session token is never
+ * logged and never leaves the server. It deliberately does <em>not</em> reject anything: default-deny
+ * lives in {@code api.AuthenticatedFilter} (401) and ownership in {@code api.AccessGuard} (403),
+ * so that {@code /api/auth/**} stays reachable from a logged-out browser.
  */
 @Provider
 @RegisterForReflection

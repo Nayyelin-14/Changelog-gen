@@ -37,6 +37,7 @@ export function AiGenerationControls({
 }: AiGenerationControlsProps) {
   const showProvider = !hideProviderWhenSingle || ai.providerOptions.length > 1;
   const canGenerate = ai.isReady && !generating && !disabled;
+  const providerLabel = ai.providerOptions.find((p) => p.id === ai.provider)?.label;
 
   if (variant === "inline") {
     return (
@@ -65,6 +66,7 @@ export function AiGenerationControls({
           value={ai.model}
           onChange={ai.setModel}
           disabled={generating}
+          providerLabel={providerLabel}
           triggerClassName="h-7 text-xs font-medium"
         />
         <Button
@@ -114,6 +116,7 @@ export function AiGenerationControls({
           value={ai.model}
           onChange={ai.setModel}
           disabled={generating}
+          providerLabel={providerLabel}
         />
       </div>
 

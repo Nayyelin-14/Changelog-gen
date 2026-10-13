@@ -162,7 +162,9 @@ public class GitHubOAuthService {
             JsonNode node = MAPPER.readTree(json);
             String accessToken = node.path("access_token").asText(null);
             if (accessToken == null || accessToken.isBlank()) {
-                throw new IllegalStateException("GitHub token exchange did not return an access_token: " + json);
+                // Deliberately not appending `json`: a token-exchange failure body can echo the
+                // client secret or a partial token, and exception messages get rendered to callers.
+                throw new IllegalStateException("GitHub token exchange did not return an access_token.");
             }
             String refreshToken = node.path("refresh_token").asText(null);
             long expiresIn = node.path("expires_in").asLong(-1);

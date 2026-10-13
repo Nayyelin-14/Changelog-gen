@@ -14,24 +14,32 @@ import java.io.IOException;
 /**
  * Stamps the GitHub REST client's identity per call:
  * <ul>
- *   <li>a signed-in user's OAuth token ({@link CurrentUser}) — the per-user path — or</li>
- *   <li>the service account's {@code github.token} (kept for the dashboard's non-logged-in /
- *       pipeline mode), or</li>
- *   <li>nothing, when no token exists — GitHub then answers 401 and the caller surfaces a
- *       sign-in prompt.</li>
+ *   <li>a signed-in user's OAuth token ({@link CurrentUser}) — the per-user path, and by far the
+ *       common one; or</li>
+ *   <li>the service account's {@code github.token}, but <b>only</b> when the caller authenticated
+ *       as a pipeline/service caller ({@link CurrentUser#isService()}). A CI runner has no OAuth
+ *       identity of its own, so this is a deliberate, narrow exception.</li>
  * </ul>
- * {@code Instance} + a {@code ContextNotActiveException} guard keeps the fallback safe on worker
- * threads (lazy run capture) that have no HTTP request context.
+ *
+ * <p>There is deliberately <b>no</b> fallback for anonymous or worker-thread callers: sending the
+ * shared service token would silently turn any unauthenticated request into the service account's
+ * full access to every repository it can reach. Without a token, GitHub answers 401 and the caller
+ * surfaces a sign-in prompt instead.
+ *
+ * <p>{@code Instance} plus a {@link ContextNotActiveException} guard keeps the lookup safe off the
+ * request thread; the guard now means "no token", not "use the service token".
  */
 @ApplicationScoped
 public class GitHubOrgAuthFilter implements ClientRequestFilter {
+
+    private static final String CHANGE_ME = "CHANGE_ME";
 
     private final String serviceToken;
     private final Instance<CurrentUser> currentUser;
 
     @Inject
     public GitHubOrgAuthFilter(
-            @ConfigProperty(name = "github.token", defaultValue = "CHANGE_ME") String serviceToken,
+            @ConfigProperty(name = "github.token", defaultValue = CHANGE_ME) String serviceToken,
             Instance<CurrentUser> currentUser) {
         this.serviceToken = serviceToken;
         this.currentUser = currentUser;
@@ -44,7 +52,7 @@ public class GitHubOrgAuthFilter implements ClientRequestFilter {
             requestContext.getHeaders().add("Authorization", "Bearer " + userToken);
             return;
         }
-        if (serviceToken != null && !serviceToken.isBlank() && !"CHANGE_ME".equals(serviceToken)) {
+        if (isServiceRequest() && hasServiceToken()) {
             requestContext.getHeaders().add("Authorization", "Bearer " + serviceToken);
         }
     }
@@ -54,9 +62,22 @@ public class GitHubOrgAuthFilter implements ClientRequestFilter {
             if (currentUser.isResolvable() && currentUser.get() != null) {
                 return currentUser.get().accessToken().orElse(null);
             }
-        } catch (ContextNotActiveException e) {
-            // No HTTP request context on this thread — fall through to the service token.
+        } catch (ContextNotActiveException ignored) {
+            // No HTTP request context on this thread — fail closed, no token.
         }
         return null;
+    }
+
+    /** Only a pipeline-authenticated request may act as the shared service account. */
+    private boolean isServiceRequest() {
+        try {
+            return currentUser.isResolvable() && currentUser.get() != null && currentUser.get().isService();
+        } catch (ContextNotActiveException ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasServiceToken() {
+        return serviceToken != null && !serviceToken.isBlank() && !CHANGE_ME.equals(serviceToken);
     }
 }

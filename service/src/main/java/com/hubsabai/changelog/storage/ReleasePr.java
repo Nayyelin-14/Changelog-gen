@@ -17,13 +17,22 @@ import java.time.OffsetDateTime;
 @Entity
 @Table(
     name = "release_pr",
-    uniqueConstraints = @UniqueConstraint(name = "uq_release_pr", columnNames = {"project", "repo", "pr_id"})
+    uniqueConstraints = @UniqueConstraint(name = "uq_release_pr", columnNames = {"owner_user_id", "project", "repo", "pr_id"})
 )
 public class ReleasePr extends PanacheEntityBase {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
+
+    /**
+     * The internal app user who owns this row ({@code github_user.id}), or {@code null} when the
+     * row belongs to the service/CI rather than to any one person. This is the ownership key:
+     * never the GitHub login (mutable, and can be recycled by someone else) and never the GitHub
+     * numeric id (an identifier this app does not control).
+     */
+    @Column(name = "owner_user_id")
+    public Long ownerUserId;
 
     public String project;
     public String repo;
@@ -43,7 +52,9 @@ public class ReleasePr extends PanacheEntityBase {
     @Column(name = "updated_at")
     public OffsetDateTime updatedAt;
 
-    public static ReleasePr findEntry(String project, String repo, int prId) {
-        return find("project = ?1 and repo = ?2 and prId = ?3", project, repo, prId).firstResult();
+    public static ReleasePr findEntry(String project, String repo, int prId, Long ownerUserId) {
+        return find("project = ?1 and repo = ?2 and prId = ?3"
+                        + String.format(ChangelogVersion.OWNER_VISIBLE + ChangelogVersion.OWNER_FIRST, 4, 4),
+                project, repo, prId, ownerUserId).firstResult();
     }
 }

@@ -271,9 +271,15 @@ export type ChangelogAudience = 'developer' | 'qa' | 'business';
 /** The signed-in GitHub user (GitHub OAuth). Null/absent = the app acts as the shared service
  * account. See {@link com.hubsabai.changelog.auth.GitHubAuthResource} on the server. */
 export interface AuthUser {
+  /** The app's internal, immutable user id — the ownership key for all user-scoped data.
+   * This is NOT the GitHub id. */
   id: number;
+  /** The user's GitHub account id (external identifier, separate from {@link id}). */
+  githubId: number | null;
   login: string;
   avatarUrl: string | null;
+  /** False after a disconnect (credentials erased, account and data kept). */
+  githubConnected: boolean;
 }
 
 /** One turn of a changelog Q&A conversation — the browser is the only place a conversation is

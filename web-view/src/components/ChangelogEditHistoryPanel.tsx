@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { deleteChangelogRevision, getChangelogMeta, type ChangelogAudience } from "@/api/client";
 import type { ChangelogRevisionDto } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { friendlyApiError } from "@/lib/errors";
 import { DEVELOPER_TAB, GENERATED_TABS, formatTimestamp, sourceLabel } from "@/lib/historyTabs";
 import { cn } from "@/lib/utils";
 
@@ -175,7 +176,7 @@ export function ChangelogEditHistoryPanel({
         });
       })
       .catch((e) => {
-        setDeleteError(e instanceof Error ? e.message : "Failed to delete revision. Please try again.");
+        setDeleteError(friendlyApiError(e, "Failed to delete revision. Please try again."));
       })
       .finally(() => setDeleting(false));
   }

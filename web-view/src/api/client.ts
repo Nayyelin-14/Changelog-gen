@@ -27,6 +27,30 @@ export const apiClient = axios.create({
   baseURL: providerApiBase(getStoredProvider()),
 });
 
+// Centralized session-expiry handling: AuthProvider registers a single handler that clears the
+// stale user (which routes the UI back to /login via RouteGuard) exactly once per live session.
+// Every 401 from a protected endpoint funnels through here — axios calls via the interceptors
+// below, raw-fetch SSE calls via notifyUnauthorized() — so no surface keeps rendering as if the
+// user were still signed in.
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+/** Fires the registered handler if there currently is one. Safe to call repeatedly — the
+ * handler itself decides whether the session is already cleared (no loops, no repeat toasts). */
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.();
+}
+
+/** `/auth/*` answers 401 by design (`/me` for a logged-out browser) — those are not session
+ * expiry and must not trigger the global handler. */
+function isAuthUrl(url: string | undefined): boolean {
+  return (url ?? '').startsWith('/auth');
+}
+
 // Provider can change at runtime (localStorage) without a reload — re-resolve the base URL on
 // every request so Azure and GitHub share the same axios instance but hit different route trees.
 apiClient.interceptors.request.use((config) => {
@@ -45,6 +69,7 @@ rootApiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ error?: string; hint?: string }>) => {
     const status = error.response?.status;
+    if (status === 401 && !isAuthUrl(error.config?.url)) notifyUnauthorized();
     const body = error.response?.data;
     const message = body?.error ?? error.response?.statusText ?? error.message;
     const full = body?.hint ? `${message} — ${body.hint}` : message;
@@ -66,6 +91,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ error?: string; hint?: string }>) => {
     const status = error.response?.status;
+    if (status === 401 && !isAuthUrl(error.config?.url)) notifyUnauthorized();
     const body = error.response?.data;
     const message = body?.error ?? error.response?.statusText ?? error.message;
     const full = body?.hint ? `${message} — ${body.hint}` : message;
@@ -256,6 +282,7 @@ export async function generateChangelogStream(
     throw e;
   }
   if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
     const body = await response.json().catch(() => null);
     throw new Error(body?.error || `HTTP ${response.status}`);
   }
@@ -316,6 +343,7 @@ export async function sendChangelogChatMessageStream(
     return;
   }
   if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
     const body = await response.json().catch(() => null);
     callbacks.onError(body?.error || `HTTP ${response.status}`, false);
     return;

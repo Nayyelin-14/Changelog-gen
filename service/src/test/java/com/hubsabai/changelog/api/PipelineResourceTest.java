@@ -1,5 +1,6 @@
 package com.hubsabai.changelog.api;
 
+import com.hubsabai.changelog.auth.TestSessionFixture;
 import com.hubsabai.changelog.connector.azuredevops.WireMockAzureDevOpsResource;
 import com.hubsabai.changelog.storage.ChangelogCacheService;
 import io.quarkus.test.common.QuarkusTestResource;
@@ -28,9 +29,20 @@ class PipelineResourceTest {
     @Inject
     ChangelogCacheService cacheService;
 
+    /**
+     * The pipeline key authenticates the /api/pipeline/* writes, but the dashboard read-backs these
+     * tests exercise (/pull-requests/{id}/changelog-location) live on the session-guarded surface —
+     * so those calls carry a real session cookie, not the pipeline key.
+     */
+    @Inject
+    TestSessionFixture sessions;
+
+    private String session;
+
     @BeforeEach
     void resetWireMock() {
         WireMockAzureDevOpsResource.server().resetAll();
+        session = sessions.signIn();
     }
 
     @Test
@@ -165,7 +177,7 @@ class PipelineResourceTest {
                 .body("prCount", org.hamcrest.Matchers.equalTo(1));
 
         // The PR should now resolve via the read-only lookup endpoint too — not just accepted.
-        given()
+        given().cookie("cc_session", session)
                 .when().get("/api/projects/proj-ingest/repos/repo-ingest/pull-requests/4242/changelog-location")
                 .then()
                 .statusCode(200)
@@ -217,7 +229,7 @@ class PipelineResourceTest {
                 .then()
                 .statusCode(200);
 
-        given()
+        given().cookie("cc_session", session)
                 .when().get("/api/projects/proj-upgrade/repos/repo-upgrade/pull-requests/5150/changelog-location")
                 .then()
                 .statusCode(200)
@@ -249,7 +261,7 @@ class PipelineResourceTest {
 
     @Test
     void changelogLocationReportsNotFoundForAnUnknownPr() {
-        given()
+        given().cookie("cc_session", session)
                 .when().get("/api/projects/some-proj/repos/some-repo/pull-requests/999999/changelog-location")
                 .then()
                 .statusCode(200)

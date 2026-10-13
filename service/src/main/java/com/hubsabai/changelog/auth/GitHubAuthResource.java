@@ -1,5 +1,6 @@
 package com.hubsabai.changelog.auth;
 
+import com.hubsabai.changelog.storage.OwnedDataCleanupService;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.DELETE;
@@ -22,22 +23,39 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * GitHub OAuth entry points: {@code /auth/github/authorize}, {@code /auth/github/callback} plus the
- * session endpoints {@code /auth/me}, {@code /auth/logout} and {@code DELETE /auth/github/account}.
+ * GitHub OAuth entry points plus the session endpoints {@code /auth/me}, {@code /auth/logout},
+ * {@code POST /auth/github/disconnect} and {@code DELETE /auth/github/account}.
  *
  * <p>Signing in makes GitHub API calls (repo reads, PR/commit fetches, changelog pushes) run as the
  * <em>logged-in user's</em> account instead of the service account's — see
- * {@code GitHubOrgAuthFilter}. Deleting the account erases only the user's credentials (their row
- * and their sessions cascade); generated changelogs/history in the other tables are untouched.
+ * {@code GitHubOrgAuthFilter}.
+ *
+ * <p>Two distinct "stop using GitHub" actions, because they have very different consequences:
+ * <ul>
+ *   <li><b>Disconnect</b> ({@code POST /auth/github/disconnect}) — revokes the OAuth token with
+ *       GitHub and clears it from the database. The account (and therefore every changelog the user
+ *       created, which is keyed to the account's immutable id) is untouched, and the session stays
+ *       alive so the user isn't bounced out of their own work. Signing in again with the same
+ *       GitHub account lands on the same account, so nothing is lost in between.</li>
+ *   <li><b>Delete account</b> ({@code DELETE /auth/github/account}) — revokes the token, ends every
+ *       session, and removes the account <em>and</em> every row it owns.</li>
+ * </ul>
+ *
+ * <p>Disconnect keeps the {@link GithubUser} row rather than deleting it on purpose. The row is what
+ * the user's changelogs point at; deleting it would leave them owned by a user that no longer
+ * exists, and would make a later sign-in mint a brand-new account with none of their history. The
+ * credentials it existed to hold are gone either way.
  */
 @Path("/auth")
 @Produces(MediaType.APPLICATION_JSON)
 public class GitHubAuthResource {
 
-    /** Binds the {@code next} return path to the CSRF state — set at authorize, cleared at callback. */
+    /** Binds the {@code next} return path (and connect mode) to the CSRF state — set at authorize,
+     * cleared at callback. */
     private static final String STATE_COOKIE = "cc_oauth";
     private static final int STATE_TTL_SECONDS = 600;
     private static final String DEFAULT_NEXT = "/dev";
+    private static final String MODE_CONNECT = "connect";
 
     @Inject
     GitHubOAuthService oauth;
@@ -50,6 +68,9 @@ public class GitHubAuthResource {
 
     @Inject
     CurrentUser currentUser;
+
+    @Inject
+    OwnedDataCleanupService ownedData;
 
     @Inject
     @ConfigProperty(name = "github.oauth.app-base", defaultValue = "")
@@ -69,15 +90,20 @@ public class GitHubAuthResource {
     }
 
     /** Starts the authorization-code dance. {@code next} is the frontend route to land on after the
-     * OAuth round-trip (must be a same-site relative path — see {@link #sanitizeNext}). */
+     * OAuth round-trip (must be a same-site relative path — see {@link #sanitizeNext}).
+     *
+     * <p>{@code mode=connect} means "attach the GitHub account I'm about to authorize to the app
+     * account I'm already signed in as" instead of "sign me in as whoever this is". Without it a
+     * signed-in user who re-ran the flow would silently be signed in as a different account. */
     @GET
     @Path("/github/authorize")
-    public Response authorize(@QueryParam("next") String next) {
+    public Response authorize(@QueryParam("next") String next, @QueryParam("mode") String mode) {
         ensureEnabled();
         String maybeNext = next != null && !next.isBlank() ? next : DEFAULT_NEXT;
         String cleanNext = sanitizeNext(maybeNext);
+        boolean connect = MODE_CONNECT.equalsIgnoreCase(mode);
         String nonce = crypto.randomToken(24);
-        String state = nonce + ":" + cleanNext;
+        String state = nonce + ":" + cleanNext + (connect ? ":" + MODE_CONNECT : "");
         return Response.status(Response.Status.FOUND)
                 .location(URI.create(oauth.authorizeUrl(state)))
                 .cookie(stateCookie(nonce, STATE_TTL_SECONDS))
@@ -86,7 +112,7 @@ public class GitHubAuthResource {
 
     /** GitHub bounces back here with {@code code} + the {@code state} we handed out. Exchanges the
      * code, upserts the user (credentials encrypted at rest), opens a session cookie, and redirects
-     * the browser back to {@code appBase/#/user}. */
+     * the browser back to {@code appBase/#/next}. */
     @GET
     @Path("/github/callback")
     @Transactional
@@ -107,11 +133,21 @@ public class GitHubAuthResource {
         if (stateNonce == null || !state.startsWith(stateNonce + ":")) {
             return redirect(loginWithError("invalid_state"));
         }
-        String next = sanitizeNext(state.substring(state.indexOf(':') + 1));
+        String rest = state.substring(state.indexOf(':') + 1);
+        int modeAt = rest.indexOf(':');
+        String next = sanitizeNext(modeAt < 0 ? rest : rest.substring(0, modeAt));
+        boolean connect = modeAt >= 0 && MODE_CONNECT.equals(rest.substring(modeAt + 1));
 
         try {
             GitHubOAuthService.TokenResponse tokens = oauth.exchangeCode(code);
             GitHubOAuthService.GithubUserInfo info = oauth.fetchUser(tokens.accessToken());
+            if (info.id() <= 0 || info.login() == null || info.login().isBlank()) {
+                // GitHub must tell us who this is; without a stable id we cannot key anything to them.
+                return redirect(loginWithError("oauth_failed"));
+            }
+            if (connect) {
+                return connectExistingSession(info, tokens, next);
+            }
             GithubUser user = upsertUser(info, tokens);
             var session = sessions.create(user.id);
             return Response.status(Response.Status.FOUND)
@@ -144,24 +180,37 @@ public class GitHubAuthResource {
         return Response.noContent().cookie(sessions.clearSessionCookie(secureCookies())).build();
     }
 
-    /** Deletes the user's credentials (db row + all sessions cascade) and revokes the GitHub token
-     * server-side. Generated changelogs/history are NOT touched. */
+    /**
+     * Disconnects GitHub: revokes the OAuth token with GitHub and erases it from the database.
+     * The account and every changelog it owns are deliberately left alone — see the class javadoc.
+     * The session stays valid, so the user remains signed in (just without GitHub capabilities).
+     */
+    @POST
+    @Path("/github/disconnect")
+    @Transactional
+    public Response disconnect() {
+        GithubUser user = attached(requireUser());
+        revokeQuietly(user);
+        user.accessToken = null;
+        user.refreshToken = null;
+        user.tokenExpiresAt = null;
+        user.updatedAt = OffsetDateTime.now();
+        user.persist();
+        return Response.noContent().build();
+    }
+
+    /**
+     * Deletes the account: revokes the GitHub token, ends every session, and removes the account
+     * row plus every row it owns. Service/CI-owned rows are never touched.
+     */
     @DELETE
     @Path("/github/account")
     @Transactional
     public Response deleteAccount() {
-        GithubUser user = currentUser.get().orElse(null);
-        if (user == null) {
-            return Response.status(Response.Status.UNAUTHORIZED)
-                    .entity(Map.of("error", "not_authenticated"))
-                    .build();
-        }
-        try {
-            oauth.revokeAccessTokenBestEffort(crypto.decrypt(user.accessToken));
-        } catch (RuntimeException ignored) {
-            // Revocation is best-effort — never let a transient failure block the deletion.
-        }
+        GithubUser user = attached(requireUser());
+        revokeQuietly(user);
         sessions.deleteAllForUser(user.id);
+        ownedData.deleteAllOwnedBy(user.id);
         user.delete();
         currentUser.clear();
         return Response.noContent()
@@ -171,8 +220,44 @@ public class GitHubAuthResource {
 
     // --- internals ---
 
+    /** {@code mode=connect}: move the app account I'm already signed in as onto a new GitHub
+     * identity, refusing if that identity already belongs to a different app account. */
+    private Response connectExistingSession(GitHubOAuthService.GithubUserInfo info,
+                                            GitHubOAuthService.TokenResponse tokens,
+                                            String next) {
+        GithubUser signedIn = currentUser.get().orElse(null);
+        if (signedIn == null) {
+            return redirect(loginWithError("not_authenticated"));
+        }
+        // The session resolver loaded this row in its own transaction; re-load it here so the
+        // update below is on an attached entity rather than a detached one.
+        GithubUser current = attached(signedIn);
+        GithubUser ownerOfIdentity = GithubUser.findByGithubId(info.id());
+        if (ownerOfIdentity != null && !ownerOfIdentity.id.equals(current.id)) {
+            // That GitHub account is already a different account here. Merging the two would move
+            // one person's changelogs under the other's id — refuse and make them sign in instead.
+            return redirect(loginWithError("github_linked_elsewhere"));
+        }
+        current.githubId = info.id();
+        current.login = info.login();
+        current.avatarUrl = info.avatarUrl();
+        current.accessToken = crypto.encrypt(tokens.accessToken());
+        current.refreshToken = tokens.refreshToken() != null ? crypto.encrypt(tokens.refreshToken()) : null;
+        current.tokenExpiresAt = tokens.expiresAt();
+        current.updatedAt = OffsetDateTime.now();
+        current.persist();
+        // Keep the existing session — the app account did not change, only its GitHub identity did.
+        return Response.status(Response.Status.FOUND)
+                .location(URI.create(appBase() + "/#" + next))
+                .cookie(clearStateCookie())
+                .build();
+    }
+
     private GithubUser upsertUser(GitHubOAuthService.GithubUserInfo info,
                                   GitHubOAuthService.TokenResponse tokens) {
+        // Keyed on github_id — the one GitHub identifier that survives a username change. `login` is
+        // a display snapshot, refreshed here on every sign-in so a rename is picked up immediately
+        // and never used to look anyone up.
         GithubUser user = GithubUser.findByGithubId(info.id());
         byte[] accessToken = crypto.encrypt(tokens.accessToken());
         byte[] refreshToken = tokens.refreshToken() != null ? crypto.encrypt(tokens.refreshToken()) : null;
@@ -189,6 +274,36 @@ public class GitHubAuthResource {
         user.updatedAt = OffsetDateTime.now();
         user.persist();
         return user;
+    }
+
+    /** Re-loads {@code user} in the current transaction — {@link CurrentUser} holds a row loaded
+     * by the session filter's own (already completed) transaction. */
+    private static GithubUser attached(GithubUser user) {
+        GithubUser reloaded = GithubUser.findById(user.id);
+        return reloaded != null ? reloaded : user;
+    }
+
+    private GithubUser requireUser() {
+        GithubUser user = currentUser.get().orElse(null);
+        if (user == null) {
+            throw new ForbiddenException(Response.status(Response.Status.UNAUTHORIZED)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("error", "not_authenticated"))
+                    .build());
+        }
+        return user;
+    }
+
+    /** Best-effort: a GitHub-side revocation failure must never block the local action. */
+    private void revokeQuietly(GithubUser user) {
+        if (user.accessToken == null) {
+            return;
+        }
+        try {
+            oauth.revokeAccessTokenBestEffort(crypto.decrypt(user.accessToken));
+        } catch (RuntimeException ignored) {
+            // Best-effort by design.
+        }
     }
 
     private void ensureEnabled() {
@@ -214,9 +329,13 @@ public class GitHubAuthResource {
 
     private Map<String, Object> mePayload(GithubUser u) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("id", u.githubId);
+        // The internal id is what the UI should key anything user-scoped on; the GitHub id is
+        // exposed separately because it is an external identifier, not the ownership key.
+        payload.put("id", u.id);
+        payload.put("githubId", u.githubId);
         payload.put("login", u.login);
         payload.put("avatarUrl", u.avatarUrl);
+        payload.put("githubConnected", u.accessToken != null);
         return payload;
     }
 
@@ -240,6 +359,11 @@ public class GitHubAuthResource {
     }
 
     private Response redirect(String location) {
-        return Response.status(Response.Status.FOUND).location(URI.create(location)).build();
+        // Always drop the one-shot state cookie, on every failure path too: leaving it set would
+        // let a later callback reuse a stale nonce, and it holds no value once the flow is over.
+        return Response.status(Response.Status.FOUND)
+                .location(URI.create(location))
+                .cookie(clearStateCookie())
+                .build();
     }
 }

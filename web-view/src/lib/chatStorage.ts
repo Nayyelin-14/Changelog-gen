@@ -10,11 +10,22 @@ interface StoredChat {
   lastUpdatedAt: number;
 }
 
-/** Keyed per user/project/repo/version/audience — switching between versions swaps threads
- * instead of wiping one out. `userId` is 'anon' until Keycloak is wired up. */
+/** The signed-in account's internal id, kept in sync by AuthProvider whenever the identity
+ * changes. Null = signed out (or pre-session load). Threads are keyed per account so one
+ * user's conversation can never surface in another's session on the same browser; the old
+ * hardcoded 'anon' scope is treated as a legacy tenant that is never read once signed in and
+ * is swept on the next auth transition (see AuthProvider) or by the 6-hour expiry. */
+let userScope: string | null = null;
+
+export function setChatUserScope(userId: number | null): void {
+  userScope = userId == null ? null : String(userId);
+}
+
+/** Keyed per account/project/repo/version/audience — switching between versions swaps threads
+ * instead of wiping one out. */
 function storageKey(project: string, repo: string, version: string, audience: PreviewAudience): string {
-  const userId = 'anon';
-  return `${KEY_PREFIX}${userId}:${project}:${repo}:${version}:${audience}`;
+  const scope = userScope ?? 'anon';
+  return `${KEY_PREFIX}${scope}:${project}:${repo}:${version}:${audience}`;
 }
 
 /** Runtime check (not a type assertion) — defends against old bare-`ChatTurn[]` format that
@@ -97,5 +108,21 @@ export function sweepExpiredChatHistory(): void {
     expiredKeys.forEach((key) => localStorage.removeItem(key));
   } catch {
     // localStorage unavailable — nothing to sweep.
+  }
+}
+
+/** Drops EVERY stored thread, regardless of scope — including legacy `anon` entries. Called on
+ * authentication transitions (sign-out, sign-in, account switch, account deletion, session
+ * expiry) so no account's conversation can survive into another's session. */
+export function clearAllChatHistory(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(KEY_PREFIX)) keys.push(key);
+    }
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // localStorage unavailable — nothing to clear.
   }
 }

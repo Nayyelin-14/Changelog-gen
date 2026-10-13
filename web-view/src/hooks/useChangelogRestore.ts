@@ -6,6 +6,7 @@ import {
   restoreChangelogToPushed,
   restoreChangelogRevision,
 } from "@/api/client";
+import { friendlyApiError } from "@/lib/errors";
 import type { EditableTab, GeneratedMeta } from "./useChangelogState";
 import { TAB_LABELS } from "./useChangelogState";
 
@@ -90,7 +91,7 @@ export function useChangelogRestore(
           description: "Reverted to the previous saved version in the database.",
         });
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to restore the previous version.";
+        const message = friendlyApiError(e, "Failed to restore the previous version.");
         setRestoreError(message);
         toast.error(`Failed to restore ${TAB_LABELS[tab]} changelog`, { description: message });
       } finally {
@@ -135,7 +136,7 @@ export function useChangelogRestore(
           description: "Reverted in the database. Nothing new was pushed to the repo.",
         });
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to restore the last pushed version.";
+        const message = friendlyApiError(e, "Failed to restore the last pushed version.");
         setRestorePushedError(message);
         toast.error(`Failed to restore ${TAB_LABELS[tab]} changelog`, { description: message });
       } finally {
@@ -188,7 +189,7 @@ export function useChangelogRestore(
         description: "Reverted in the database.",
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to restore revision.";
+      const message = friendlyApiError(e, "Failed to restore revision.");
       setRestoreRevisionError(message);
       toast.error(`Failed to restore revision #${restoreRevisionSequence}`, { description: message });
     } finally {

@@ -152,6 +152,11 @@
                         <ai.api-key>test-key</ai.api-key>
                         <ai.base-url>http://127.0.0.1:1/v1/chat/completions</ai.base-url>
                         <ai.providers></ai.providers>
+                        <!-- Blank out the conventional Groq key from service/.env too: a bare
+                             GROQ_API_KEY auto-enables the groq provider (by design, in prod),
+                             which would leak a second provider into tests that enumerate the
+                             registry. Tests that want groq set this explicitly per-case. -->
+                        <groq.api-key></groq.api-key>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

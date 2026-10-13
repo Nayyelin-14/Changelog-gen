@@ -460,6 +460,108 @@ class NimAiProviderTest {
         assertEquals("output", result.getText());
     }
 
+    // Regression: production output contained few-shot example bullets verbatim in a release
+    // whose commits had nothing to do with them. The guard runs after every generation call, so
+    // it is asserted here end-to-end over a real HTTP round trip, not just in isolation.
+
+    @Test
+    void strictGenerationDropsExampleBulletsTheModelCopiedWithoutInputSupport() {
+        stubChatCompletions(200, jsonResponse(
+                "- **ci(.github)**: Add weekly GHCR image cleanup workflow.\\n"
+                        + "- **fix(auth)**: Prevented duplicate session refresh requests when multiple API calls expire simultaneously.\\n"
+                        + "- **feat(upload)**: Added resumable upload support for large file transfers."));
+
+        AiResult result = provider.generateForAudienceStrict(items, release, "developer", "test-primary-model");
+
+        assertTrue(result.getText().startsWith("- **ci(.github)**: Add weekly GHCR image cleanup workflow."),
+                "real bullet must survive: " + result.getText());
+        assertFalse(result.getText().contains("session refresh"),
+                "copied example must be dropped: " + result.getText());
+        assertFalse(result.getText().contains("resumable upload"),
+                "copied example must be dropped: " + result.getText());
+    }
+
+    @Test
+    void strictGenerationKeepsTheExampleBulletWhenTheInputBacksIt() {
+        List<ChangeItem> related = List.of(createItem("Prevent duplicate session refresh",
+                "Multiple refresh requests could occur at once", "fix",
+                List.of("src/auth/Session.java"), ChangeItem.ItemType.COMMIT));
+        stubChatCompletions(200, jsonResponse(
+                "- **fix(auth)**: Prevented duplicate session refresh requests when multiple API calls expire simultaneously."));
+
+        AiResult result = provider.generateForAudienceStrict(related, release, "developer", "test-primary-model");
+
+        assertEquals("- **fix(auth)**: Prevented duplicate session refresh requests when multiple API calls expire simultaneously.",
+                result.getText());
+    }
+
+    @Test
+    void generationLeavesOrdinaryOutputUntouched() {
+        stubChatCompletions(200, jsonResponse("- **fix**: Fixed login session handling."));
+
+        AiResult result = provider.generateForAudience(items, release, "developer");
+
+        assertEquals("- **fix**: Fixed login session handling.", result.getText());
+    }
+
+    /** Server-side model allow-list: a client-supplied model outside the provider's configured
+     * set is rejected before ANY network call — the picker's choices are a UI convenience, not
+     * an authority. Covers both the regular (fallback-chain) and strict generation paths. */
+    @Test
+    void rejectsModelOutsideAllowListBeforeAnyNetworkCall() {
+        NimAiProvider guarded = new NimAiProvider(
+                wiremock.url("/v1/chat/completions"),
+                "allowed-primary",
+                "test-api-key",
+                Optional.empty(),
+                Optional.of("allowed-primary,allowed-alt"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+
+        AiException viaChain = assertThrows(AiException.class,
+                () -> guarded.generateForAudience(items, release, "developer", "whisper-large-v3", null));
+        assertTrue(viaChain.getMessage().contains("not enabled"), viaChain.getMessage());
+
+        AiException viaStrict = assertThrows(AiException.class,
+                () -> guarded.generateForAudienceStrict(items, release, "developer", "meta-llama/llama-prompt-guard-2-86m"));
+        assertTrue(viaStrict.getMessage().contains("not enabled"), viaStrict.getMessage());
+
+        wiremock.verify(0, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
+    @Test
+    void servesAllowListedModelOverride() {
+        NimAiProvider guarded = new NimAiProvider(
+                wiremock.url("/v1/chat/completions"),
+                "allowed-primary",
+                "test-api-key",
+                Optional.empty(),
+                Optional.of("allowed-primary,allowed-alt"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+        stubChatCompletions(200, jsonResponse("Answer from allowed-alt."));
+
+        AiResult viaChain = guarded.generateForAudience(items, release, "developer", "allowed-alt", null);
+        assertEquals("Answer from allowed-alt.", viaChain.getText());
+
+        AiResult viaStrict = guarded.generateForAudienceStrict(items, release, "developer", "allowed-primary");
+        assertEquals("Answer from allowed-alt.", viaStrict.getText());
+    }
+
+    /** No allow-list configured = legacy passthrough: the model goes straight to the upstream
+     * endpoint, which rejects unknown ids itself (NVIDIA's historical behavior). */
+    @Test
+    void withoutAllowListAnyModelPassesThrough() {
+        stubChatCompletions(200, jsonResponse("Legacy passthrough."));
+
+        AiResult result = provider.generateForAudience(items, release, "developer", "some-unlisted-model", null);
+
+        assertEquals("Legacy passthrough.", result.getText());
+        wiremock.verify(1, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
     private void stubChatCompletions(int status, String body) {
         stubFor(post(urlPathEqualTo("/v1/chat/completions"))
                 .willReturn(aResponse().withStatus(status).withBody(body)));

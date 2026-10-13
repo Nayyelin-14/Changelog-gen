@@ -19,10 +19,14 @@ import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
 const ERROR_MESSAGES: Record<string, string> = {
-  access_denied: 'Authorization was cancelled — nothing was signed up yet.',
+  access_denied:
+    'Authorization was cancelled — no changes were made to your account.',
   invalid_request: 'The sign-in request was malformed; please try again.',
   invalid_state: 'This sign-in link has expired or was tampered with; please start again.',
   oauth_failed: 'GitHub rejected the sign-in; please try again.',
+  github_linked_elsewhere:
+    'That GitHub account already belongs to a different account here. Sign in with it directly, or disconnect it there first — accounts are never merged.',
+  not_authenticated: 'Your session ended before this finished — please sign in again.',
 };
 const UNKNOWN_ERROR = 'Something went wrong during GitHub sign-in; please try again.';
 
@@ -60,7 +64,7 @@ const TRUST_POINTS = [
   {
     icon: FileLock2,
     title: 'You stay in control',
-    body: 'Generated changelogs and history live in this app and are never tied to your login.',
+    body: 'Changelogs are owned by your account — only you can edit or delete them, and deleting your account removes them.',
   },
 ];
 
@@ -162,7 +166,8 @@ export function LoginPage() {
 
             <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
               <ShieldCheck className="size-3.5 shrink-0 text-primary" />
-              We only store your GitHub login, avatar and an encrypted access token.
+              We store your GitHub login, avatar, an encrypted access token, and your session —
+              never a password or email.
             </p>
           </div>
 
