@@ -17,8 +17,19 @@ set -euo pipefail
 #   - The entry heading carries the run number so the release workflow can later map
 #     `build.{run}-{sha}` -> the dev entry WITHOUT a service round-trip or a "builds <= N" query.
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
 git config user.email "github-actions[bot]@users.noreply.github.com"
 git config user.name "github-actions[bot]"
+
+# Same rule as an unreachable service: the entry is informational, not a release gate, so a
+# missing push credential logs loudly and lets the image build proceed instead of blocking it.
+if [ -z "${GIT_PUSH_PAT:-}" ]; then
+  echo "GIT_PUSH_PAT not configured — cannot commit the entry, skipping (build proceeds)." >&2
+  exit 0
+fi
 
 RUN_ID="${GITHUB_RUN_ID:?GITHUB_RUN_ID must be set}"
 RUN_NUMBER="${GITHUB_RUN_NUMBER:?GITHUB_RUN_NUMBER must be set}"
@@ -97,10 +108,7 @@ for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
   git add CHANGELOG.md
   git commit -q -m "docs: append dev changelog entry (run ${RUN_NUMBER}) ***NO_CI***"
 
-  echo "GIT_PUSH_PAT is ${#GIT_PUSH_PAT} characters long (a real PAT should be ~52)."
-  BASE_URL=$(git remote get-url origin | sed 's#https://[^@]*@#https://#')
-  PUSH_URL=$(echo "$BASE_URL" | sed "s#https://#https://${GIT_PUSH_PAT}@#")
-  if git -c http.extraheader= push "$PUSH_URL" HEAD:dev; then
+  if git_push_with_pat dev; then
     echo "Committed dev changelog entry (run ${RUN_NUMBER})."
     exit 0
   fi
