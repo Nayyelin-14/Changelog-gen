@@ -1,4 +1,12 @@
+## 2026-10-13 — dev (run 52)
+
+- ci: replace bogus PAT length check with token-kind diagnosis
+
 ## v1.0.17 — 2026-10-13 (promoted build.51)
+
+- fix: per-user data isolation, API access guards, AI provider hardening
+
+## 2026-10-13 — dev (run 51)
 
 - fix: per-user data isolation, API access guards, AI provider hardening
 

@@ -12,6 +12,10 @@ set -euo pipefail
 # Env: RUN_NUMBER (from the promoted build tag), RELEASE_BODY (raw dev changelog for that run),
 #      GIT_PUSH_PAT (to push the release commit to main).
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
 git config user.email "github-actions[bot]@users.noreply.github.com"
 git config user.name "github-actions[bot]"
 
@@ -60,9 +64,10 @@ mv CHANGELOG.md.new CHANGELOG.md
 git add service/pom.xml web-view/package.json CHANGELOG.md
 git commit -q -m "chore: release v${VERSION} (build.${RUN_NUMBER}) ***NO_CI***"
 
-echo "GIT_PUSH_PAT is ${#GIT_PUSH_PAT} characters long (a real PAT should be ~52)."
-BASE_URL=$(git remote get-url origin | sed 's#https://[^@]*@#https://#')
-PUSH_URL=$(echo "$BASE_URL" | sed "s#https://#https://${GIT_PUSH_PAT}@#")
-git -c http.extraheader= push "$PUSH_URL" HEAD:main
+# Fails the deploy's final step loudly rather than retrying: the release commit is local, so a
+# retry loop would only mask a credential problem. A failed push leaves main untouched — which is
+# the documented behaviour (production is already updated at this point, only the release record
+# is missing).
+git_push_with_pat main
 
 echo "Released v${VERSION} on main."
