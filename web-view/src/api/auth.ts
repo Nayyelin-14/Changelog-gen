@@ -23,6 +23,25 @@ export function buildGithubSignInUrl(next: string): string {
   return `/api/auth/github/authorize?next=${encodeURIComponent(next)}`;
 }
 
+/**
+ * Starts the {@code mode=connect} OAuth flow — for a user who is already signed in and wants to
+ * attach a (possibly different) GitHub account to the same app account, e.g. after a disconnect.
+ * The server refuses (with {@code error=github_linked_elsewhere}) if that GitHub identity already
+ * belongs to a different app account; it never merges two accounts.
+ */
+export function buildGithubConnectUrl(next: string): string {
+  return `/api/auth/github/authorize?next=${encodeURIComponent(next)}&mode=connect`;
+}
+
+/**
+ * Disconnects GitHub: revokes the OAuth token and erases it server-side, but keeps the app
+ * account and every changelog it owns. The session survives, so the user stays signed in —
+ * just without GitHub capabilities until they reconnect.
+ */
+export async function disconnectGithub(): Promise<void> {
+  await rootApiClient.post('/auth/github/disconnect');
+}
+
 export async function signOut(): Promise<void> {
   await rootApiClient.post('/auth/logout');
 }

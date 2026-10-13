@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/api/AuthContext';
-import { getStoredProvider } from '@/lib/provider';
 import { getStoredRole, roleHome, type Role } from '@/lib/role';
 
 export function RouteGuard({ role, children }: { role: Role; children: React.ReactNode }) {
@@ -14,22 +13,24 @@ export function RouteGuard({ role, children }: { role: Role; children: React.Rea
   // shows up as a blank flash on every dev/qa/business navigation.
   const stored = getStoredRole();
   const allowed = stored === role;
+  // Where to return after signing in — path plus query so deep links (e.g. ?version=…)
+  // survive the round-trip. HashRouter paths are same-site relative, and the server's
+  // sanitizeNext re-checks the value at the OAuth boundary.
+  const next = location.pathname + location.search;
 
-  // GitHub provider dev routes act as the signed-in user (repo/commit/push calls carry their
-  // token), so they need a session first. Azure rides the shared service account — no sign-in.
-  const needsSignIn = role === 'dev' && getStoredProvider() === 'github';
-
+  // EVERY guarded route needs a session: the backend is default-deny (AuthenticatedFilter
+  // answers 401 to anything outside /auth/* without a cookie), regardless of provider or role.
   useEffect(() => {
     if (!allowed) {
       navigate(stored ? roleHome(stored) : '/', { replace: true });
       return;
     }
-    if (needsSignIn && !loading && !user) {
-      navigate('/login', { replace: true, state: { next: location.pathname } });
+    if (!loading && !user) {
+      navigate('/login', { replace: true, state: { next } });
     }
-  }, [navigate, location.pathname, role, stored, allowed, needsSignIn, loading, user]);
+  }, [navigate, next, allowed, stored, loading, user]);
 
   if (!allowed) return null;
-  if (needsSignIn && (loading || !user)) return null;
+  if (loading || !user) return null;
   return <>{children}</>;
 }

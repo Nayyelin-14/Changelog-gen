@@ -25,6 +25,18 @@ public final class PromptComposer {
             Do not invent, infer, or speculate about missing details.
             If information is ambiguous, omit it rather than guessing.
 
+            The only data you may describe is the "Changes" document in the user message.
+
+            The Examples section further below is part of these instructions, not part of the
+            data. Its example changes and example outputs exist only to show the required shape
+            of an answer — they are NOT changes in this release.
+            - Emit exactly one bullet per change that actually appears in the Changes document,
+              no more and no fewer.
+            - Never emit a bullet about a change that is absent from that document, even when it
+              looks similar to an example.
+            - Never copy example output text into your answer unless that very same change is
+              really present in the Changes document.
+
             Return only the requested Markdown. Do not include a title, introduction, summary,
             closing remark, or code fence — the response is inserted as-is, so nothing outside
             the actual bullets belongs in it.
@@ -55,6 +67,40 @@ public final class PromptComposer {
             Title: Support resumable uploads
             """;
 
+    // Single source of truth for the example BULLETS. The audience prompts below render exactly
+    // these strings, and ExampleLeakGuard scans generated text for exactly these strings — a
+    // prompt edit can therefore never leave the guard hunting for text that is no longer (or no
+    // longer only) in the prompt. Kept on one line on purpose: the guard normalizes whitespace,
+    // but a copy that is byte-identical to what the model was shown is the case it must catch.
+    static final String EXAMPLE_OUT_DEV_AUTH =
+            "- **fix(auth)**: Prevented duplicate session refresh requests when multiple API calls expire simultaneously.";
+    static final String EXAMPLE_OUT_DEV_UPLOAD =
+            "- **feat(upload)**: Added resumable upload support for large file transfers.";
+    static final String EXAMPLE_OUT_QA_AUTH =
+            "- Verify only one session refresh occurs when multiple requests receive an expired-session response at the same time.";
+    static final String EXAMPLE_OUT_QA_UPLOAD =
+            "- Verify an interrupted upload resumes successfully after reconnecting, without restarting from the beginning.";
+    static final String EXAMPLE_OUT_BUSINESS_AUTH =
+            "- Improved session reliability during periods of heavy activity.";
+    static final String EXAMPLE_OUT_BUSINESS_UPLOAD =
+            "- Large file uploads can now continue automatically after a temporary network interruption.";
+
+    /** Every example bullet the prompts show, for {@link ExampleLeakGuard}. Headings that sit
+     *  above a bullet in the examples are generic formatting and deliberately not listed — they
+     *  are legitimate in real output. */
+    static final List<String> EXAMPLE_OUTPUTS = List.of(
+            EXAMPLE_OUT_DEV_AUTH, EXAMPLE_OUT_DEV_UPLOAD,
+            EXAMPLE_OUT_QA_AUTH, EXAMPLE_OUT_QA_UPLOAD,
+            EXAMPLE_OUT_BUSINESS_AUTH, EXAMPLE_OUT_BUSINESS_UPLOAD);
+
+    private static final String EXAMPLES_CAVEAT = """
+            Examples
+            --------
+            Format demonstrations only. The changes shown in these examples are NOT part of the
+            release being written, and their outputs must not be repeated in your answer unless
+            the real Changes document contains the very same change.
+            """;
+
     private static final String DEVELOPER_PROMPT = """
             Audience
             --------
@@ -81,21 +127,19 @@ public final class PromptComposer {
             The bold type(scope) tag and the description are always separated by a colon and a
             space — never run them together (e.g. "fix(auth)Prevented..." is wrong).
 
-            Examples
-            --------
+            """ + EXAMPLES_CAVEAT + """
 
             """ + EXAMPLE_INPUT_AUTH + """
 
             Output
             ------
-            - **fix(auth)**: Prevented duplicate session refresh requests when multiple API calls
-              expire simultaneously.
+            """ + EXAMPLE_OUT_DEV_AUTH + """
 
             """ + EXAMPLE_INPUT_UPLOAD + """
 
             Output
             ------
-            - **feat(upload)**: Added resumable upload support for large file transfers.
+            """ + EXAMPLE_OUT_DEV_UPLOAD + """
             """;
 
     private static final String QA_PROMPT = """
@@ -129,24 +173,21 @@ public final class PromptComposer {
             output exactly:
             _No user-facing changes in this release._
 
-            Examples
-            --------
+            """ + EXAMPLES_CAVEAT + """
 
             """ + EXAMPLE_INPUT_AUTH + """
 
             Output
             ------
             ## Regression Checks
-            - Verify only one session refresh occurs when multiple requests receive an
-              expired-session response at the same time.
+            """ + EXAMPLE_OUT_QA_AUTH + """
 
             """ + EXAMPLE_INPUT_UPLOAD + """
 
             Output
             ------
             ## New Areas to Test
-            - Verify an interrupted upload resumes successfully after reconnecting, without
-              restarting from the beginning.
+            """ + EXAMPLE_OUT_QA_UPLOAD + """
             """;
 
     private static final String BUSINESS_PROMPT = """
@@ -175,28 +216,26 @@ public final class PromptComposer {
             If every supplied change is purely internal (nothing user-visible), output exactly:
             _No user-facing changes in this release._
 
-            Examples
-            --------
+            """ + EXAMPLES_CAVEAT + """
 
             """ + EXAMPLE_INPUT_AUTH + """
 
             Output
             ------
             ## Fixes & Improvements
-            - Improved session reliability during periods of heavy activity.
+            """ + EXAMPLE_OUT_BUSINESS_AUTH + """
 
             """ + EXAMPLE_INPUT_UPLOAD + """
 
             Output
             ------
             ## What's New
-            - Large file uploads can now continue automatically after a temporary network
-              interruption.
+            """ + EXAMPLE_OUT_BUSINESS_UPLOAD + """
             """;
 
-    static final String PROMPT_VERSION_DEVELOPER = "developer-v2";
-    static final String PROMPT_VERSION_QA = "qa-v2";
-    static final String PROMPT_VERSION_BUSINESS = "business-v2";
+    static final String PROMPT_VERSION_DEVELOPER = "developer-v3";
+    static final String PROMPT_VERSION_QA = "qa-v3";
+    static final String PROMPT_VERSION_BUSINESS = "business-v3";
 
     private PromptComposer() {}
 

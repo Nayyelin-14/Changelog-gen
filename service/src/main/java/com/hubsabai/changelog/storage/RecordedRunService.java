@@ -11,6 +11,7 @@ import com.hubsabai.changelog.core.model.ChangeItem;
 import com.hubsabai.changelog.core.model.ReleaseData;
 import com.hubsabai.changelog.generation.RunChangeContext;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import java.time.OffsetDateTime;
@@ -21,6 +22,23 @@ import java.util.logging.Logger;
 
 @ApplicationScoped
 public class RecordedRunService {
+
+    @Inject
+    Instance<com.hubsabai.changelog.auth.CurrentUser> currentUser;
+
+    /**
+     * The owner to stamp on rows this request creates, and the filter every read applies.
+     * {@code null} means "service-owned" — which is also what a caller outside any request
+     * context (a unit test, or a worker thread) gets, deliberately: a missing context must
+     * never widen a read to someone else's rows.
+     */
+    private Long owner() {
+        try {
+            return currentUser.get().ownerUserId();
+        } catch (RuntimeException noRequestContext) {
+            return null;
+        }
+    }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Logger LOG = Logger.getLogger(RecordedRunService.class.getName());
@@ -85,7 +103,7 @@ public class RecordedRunService {
      */
     @Transactional
     public Optional<RunFetchResult> getOrCaptureGitHubRun(String project, String repo, long buildId) {
-        if (RecordedPipelineRun.findByBuildId("github", project, repo, buildId) != null) {
+        if (RecordedPipelineRun.findByBuildId("github", project, repo, buildId, owner()) != null) {
             Optional<ReleaseData> data = getRecordedRunData("github", project, repo, buildId);
             Optional<RunChangeContext> context = getRecordedRunContext("github", project, repo, buildId);
             if (data.isPresent() && context.isPresent()) {
@@ -117,7 +135,7 @@ public class RecordedRunService {
             throw new IllegalStateException("Failed to serialize run data: " + e.getMessage(), e);
         }
 
-        RecordedPipelineRun existing = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun existing = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (existing != null) {
             existing.version = version;
             existing.stage = stage;
@@ -131,6 +149,7 @@ public class RecordedRunService {
         }
 
         RecordedPipelineRun run = new RecordedPipelineRun();
+        run.ownerUserId = owner();
         run.provider = provider;
         run.project = project;
         run.repo = repo;
@@ -148,7 +167,7 @@ public class RecordedRunService {
     }
 
     public Optional<ReleaseData> getRecordedRunData(String provider, String project, String repo, Long buildId) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null || run.changeItems == null) {
             return Optional.empty();
         }
@@ -170,7 +189,7 @@ public class RecordedRunService {
     }
 
     public Optional<RunChangeContext> getRecordedRunContext(String provider, String project, String repo, Long buildId) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null || run.runMetadata == null) {
             return Optional.empty();
         }
@@ -183,8 +202,10 @@ public class RecordedRunService {
     }
 
     public List<RecordedPipelineRun> listRecordedRuns(String provider, String project, String repo) {
-        return RecordedPipelineRun.find("provider = ?1 and project = ?2 and repo = ?3 order by createdAt desc",
-                provider, project, repo).list();
+        return RecordedPipelineRun.find("provider = ?1 and project = ?2 and repo = ?3"
+                        + " and (ownerUserId = ?4 or ownerUserId is null)"
+                        + " order by case when ownerUserId = ?4 then 0 else 1 end, createdAt desc",
+                provider, project, repo, owner()).list();
     }
 
     /** Recorded runs that carry at least one saved per-audience draft — the Save action's artifact.
@@ -192,8 +213,10 @@ public class RecordedRunService {
      * version. Checks the new per-audience {@code recorded_run_draft} table. */
     public List<RecordedPipelineRun> listDraftRuns(String provider, String project, String repo) {
         List<RecordedPipelineRun> runs = RecordedPipelineRun.find(
-                "provider = ?1 and project = ?2 and repo = ?3 order by createdAt desc",
-                provider, project, repo).list();
+                "provider = ?1 and project = ?2 and repo = ?3"
+                        + " and (ownerUserId = ?4 or ownerUserId is null)"
+                        + " order by case when ownerUserId = ?4 then 0 else 1 end, createdAt desc",
+                provider, project, repo, owner()).list();
         return runs.stream()
                 .filter(r -> RecordedRunDraft.findAllByRun(r.id).stream()
                         .anyMatch(d -> d.draftText != null && !d.draftText.isBlank()))
@@ -245,7 +268,7 @@ public class RecordedRunService {
     public void saveAiDraft(String provider, String project, String repo, Long buildId,
             String audience, String source, String editedBy, String model, String text,
             Integer tokens, Integer durationMs) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to save a draft against.");
@@ -286,7 +309,7 @@ public class RecordedRunService {
     /** Every draft revision for a specific audience on a run — stored history first, then the
      * current text as the last entry — ordered ascending by sequence. */
     public List<DraftRevision> listDraftRevisions(String provider, String project, String repo, Long buildId) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to show a draft history for.");
@@ -309,7 +332,7 @@ public class RecordedRunService {
      * into history and {@code target} becomes the live draft. Returns the restored text. */
     @Transactional
     public String restoreAiDraftRevision(String provider, String project, String repo, Long buildId, Long sequence) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) {
             throw new AiException("No recorded pipeline run for build " + buildId
                     + " on " + project + "/" + repo + " — nothing to restore a draft revision for.");
@@ -325,7 +348,7 @@ public class RecordedRunService {
 
     /** The saved AI draft for a recorded run and specific audience, if any. */
     public Optional<RecordedRunDraft> getAiDraft(String provider, String project, String repo, Long buildId, String audience) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) return Optional.empty();
         RecordedRunDraft draft = RecordedRunDraft.findByRunAndAudience(run.id, audience);
         return draft != null && draft.draftText != null && !draft.draftText.isBlank()
@@ -335,7 +358,7 @@ public class RecordedRunService {
 
     /** Legacy single-audience getter for backward compat with {@link PipelineRunResource#getAiDraft}. */
     public Optional<RecordedPipelineRun> getAiDraft(String provider, String project, String repo, Long buildId) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) return Optional.empty();
         // Check new per-audience table first
         List<RecordedRunDraft> drafts = RecordedRunDraft.findAllByRun(run.id);
@@ -356,7 +379,7 @@ public class RecordedRunService {
      */
     @Transactional
     public void applyPushedVersion(String provider, String project, String repo, Long buildId, String version) {
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(provider, project, repo, buildId, owner());
         if (run == null) {
             return;
         }

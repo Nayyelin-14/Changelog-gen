@@ -122,6 +122,9 @@ public class GitHubResource {
     @Inject
     CurrentUser currentUser;
 
+    @Inject
+    AccessGuard accessGuard;
+
     // --- navigation ---
 
     @GET
@@ -460,7 +463,7 @@ public class GitHubResource {
                 entry.setSource(dbEntry != null ? dbEntry.currentSource : "changelog");
                 entries.add(entry);
             } else {
-                RawRelease raw = RawRelease.findEntry(project, repo, version);
+                RawRelease raw = RawRelease.findEntry(project, repo, version, currentUser.ownerUserId());
                 String entryBranch = raw != null && raw.branch != null ? raw.branch : resolvedBranch;
                 List<String> authors = rawReleaseService.findItems(project, repo, version).stream()
                         .map(ChangeItem::getAuthor)
@@ -696,16 +699,32 @@ public class GitHubResource {
                     result.getUsage() != null ? List.of(result.getUsage()) : List.of(), durationMs, wasCached);
         }
 
+        // Sequential: business depends on qa, qa depends on developer (see ensureAudience).
+        // Share one `computed` map across all three so qa/business's own internal dependency
+        // lookups reuse developer/qa's result in-memory instead of recomputing them.
+        // effectiveCommit, not a hardcoded true: this branch used to persist all three audiences
+        // even when the caller asked for a preview (commit=false), silently writing generated
+        // changelog rows the user had not confirmed. The single-audience branch above has always
+        // honoured the flag — this one must too.
+        // force, not a hardcoded false: "Regenerate" for all audiences used to serve the cached
+        // text straight back instead of calling the AI again, so the button did nothing visible.
+        // Mirrors the single-audience branch, which has always passed `force` through.
+        // Computed before generating: once ensureAudience has written its rows (effectiveCommit)
+        // a post-hoc cache probe would find them and report a cache hit that never happened.
+        boolean wasCached = !force && version != null && !version.isBlank()
+                && cacheService.getCurrent(project, repo, version, "developer", inputHash).isPresent()
+                && cacheService.getCurrent(project, repo, version, "qa", inputHash).isPresent()
+                && cacheService.getCurrent(project, repo, version, "business", inputHash).isPresent();
         Map<String, AiResult> computed = new HashMap<>();
-        AiResult developerResult = generationService.ensureAudience(project, repo, version, provider, "developer", model, true, data, inputHash, false, true, computed);
-        AiResult qaResult = generationService.ensureAudience(project, repo, version, provider, "qa", model, true, data, inputHash, false, true, computed);
-        AiResult businessResult = generationService.ensureAudience(project, repo, version, provider, "business", model, true, data, inputHash, false, true, computed);
+        AiResult developerResult = generationService.ensureAudience(project, repo, version, provider, "developer", model, true, data, inputHash, force, effectiveCommit, computed);
+        AiResult qaResult = generationService.ensureAudience(project, repo, version, provider, "qa", model, true, data, inputHash, force, effectiveCommit, computed);
+        AiResult businessResult = generationService.ensureAudience(project, repo, version, provider, "business", model, true, data, inputHash, force, effectiveCommit, computed);
         long durationMs = System.currentTimeMillis() - start;
         List<AiUsage> usage = Stream.of(developerResult, qaResult, businessResult)
                 .map(AiResult::getUsage)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
-        return new GenerateResponse(developerResult.getText(), qaResult.getText(), businessResult.getText(), usage, durationMs, false);
+        return new GenerateResponse(developerResult.getText(), qaResult.getText(), businessResult.getText(), usage, durationMs, wasCached);
     }
 
     @POST
@@ -858,7 +877,7 @@ public class GitHubResource {
             throw new AiException("A version or a pipeline build ID is required.");
         }
         List<ChangelogRevisionDto> revisions = List.of();
-        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
+        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version, currentUser.ownerUserId());
         if (cv != null) {
             revisions = ChangelogRevision.findByVersionAndAudience(cv.id, audience).stream()
                     .map(r -> new ChangelogRevisionDto(r.sequence, r.source, r.model, r.tokens, r.durationMs,
@@ -980,9 +999,11 @@ public class GitHubResource {
         if (version == null || version.isBlank()) {
             throw new AiException("A version is required.");
         }
+        // Ownership is decided before any work: a caller who is not the owner gets 403, not a
+        // confusing "nothing to restore" derived from somebody else's data.
+        ChangelogVersion cv = accessGuard.requireVersion(project, repo, version);
         String restored = cacheService.restorePrevious(project, repo, version, audience)
                 .orElseThrow(() -> new AiException("Nothing to restore for v" + version + " (" + audience + ")."));
-        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
         if (cv != null) {
             changelogService.createSnapshot(cv.id, audience, restored, "restore", null, null, null, null);
         }
@@ -1004,9 +1025,11 @@ public class GitHubResource {
         if (version == null || version.isBlank()) {
             throw new AiException("A version is required.");
         }
+        // Ownership is decided before any work: a caller who is not the owner gets 403, not a
+        // confusing "nothing has been pushed" derived from somebody else's data.
+        ChangelogVersion cv = accessGuard.requireVersion(project, repo, version);
         String restored = cacheService.restoreToPushed(project, repo, version, audience)
                 .orElseThrow(() -> new AiException("Nothing has been pushed yet for v" + version + "."));
-        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
         if (cv != null) {
             changelogService.createSnapshot(cv.id, audience, restored, "restore", null, null, null, null);
         }
@@ -1037,7 +1060,7 @@ public class GitHubResource {
             draftResponse.put("text", restored);
             return draftResponse;
         }
-        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
+        ChangelogVersion cv = accessGuard.requireVersion(project, repo, version);
         var target = cv != null ? ChangelogRevision.findBySequence(cv.id, audience, sequence) : null;
         if (target == null) {
             throw new AiException("Revision #" + sequence + " not found for v" + version + " (" + audience + ").");
@@ -1170,7 +1193,7 @@ public class GitHubResource {
         if (version == null || version.isBlank()) {
             throw new AiException("A version is required to delete a changelog revision.");
         }
-        ChangelogVersion cv = ChangelogVersion.findEntry(project, repo, version);
+        ChangelogVersion cv = accessGuard.requireVersion(project, repo, version);
         if (cv == null) {
             throw new AiException("Version not found.");
         }

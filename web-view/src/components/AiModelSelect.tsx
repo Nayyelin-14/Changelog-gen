@@ -18,6 +18,8 @@ interface AiModelSelectProps {
   onChange: (value: string | undefined) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Human-readable provider name for the unavailable/misconfigured error message. */
+  providerLabel?: string;
   className?: string;
   triggerClassName?: string;
 }
@@ -38,6 +40,7 @@ export function AiModelSelect({
   onChange,
   disabled = false,
   placeholder = "Select model…",
+  providerLabel,
   className,
   triggerClassName,
 }: AiModelSelectProps) {
@@ -52,8 +55,16 @@ export function AiModelSelect({
 
   if (status === "error" && models.length === 0) {
     return (
-      <div className={cn("flex items-center gap-1.5", className)}>
-        <span className="text-xs text-destructive">Failed to load models</span>
+      <div className={cn("flex flex-col gap-0.5", className)}>
+        <span className="text-xs text-destructive">
+          {providerLabel
+            ? `Models unavailable for ${providerLabel}`
+            : "Models unavailable"}
+        </span>
+        <span className="text-[11px] text-muted-foreground/70">
+          The provider didn&apos;t respond or isn&apos;t configured. Fix its API key/URL in
+          server config, then reload. Generation is disabled until models load.
+        </span>
       </div>
     );
   }
@@ -61,7 +72,9 @@ export function AiModelSelect({
   if (models.length === 0) {
     return (
       <div className={cn("flex items-center gap-1.5", className)}>
-        <span className="text-xs text-muted-foreground/50">No models available</span>
+        <span className="text-xs text-muted-foreground/50">
+          {providerLabel ? `No models available for ${providerLabel}` : "No models available"}
+        </span>
       </div>
     );
   }

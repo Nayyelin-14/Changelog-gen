@@ -30,6 +30,9 @@ public class PipelineRunResource {
     RecordedRunService recordedRunService;
 
     @Inject
+    com.hubsabai.changelog.auth.CurrentUser currentUser;
+
+    @Inject
     AzureDevOpsOrgConnector azureConnector;
 
     @Inject
@@ -84,7 +87,7 @@ public class PipelineRunResource {
             return null;
         }
         String effectiveProvider = provider != null ? provider : "azure";
-        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(effectiveProvider, project, repo, runId);
+        RecordedPipelineRun run = RecordedPipelineRun.findByBuildId(effectiveProvider, project, repo, runId, currentUser.ownerUserId());
         if (run == null) {
             return null;
         }

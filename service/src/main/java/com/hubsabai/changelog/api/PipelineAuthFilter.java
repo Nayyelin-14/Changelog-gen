@@ -1,6 +1,8 @@
 package com.hubsabai.changelog.api;
 
+import com.hubsabai.changelog.auth.CurrentUser;
 import jakarta.annotation.Priority;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.Priorities;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
@@ -19,6 +21,11 @@ import java.util.Optional;
  * Gate for anything annotated {@link PipelineAuth} — one key per calling project rather than one
  * shared secret, so a new project is onboarded by adding an entry and one project's access is
  * revoked by removing its entry, without touching anyone else's key.
+ *
+ * <p>On success the request is marked as a <em>service</em> caller ({@link CurrentUser#markService()}):
+ * it has no user identity, so rows it writes are service-owned ({@code owner_user_id IS NULL}) and it
+ * is the only path still allowed to fall back to the shared {@code github.token}. That fallback is a
+ * deliberate, documented exception — a CI runner has no OAuth identity of its own.
  */
 @Provider
 @PipelineAuth
@@ -27,6 +34,9 @@ public class PipelineAuthFilter implements ContainerRequestFilter {
 
     @ConfigProperty(name = "pipeline.api-keys")
     Optional<String> configuredKeys;
+
+    @Inject
+    CurrentUser currentUser;
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
@@ -39,7 +49,9 @@ public class PipelineAuthFilter implements ContainerRequestFilter {
 
         if (presentedKey == null || validKeys.stream().noneMatch(key -> constantTimeEquals(key, presentedKey))) {
             requestContext.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+            return;
         }
+        currentUser.markService();
     }
 
     private static List<String> splitKeys(String raw) {

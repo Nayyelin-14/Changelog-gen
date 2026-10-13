@@ -1,17 +1,43 @@
 package com.hubsabai.changelog.api;
 
+import com.hubsabai.changelog.auth.TestSessionFixture;
 import io.quarkus.test.junit.QuarkusTest;
+import io.restassured.response.Response;
+import io.restassured.specification.RequestSpecification;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 @QuarkusTest
 class AzureDevOpsResourceTest {
 
+    /**
+     * Default-deny is the point of the security work under test: every one of these endpoints now
+     * requires a real session cookie, so each test signs in as a real user rather than stubbing
+     * auth out. A test that drops back to bare {@code given()} is asserting the wrong thing.
+     */
+    @Inject
+    TestSessionFixture sessions;
+
+    private String session;
+
+    @BeforeEach
+    void signIn() {
+        session = sessions.signIn();
+    }
+
+    private RequestSpecification authenticated() {
+        assertNotNull(session, "every test must have a session — the API is default-deny");
+        return given().cookie("cc_session", session);
+    }
+
     @Test
     void shouldListFreeAiModelsForTheDropdown() {
-        given()
+        authenticated()
                 .when().get("/api/ai/models")
                 .then()
                 .statusCode(200)
@@ -27,7 +53,7 @@ class AzureDevOpsResourceTest {
     @Test
     void aiModelsForAnUnknownProviderIsAnErrorNotFreeModels() {
         // Previously returned HTTP 200 + the 5 NVIDIA FREE_MODELS for ANY provider — the masking bug.
-        given()
+        authenticated()
                 .queryParam("provider", "does-not-exist")
                 .when().get("/api/ai/models")
                 .then()
@@ -40,7 +66,7 @@ class AzureDevOpsResourceTest {
         // NVIDIA (the default) is the only provider allowed the curated fallback when its live
         // list is unreachable — tests pin ai.base-url to a refused port, so this exercises the
         // legitimate same-provider fallback path.
-        given()
+        authenticated()
                 .queryParam("provider", "nvidia")
                 .when().get("/api/ai/models")
                 .then()
@@ -54,7 +80,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void generateRejectsAMissingVersion() {
-        given()
+        authenticated()
                 .queryParam("model", "some-model")
                 .when().post("/api/projects/proj/repos/repo/generate")
                 .then()
@@ -64,7 +90,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void generateStreamRejectsAMissingVersion() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("{\"model\":\"some-model\"}")
                 .when().post("/api/projects/proj/repos/repo/generate-stream")
@@ -77,7 +103,7 @@ class AzureDevOpsResourceTest {
     void generateStreamRejectsAMissingBodyEntirely() {
         // No body at all deserializes to null, not an empty object — must still 400 cleanly with
         // the same validation message, not 500 on a null dereference.
-        given()
+        authenticated()
                 .when().post("/api/projects/proj/repos/repo/generate-stream")
                 .then()
                 .statusCode(400)
@@ -86,7 +112,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void savingAnEditIsReflectedInChangelogMeta() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"version":"9.9.9","audience":"qa","text":"hand-edited QA notes","editedBy":"qa"}
@@ -95,7 +121,7 @@ class AzureDevOpsResourceTest {
                 .then()
                 .statusCode(200);
 
-        given()
+        authenticated()
                 .queryParam("version", "9.9.9")
                 .queryParam("audience", "qa")
                 .when().get("/api/projects/metaproj/repos/metarepo/changelog-meta")
@@ -108,7 +134,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogMetaIsAllNullWhenNothingSavedYet() {
-        given()
+        authenticated()
                 .queryParam("version", "0.0.1-never-saved")
                 .queryParam("audience", "business")
                 .when().get("/api/projects/metaproj/repos/metarepo/changelog-meta")
@@ -120,7 +146,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void generateRejectsMissingModel() {
-        given()
+        authenticated()
                 .queryParam("version", "1.0.0")
                 .when().post("/api/projects/proj/repos/repo/generate")
                 .then()
@@ -130,7 +156,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogTextRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .queryParam("version", "1.0.0")
                 .queryParam("audience", "invalid")
                 .when().get("/api/projects/proj/repos/repo/changelog-text")
@@ -141,7 +167,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogTextRejectsMissingVersion() {
-        given()
+        authenticated()
                 .queryParam("audience", "developer")
                 .when().get("/api/projects/proj/repos/repo/changelog-text")
                 .then()
@@ -151,7 +177,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogMetaRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .queryParam("version", "1.0.0")
                 .queryParam("audience", "nobody")
                 .when().get("/api/projects/proj/repos/repo/changelog-meta")
@@ -162,7 +188,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogMetaRejectsMissingVersion() {
-        given()
+        authenticated()
                 .queryParam("audience", "developer")
                 .when().get("/api/projects/proj/repos/repo/changelog-meta")
                 .then()
@@ -172,7 +198,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogPushRejectsNonDeveloperAudience() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"version":"1.0.0","branch":"main","audience":"qa"}
@@ -185,7 +211,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogPushRejectsMissingVersion() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"branch":"main","audience":"developer"}
@@ -198,7 +224,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogPushRejectsMissingBranch() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"version":"1.0.0","audience":"developer"}
@@ -211,7 +237,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogPreviewRejectsDeveloperAudience() {
-        given()
+        authenticated()
                 .queryParam("audience", "developer")
                 .when().get("/api/projects/proj/repos/repo/changelog-preview")
                 .then()
@@ -221,7 +247,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogPreviewRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .queryParam("audience", "invalid")
                 .when().get("/api/projects/proj/repos/repo/changelog-preview")
                 .then()
@@ -231,7 +257,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogChatStreamRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .queryParam("audience", "developer")
                 .queryParam("version", "1.0.0")
@@ -246,7 +272,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogChatStreamRejectsMissingVersion() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .queryParam("audience", "qa")
                 .body("""
@@ -260,7 +286,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogChatStreamRejectsBlankQuestion() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .queryParam("audience", "qa")
                 .queryParam("version", "1.0.0")
@@ -275,7 +301,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void changelogChatStreamRejectsWhenNoChangelogGeneratedYet() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .queryParam("audience", "qa")
                 .queryParam("version", "999.999.999")
@@ -290,7 +316,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void generateStreamRejectsMissingModel() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("{\"version\":\"1.0.0\"}")
                 .when().post("/api/projects/proj/repos/repo/generate-stream")
@@ -301,7 +327,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void saveEditRejectsBlankText() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"version":"1.0.0","audience":"developer","text":"  ","editedBy":"me"}
@@ -314,7 +340,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void saveEditRejectsMissingVersion() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"audience":"developer","text":"some text","editedBy":"me"}
@@ -327,7 +353,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void saveEditRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .contentType("application/json")
                 .body("""
                         {"version":"1.0.0","audience":"invalid","text":"some text","editedBy":"me"}
@@ -340,7 +366,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void restoreRejectsMissingVersion() {
-        given()
+        authenticated()
                 .queryParam("audience", "developer")
                 .when().put("/api/projects/proj/repos/repo/changelog-restore")
                 .then()
@@ -350,7 +376,7 @@ class AzureDevOpsResourceTest {
 
     @Test
     void restoreRejectsInvalidAudience() {
-        given()
+        authenticated()
                 .queryParam("version", "1.0.0")
                 .queryParam("audience", "invalid")
                 .when().put("/api/projects/proj/repos/repo/changelog-restore")

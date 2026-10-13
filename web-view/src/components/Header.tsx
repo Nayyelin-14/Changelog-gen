@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitBranch,
+  Link2,
   LogIn,
   LogOut,
   Moon,
@@ -13,11 +14,13 @@ import {
   Sun,
   Terminal,
   Trash2,
+  Unlink,
 } from 'lucide-react';
 
 import { useAuth } from '@/api/AuthContext';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Button } from '@/components/ui/button';
+import { clearQueryCache } from '@/hooks/useQuery';
 import { getStoredRole, setStoredRole, type Role } from '@/lib/role';
 import { getStoredProvider, setStoredProvider, type Provider } from '@/lib/provider';
 import { cn } from '@/lib/utils';
@@ -54,12 +57,14 @@ export function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { dark, toggle } = useTheme();
-  const { user, loading, logout, removeAccount } = useAuth();
+  const { user, loading, logout, removeAccount, disconnect, reconnect } = useAuth();
   const [provider, setProvider] = useState<Provider>(() => getStoredProvider());
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [disconnectPending, setDisconnectPending] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   async function handleSignOut() {
     setAccountMenuOpen(false);
@@ -82,6 +87,24 @@ export function Header() {
     } finally {
       setDeletePending(false);
     }
+  }
+
+  async function handleDisconnect() {
+    setDisconnectPending(true);
+    setDisconnectError(null);
+    try {
+      await disconnect();
+      setAccountMenuOpen(false);
+    } catch (e) {
+      setDisconnectError(e instanceof Error ? e.message : 'Disconnect failed. Please try again.');
+    } finally {
+      setDisconnectPending(false);
+    }
+  }
+
+  function handleReconnect() {
+    setAccountMenuOpen(false);
+    reconnect(location.pathname);
   }
 
   function goToLogin() {
@@ -108,6 +131,9 @@ export function Header() {
 function handleProviderClick(next: Provider) {
     setStoredProvider(next);
     setProvider(next);
+    // The query cache is keyed per provider, but drop it eagerly too so the very next render
+    // can't paint a frame of the previous provider's data while the new keys warm up.
+    clearQueryCache();
     navigate(location.pathname, { replace: true });
   }
 
@@ -239,7 +265,9 @@ function handleProviderClick(next: Provider) {
                       )}
                       <div className="min-w-0">
                         <p className="truncate text-xs font-semibold text-foreground">{user.login}</p>
-                        <p className="text-[10px] text-muted-foreground">Signed in with GitHub</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {user.githubConnected ? 'Signed in with GitHub' : 'Signed in · GitHub disconnected'}
+                        </p>
                       </div>
                     </div>
 
@@ -257,6 +285,42 @@ function handleProviderClick(next: Provider) {
                         </span>
                       </button>
 
+                      {user.githubConnected ? (
+                        <button
+                          type="button"
+                          onClick={handleDisconnect}
+                          disabled={disconnectPending}
+                          className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-60"
+                        >
+                          <Unlink className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <span>
+                            <span className="block text-sm font-medium text-foreground">
+                              {disconnectPending ? 'Disconnecting…' : 'Disconnect GitHub'}
+                            </span>
+                            <span className="block text-[11px] leading-snug text-muted-foreground">
+                              Removes the GitHub token. Your account, changelogs, and session stay.
+                            </span>
+                            {disconnectError && (
+                              <span className="mt-1 block text-[11px] text-destructive">{disconnectError}</span>
+                            )}
+                          </span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleReconnect}
+                          className="flex w-full cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent"
+                        >
+                          <Link2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <span>
+                            <span className="block text-sm font-medium text-foreground">Reconnect GitHub</span>
+                            <span className="block text-[11px] leading-snug text-muted-foreground">
+                              Attaches a GitHub account to this one. Your data stays where it is.
+                            </span>
+                          </span>
+                        </button>
+                      )}
+
                       <div className="border-t border-border/40 px-3 py-1">
                         <button
                           type="button"
@@ -272,7 +336,7 @@ function handleProviderClick(next: Provider) {
                               Delete account
                             </span>
                             <span className="block text-[11px] leading-snug text-muted-foreground">
-                              Removes your GitHub token and stored login.
+                              Permanently removes your account and everything you generated.
                             </span>
                           </span>
                         </button>
@@ -301,7 +365,7 @@ function handleProviderClick(next: Provider) {
         <ConfirmDialog
           open={deleteOpen}
           title="Delete your account?"
-          description="Only sign-in credentials are removed. Nothing you generated is touched."
+          description="This permanently removes your account and every changelog, revision, and release note it owns. To only remove the GitHub link, use Disconnect instead."
           confirmLabel="Delete my account"
           pendingLabel="Deleting…"
           loading={deletePending}
@@ -318,6 +382,7 @@ function handleProviderClick(next: Provider) {
                 <li>Your GitHub login and profile info in this app</li>
                 <li>The encrypted access token, and its revocation on GitHub</li>
                 <li>Your active session — you'll be signed out</li>
+                <li>Every changelog, release note, version, and revision this account owns</li>
               </ul>
             </div>
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
@@ -325,9 +390,8 @@ function handleProviderClick(next: Provider) {
                 <CheckCircle2 className="size-3.5" /> This stays untouched
               </p>
               <ul className="space-y-1 text-[11px] text-foreground/85">
-                <li>Every changelog and release note you generated</li>
-                <li>Your version history and any saved edits</li>
-                <li>Other users' accounts and data</li>
+                <li>Other users' accounts, changelogs, and revisions</li>
+                <li>Everything in your GitHub repositories — nothing is pushed or deleted there</li>
               </ul>
             </div>
           </div>

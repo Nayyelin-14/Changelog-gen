@@ -141,13 +141,13 @@ public class NimAiProvider implements AiProvider {
     @Override
     public AiResult generateForAudience(List<ChangeItem> items, ReleaseData.ReleaseMeta release,
             String audience, String modelOverride, String systemPromptOverride) {
+        List<ReleaseNoteEntry> entries = ReleaseNotePreparer.prepare(items);
         if (systemPromptOverride != null && !systemPromptOverride.isBlank()) {
             String userText = buildUserText(items, release);
-            return callWithFallback(modelOverride,
-                    candidate -> callModel(candidate, audience, systemPromptOverride, userText), audience);
+            return guard(callWithFallback(modelOverride,
+                    candidate -> callModel(candidate, audience, systemPromptOverride, userText), audience), entries);
         }
 
-        List<ReleaseNoteEntry> entries = ReleaseNotePreparer.prepare(items);
         PromptRequest prompt = PromptComposer.compose(
                 release.getProject(), getVersion(release), entries, audience);
 
@@ -160,8 +160,27 @@ public class NimAiProvider implements AiProvider {
                 + " | audience: " + audience
                 + " | entries: " + entries.size());
 
-        return callWithFallback(modelOverride,
-                candidate -> callModel(candidate, audience, systemText, userText), audience);
+        return guard(callWithFallback(modelOverride,
+                candidate -> callModel(candidate, audience, systemText, userText), audience), entries);
+    }
+
+    /**
+     * Strips few-shot example bullets the model copied out of the prompt but that no supplied
+     * change backs — see {@link ExampleLeakGuard}. Runs on every generation path (fallback and
+     * custom-prompt included) because all of them are shown {@link PromptComposer}'s examples.
+     */
+    private static AiResult guard(AiResult result, List<ReleaseNoteEntry> entries) {
+        String cleaned = ExampleLeakGuard.stripUnsupportedExamples(result.getText(), entries);
+        if (cleaned == null || cleaned.equals(result.getText())) return result;
+        LOG.warning("Dropped " + countRemovedLines(result.getText(), cleaned)
+                + " example bullet(s) the model copied into its answer without input to support them");
+        return new AiResult(cleaned, result.getUsage(), result.getModel());
+    }
+
+    private static int countRemovedLines(String before, String after) {
+        long beforeLines = before.lines().filter(l -> !l.isBlank()).count();
+        long afterLines = after.lines().filter(l -> !l.isBlank()).count();
+        return (int) Math.max(0, beforeLines - afterLines);
     }
 
     private String overrideAudiencePrompt(String audience) {
@@ -183,6 +202,7 @@ public class NimAiProvider implements AiProvider {
      * candidates fail, the last error is thrown.
      */
     private AiResult callWithFallback(String modelOverride, Function<String, AiResult> attempt, String context) {
+        ensureRequestedModelAllowed(modelOverride);
         String activeModel = modelOverride != null ? modelOverride : model;
         List<String> chain = new ArrayList<>();
         chain.add(activeModel);
@@ -270,13 +290,32 @@ public class NimAiProvider implements AiProvider {
         }, "chat");
     }
 
+    /**
+     * Server-side model check for every client-supplied model: when this provider has an
+     * allow-list (either {@code ai.providers.<id>.models} or the known-default set), a model
+     * outside it is rejected before any network call. The picker's choices are a UI
+     * convenience, not an authority — the request body's provider/model pair must be validated
+     * here. No allow-list configured = provider passes the model straight through to the
+     * upstream endpoint, which rejects unknown ids itself (legacy NVIDIA behavior).
+     */
+    protected void ensureRequestedModelAllowed(String requested) {
+        if (requested == null || requested.isBlank() || allowedModels.isEmpty()) {
+            return;
+        }
+        if (!allowedModels.contains(requested)) {
+            throw new AiException("Model '" + requested + "' is not enabled for this AI provider"
+                    + " (enabled: " + String.join(", ", allowedModels) + ").");
+        }
+    }
+
     @Override
     public AiResult generateForAudienceStrict(List<ChangeItem> items, ReleaseData.ReleaseMeta release,
             String audience, String model) {
+        ensureRequestedModelAllowed(model);
         List<ReleaseNoteEntry> entries = ReleaseNotePreparer.prepare(items);
         PromptRequest prompt = PromptComposer.compose(
                 release.getProject(), getVersion(release), entries, audience);
-        return callModel(model, audience, prompt.systemPrompt(), prompt.userPrompt());
+        return guard(callModel(model, audience, prompt.systemPrompt(), prompt.userPrompt()), entries);
     }
 
     private AiResult callModel(String modelId, String audience, String systemPrompt, String userText) {

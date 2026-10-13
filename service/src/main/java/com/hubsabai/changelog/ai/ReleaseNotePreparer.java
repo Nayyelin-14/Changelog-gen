@@ -4,7 +4,10 @@ import com.hubsabai.changelog.core.model.ChangeItem;
 import com.hubsabai.changelog.core.model.PrReference;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -24,14 +27,62 @@ public final class ReleaseNotePreparer {
     private static final Set<String> PLACEHOLDER_DESCRIPTIONS = Set.of("asdf", "tmp", "wip", "test", "n/a");
     private static final Pattern REPEATED_PUNCTUATION = Pattern.compile("^[.\\-?_!]{3,}$");
 
+    /** Duplicate collapse is a strong claim, so it demands strong evidence. Normalized titles
+     *  shorter than this are never used as a dedup key — two commits both titled "fix" are far
+     *  more likely to be two different fixes than the same one. */
+    private static final int MIN_DEDUP_TITLE_CHARS = 5;
+
     private ReleaseNotePreparer() {}
 
+    /**
+     * Maps {@link ChangeItem}s to prompt-ready {@link ReleaseNoteEntry}s, collapsing exact
+     * duplicates on the way.
+     *
+     * <p>Rebased/cherry-picked history really does contain the same change twice under two
+     * different SHAs — {@code git} keeps both, so the compare range hands us both, and the model
+     * faithfully writes two identical bullets. The collapse below is deliberately narrow: it only
+     * fires when title, description, author <em>and</em> the non-empty touched-file set all match,
+     * i.e. when nothing available to us distinguishes the two records. Anything else (different
+     * files, different wording, different author, missing file data) is treated as a genuinely
+     * distinct change and is kept, in its original position.
+     */
     public static List<ReleaseNoteEntry> prepare(List<ChangeItem> items) {
         List<ReleaseNoteEntry> entries = new ArrayList<>(items.size());
+        Set<String> seen = new HashSet<>();
         for (ChangeItem item : items) {
+            String key = duplicateKey(item);
+            if (key != null && !seen.add(key)) continue;
             entries.add(toEntry(item));
         }
         return entries;
+    }
+
+    /** Identity of a change for duplicate detection, or {@code null} when the item carries too
+     *  little information to be collapsed safely. */
+    private static String duplicateKey(ChangeItem item) {
+        if (item == null) return null;
+        String title = normalizeForDedup(item.getTitle());
+        if (title.length() < MIN_DEDUP_TITLE_CHARS) return null;
+        List<String> files = item.getFilePaths();
+        // File data is the strongest signal we have that two records describe the same work.
+        // Without it (several connectors leave it empty) two identically-titled commits could
+        // still be genuinely different — so we refuse to guess.
+        if (files == null || files.isEmpty()) return null;
+        List<String> sortedFiles = new ArrayList<>();
+        for (String file : files) {
+            if (file != null && !file.isBlank()) sortedFiles.add(file.strip());
+        }
+        if (sortedFiles.isEmpty()) return null;
+        Collections.sort(sortedFiles);
+        return title
+                + '\u0000' + normalizeForDedup(item.getDescription())
+                + '\u0000' + normalizeForDedup(item.getAuthor())
+                + '\u0000' + String.join(",", sortedFiles);
+    }
+
+    private static String normalizeForDedup(String raw) {
+        if (raw == null) return "";
+        return raw.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
     }
 
     static ReleaseNoteEntry toEntry(ChangeItem item) {

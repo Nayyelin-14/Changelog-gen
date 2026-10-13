@@ -28,6 +28,7 @@ import java.util.concurrent.Future;
  * Uses generateForAudienceStrict so a model's failures can't be masked by the provider's
  * automatic fallback to the configured default.
  */
+@PipelineAuth
 @Path("/ai/models/bench")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)

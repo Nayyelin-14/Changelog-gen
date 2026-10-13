@@ -68,7 +68,9 @@ public class SessionService {
             session.delete();
             return Optional.empty();
         }
-        return Optional.of(new ResolvedSession(user, crypto.decrypt(user.accessToken)));
+        // A disconnected account keeps its sessions (so the user stays signed in) but has no token.
+        String accessToken = user.accessToken == null ? null : crypto.decrypt(user.accessToken);
+        return Optional.of(new ResolvedSession(user, accessToken));
     }
 
     /** Best-effort sliding expiry — a bulk update so the request thread isn't held open flushing. */

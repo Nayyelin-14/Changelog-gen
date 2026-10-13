@@ -12,19 +12,24 @@ import jakarta.persistence.UniqueConstraint;
 import java.time.OffsetDateTime;
 
 /**
- * A user who signed in via GitHub OAuth. {@code accessToken}/{@code refreshToken} are the
- * encrypted-at-rest OAuth tokens (AES-GCM keyed from {@code auth.session-secret}) — the only
- * credential this service holds for a user. Password and email never reach this table. Deleting
- * the row erases the user's credentials and cascades to {@link AuthSession}; generated changelogs
- * live in unrelated tables and are deliberately untouched.
+ * A user who signed in via GitHub OAuth. One row == one application account; its {@link #id} is the
+ * internal, immutable ownership key every changelog row points at. {@code accessToken}/
+ * {@code refreshToken} are the encrypted-at-rest OAuth tokens (AES-GCM keyed from
+ * {@code auth.session-secret}) — the only credential this service holds for a user. Password and
+ * email never reach this table.
+ *
+ * <p>{@code github_id} is the sole identity key, because it is the one GitHub identifier that
+ * survives a username change. {@code login} is a display snapshot only and deliberately carries
+ * <b>no</b> unique constraint: GitHub usernames are mutable and can later be claimed by a different
+ * person, so anything keyed on them could hand that person the original user's changelogs.
+ *
+ * <p>{@code access_token} is nullable because "disconnect GitHub" revokes and clears the token
+ * while keeping the account (and therefore the ownership target of the user's data).
  */
 @Entity
 @Table(
     name = "github_user",
-    uniqueConstraints = {
-        @UniqueConstraint(name = "uq_github_user_github_id", columnNames = "github_id"),
-        @UniqueConstraint(name = "uq_github_user_login", columnNames = "login")
-    })
+    uniqueConstraints = @UniqueConstraint(name = "uq_github_user_github_id", columnNames = "github_id"))
 public class GithubUser extends PanacheEntityBase {
 
     @Id
@@ -41,7 +46,8 @@ public class GithubUser extends PanacheEntityBase {
     @Column(name = "avatar_url")
     public String avatarUrl;
 
-    @Column(name = "access_token", nullable = false)
+    /** Null once the user has disconnected GitHub. */
+    @Column(name = "access_token")
     public byte[] accessToken;
 
     @Column(name = "refresh_token")
@@ -58,9 +64,5 @@ public class GithubUser extends PanacheEntityBase {
 
     public static GithubUser findByGithubId(Long githubId) {
         return find("githubId", githubId).firstResult();
-    }
-
-    public static GithubUser findByLogin(String login) {
-        return find("login", login).firstResult();
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hubsabai.changelog.core.model.ChangeItem;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
@@ -19,6 +20,23 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class ChangelogService {
 
+    @Inject
+    Instance<com.hubsabai.changelog.auth.CurrentUser> currentUser;
+
+    /**
+     * The owner to stamp on rows this request creates, and the filter every read applies.
+     * {@code null} means "service-owned" — which is also what a caller outside any request
+     * context (a unit test, or a worker thread) gets, deliberately: a missing context must
+     * never widen a read to someone else's rows.
+     */
+    private Long owner() {
+        try {
+            return currentUser.get().ownerUserId();
+        } catch (RuntimeException noRequestContext) {
+            return null;
+        }
+    }
+
     private static final Logger LOG = Logger.getLogger(ChangelogService.class.getName());
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -31,7 +49,7 @@ public class ChangelogService {
     public ChangelogVersion getOrCreateVersion(String project, String repo, String version,
                                                  Integer buildId, String buildNumber,
                                                  String pipelineRunNumber, String stage, String branch) {
-        ChangelogVersion existing = ChangelogVersion.findEntry(project, repo, version);
+        ChangelogVersion existing = ChangelogVersion.findEntry(project, repo, version, owner());
         if (existing != null) {
             if (buildId != null) existing.buildId = buildId;
             if (buildNumber != null) existing.buildNumber = buildNumber;
@@ -42,6 +60,7 @@ public class ChangelogService {
             return existing;
         }
         ChangelogVersion v = new ChangelogVersion();
+        v.ownerUserId = owner();
         v.project = project;
         v.repo = repo;
         v.version = version;
@@ -83,6 +102,7 @@ public class ChangelogService {
                                           String text, String source, String model,
                                           Integer tokens, Integer durationMs, String editedBy) {
         ChangelogRevision r = new ChangelogRevision();
+        r.ownerUserId = owner();
         r.version = ChangelogVersion.findById(versionId);
         r.audience = audience;
         r.sequence = sequence;
@@ -171,7 +191,7 @@ public class ChangelogService {
      * a row that no longer exists in the revision log. */
     private void syncCurrentAfterDelete(long versionId, String audience, String project, String repo, String version) {
         ChangelogRevision latest = ChangelogRevision.latest(versionId, audience);
-        GeneratedChangelog entry = GeneratedChangelog.findEntry(project, repo, version, audience);
+        GeneratedChangelog entry = GeneratedChangelog.findEntry(project, repo, version, audience, owner());
         if (entry == null) return;
         if (latest != null) {
             entry.currentText = latest.text;
@@ -225,8 +245,9 @@ public class ChangelogService {
     public List<ChangelogVersion> listVersions(String project, String repo, int page, int limit) {
         List<ChangelogVersion> all = ChangelogVersion.find(
                 "project = ?1 and repo = ?2 and id in (select distinct r.version.id from ChangelogRevision r) "
-                        + "order by createdAt desc",
-                project, repo).list();
+                        + " and (ownerUserId = ?3 or ownerUserId is null)"
+                        + " order by case when ownerUserId = ?3 then 0 else 1 end, createdAt desc",
+                project, repo, owner()).list();
         int from = page * limit;
         if (from >= all.size()) return List.of();
         int to = Math.min(from + limit, all.size());
@@ -234,7 +255,7 @@ public class ChangelogService {
     }
 
     public long countVersions(String project, String repo) {
-        return ChangelogVersion.countByRepo(project, repo);
+        return ChangelogVersion.countByRepo(project, repo, owner());
     }
 
     // Used by changelog-meta endpoint to return what we know about a version+audience.
@@ -268,7 +289,7 @@ public class ChangelogService {
     // ----- Raw items (pipeline data) -----
 
     public List<ChangeItem> findItems(String project, String repo, String version) {
-        ChangelogVersion v = ChangelogVersion.findEntry(project, repo, version);
+        ChangelogVersion v = ChangelogVersion.findEntry(project, repo, version, owner());
         if (v == null || v.rawItems == null || v.rawItems.isBlank()) return List.of();
         try {
             return MAPPER.readValue(v.rawItems, new TypeReference<List<ChangeItem>>() {});
@@ -302,7 +323,7 @@ public class ChangelogService {
 
     @Transactional
     public void upsertReleasePr(String project, String repo, int prId, String version, String stage) {
-        ReleasePr existing = ReleasePr.findEntry(project, repo, prId);
+        ReleasePr existing = ReleasePr.findEntry(project, repo, prId, owner());
         if (existing != null) {
             if ("release".equals(stage)) {
                 existing.version = version;
@@ -313,6 +334,7 @@ public class ChangelogService {
             return;
         }
         ReleasePr rp = new ReleasePr();
+        rp.ownerUserId = owner();
         rp.project = project;
         rp.repo = repo;
         rp.prId = prId;
@@ -323,7 +345,7 @@ public class ChangelogService {
     }
 
     public Optional<ReleasePr> findReleasePr(String project, String repo, int prId) {
-        return Optional.ofNullable(ReleasePr.findEntry(project, repo, prId));
+        return Optional.ofNullable(ReleasePr.findEntry(project, repo, prId, owner()));
     }
 
     // ----- Push tracking -----

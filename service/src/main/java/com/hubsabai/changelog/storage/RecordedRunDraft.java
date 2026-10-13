@@ -32,6 +32,15 @@ public class RecordedRunDraft extends PanacheEntityBase {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
 
+    /**
+     * The internal app user who owns this row ({@code github_user.id}), or {@code null} when the
+     * row belongs to the service/CI rather than to any one person. This is the ownership key:
+     * never the GitHub login (mutable, and can be recycled by someone else) and never the GitHub
+     * numeric id (an identifier this app does not control).
+     */
+    @Column(name = "owner_user_id")
+    public Long ownerUserId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "run_id", nullable = false)
     public RecordedPipelineRun run;

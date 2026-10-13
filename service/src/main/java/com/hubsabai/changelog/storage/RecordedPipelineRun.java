@@ -15,7 +15,7 @@ import java.time.OffsetDateTime;
     name = "recorded_pipeline_run",
     uniqueConstraints = @UniqueConstraint(
         name = "uq_recorded_pipeline_run",
-        columnNames = {"provider", "project", "repo", "build_id"}
+        columnNames = {"owner_user_id", "provider", "project", "repo", "build_id"}
     )
 )
 public class RecordedPipelineRun extends PanacheEntityBase {
@@ -23,6 +23,15 @@ public class RecordedPipelineRun extends PanacheEntityBase {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     public Long id;
+
+    /**
+     * The internal app user who owns this row ({@code github_user.id}), or {@code null} when the
+     * row belongs to the service/CI rather than to any one person. This is the ownership key:
+     * never the GitHub login (mutable, and can be recycled by someone else) and never the GitHub
+     * numeric id (an identifier this app does not control).
+     */
+    @Column(name = "owner_user_id")
+    public Long ownerUserId;
 
     public String provider;
 
@@ -89,14 +98,16 @@ public class RecordedPipelineRun extends PanacheEntityBase {
     @Column(name = "updated_at")
     public OffsetDateTime updatedAt;
 
-    public static RecordedPipelineRun findByBuildId(String provider, String project, String repo, Long buildId) {
-        return find("provider = ?1 and project = ?2 and repo = ?3 and buildId = ?4",
-                provider, project, repo, buildId).firstResult();
+    public static RecordedPipelineRun findByBuildId(String provider, String project, String repo, Long buildId, Long ownerUserId) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and buildId = ?4"
+                        + String.format(ChangelogVersion.OWNER_VISIBLE + ChangelogVersion.OWNER_FIRST, 5, 5),
+                provider, project, repo, buildId, ownerUserId).firstResult();
     }
 
-    public static RecordedPipelineRun findByVersion(String provider, String project, String repo, String version) {
-        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4 order by createdAt desc",
-                provider, project, repo, version).firstResult();
+    public static RecordedPipelineRun findByVersion(String provider, String project, String repo, String version, Long ownerUserId) {
+        return find("provider = ?1 and project = ?2 and repo = ?3 and version = ?4"
+                        + String.format(ChangelogVersion.OWNER_VISIBLE + ChangelogVersion.OWNER_FIRST, 5, 5) + ", createdAt desc",
+                provider, project, repo, version, ownerUserId).firstResult();
     }
 
     /** A short identity label for this run, for list views: the triggering commit's first line

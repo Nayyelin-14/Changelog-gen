@@ -134,10 +134,14 @@ class GitHubAuthResourceTest {
                 .then()
                 .statusCode(200)
                 .body("login", equalTo("octocat"))
-                .body("id", equalTo(12345));
+                // The internal id is the ownership key the UI must use; the GitHub id is exposed
+                // separately and must never be what data is keyed on.
+                .body("githubId", equalTo(12345))
+                .body("id", org.hamcrest.Matchers.notNullValue())
+                .body("githubConnected", equalTo(true));
 
         assertEquals(1, GithubUser.count());
-        GithubUser saved = GithubUser.findByLogin("octocat");
+        GithubUser saved = GithubUser.findByGithubId(12345L);
         assertNotNull(saved);
         assertEquals(String.valueOf(12345), String.valueOf(saved.githubId));
 
@@ -190,6 +194,92 @@ class GitHubAuthResourceTest {
                 .then().statusCode(200).body("login", equalTo("octocat"));
     }
 
+    // --- disconnect vs delete ---
+
+    @Test
+    void disconnectRevokesAndClearsTheTokenButKeepsTheAccountAndSessions() {
+        String session = loginRoundTrip();
+        WireMockGitHubAuthResource.server().stubFor(delete(urlPathEqualTo("/applications/" + clientId + "/token"))
+                .withQueryParam("access_token", WireMock.equalTo(ACCESS_TOKEN))
+                .willReturn(aResponse().withStatus(204)));
+
+        given().cookie("cc_session", session).when().post("/api/auth/github/disconnect")
+                .then().statusCode(204);
+
+        WireMockGitHubAuthResource.server().verify(
+                deleteRequestedFor(urlPathEqualTo("/applications/" + clientId + "/token")));
+
+        // Still signed in — disconnecting GitHub must not throw the user out of their own work.
+        given().cookie("cc_session", session).when().get("/api/auth/me")
+                .then().statusCode(200).body("githubConnected", equalTo(false));
+
+        assertEquals(1, GithubUser.count(), "the account survives a disconnect");
+        assertEquals(1, AuthSession.count(), "and so does the session");
+        GithubUser saved = GithubUser.findByGithubId(12345L);
+        org.junit.jupiter.api.Assertions.assertNull(saved.accessToken, "the token is erased at rest");
+        org.junit.jupiter.api.Assertions.assertNull(saved.refreshToken);
+    }
+
+    @Test
+    void signingInAgainAfterADisconnectReattachesToTheSameAccount() {
+        String firstSession = loginRoundTrip();
+        given().cookie("cc_session", firstSession).when().post("/api/auth/github/disconnect")
+                .then().statusCode(204);
+
+        // The whole point of keeping the row: the same GitHub identity must land on the same app
+        // account, with none of its history orphaned under a dead id.
+        String secondSession = loginRoundTrip();
+
+        given().cookie("cc_session", secondSession).when().get("/api/auth/me")
+                .then().statusCode(200).body("githubConnected", equalTo(true));
+        assertEquals(1, GithubUser.count(), "reconnecting must not mint a second account");
+    }
+
+    @Test
+    void connectModeAttachesANewGithubIdentityToTheAccountAlreadySignedIn() {
+        String session = loginRoundTrip();
+
+        stubTokenExchange("gho_second_account");
+        stubFetchUser(999L, "new-identity");
+        String nonce = given().queryParam("next", "/dev").queryParam("mode", "connect")
+                .cookie("cc_session", session).when().get("/api/auth/github/authorize").cookie("cc_oauth");
+
+        given().cookie("cc_oauth", nonce).cookie("cc_session", session)
+                .queryParam("code", "code-connect")
+                .queryParam("state", nonce + ":/dev:connect")
+                .when().get("/api/auth/github/callback")
+                .then().statusCode(302);
+
+        // Same app account (same internal id), new GitHub identity on it.
+        assertEquals(1, GithubUser.count(), "connect must never create a second account");
+        given().cookie("cc_session", session).when().get("/api/auth/me")
+                .then().statusCode(200)
+                .body("login", equalTo("new-identity"))
+                .body("githubId", equalTo(999));
+    }
+
+    @Test
+    void connectModeRefusesAnIdentityAlreadyBelongingToAnotherAccount() {
+        // Account A (githubId 12345) and account B (githubId 555) both exist here.
+        loginRoundTrip(555L, "account-b");
+        String attackerSession = loginRoundTrip(12345L, "octocat");
+
+        // The attacker tries to attach B's GitHub identity to their own app account.
+        stubTokenExchange(ACCESS_TOKEN);
+        stubFetchUser(555L, "account-b");
+        String nonce = given().queryParam("next", "/dev").queryParam("mode", "connect")
+                .cookie("cc_session", attackerSession).when().get("/api/auth/github/authorize").cookie("cc_oauth");
+
+        given().cookie("cc_oauth", nonce).cookie("cc_session", attackerSession)
+                .queryParam("code", "code-steal")
+                .queryParam("state", nonce + ":/dev:connect")
+                .when().get("/api/auth/github/callback")
+                .then().statusCode(302)
+                .header("Location", containsString("error=github_linked_elsewhere"));
+
+        assertEquals(2, GithubUser.count(), "the two accounts must stay separate — never merged");
+    }
+
     @Test
     void logoutClosesTheSession() {
         String session = loginRoundTrip();
@@ -221,8 +311,13 @@ class GitHubAuthResourceTest {
 
     /** Signs in as 12345/octocat via the mocked GitHub, returning the {@code cc_session} cookie. */
     private String loginRoundTrip() {
+        return loginRoundTrip(12345L, "octocat");
+    }
+
+    /** Signs in as an arbitrary GitHub identity, so a test can create a second, distinct account. */
+    private String loginRoundTrip(long githubId, String login) {
         stubTokenExchange(ACCESS_TOKEN);
-        stubFetchUser(12345L, "octocat");
+        stubFetchUser(githubId, login);
         String nonce = given().queryParam("next", "/dev").when().get("/api/auth/github/authorize")
                 .cookie("cc_oauth");
         Response callback = given().cookie("cc_oauth", nonce)

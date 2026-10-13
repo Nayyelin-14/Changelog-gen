@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { saveChangelogEdit } from "@/api/client";
+import { friendlyApiError } from "@/lib/errors";
 import { getStoredRole } from "@/lib/role";
 import type { EditableTab, GeneratedMeta } from "./useChangelogState";
 import { TAB_LABELS } from "./useChangelogState";
@@ -112,7 +113,7 @@ export function useChangelogEdit(
             : "Saved to the draft — it will be written to the repo when you Push.",
         });
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to save edit.";
+        const message = friendlyApiError(e, "Failed to save edit.");
         setEditError(message);
         toast.error(`Failed to save ${TAB_LABELS[tab]} edit`, { description: message });
       } finally {
