@@ -1,3 +1,8 @@
+## v1.0.19 — 2026-10-14 (promoted build.55)
+
+
+- fix: never advertise models a rejected API key cannot call
+
 ## v1.0.18 — 2026-10-14 (promoted build.54)
 
 - fix: stable history ids, drop Gemini, keep Groq's models selectable
