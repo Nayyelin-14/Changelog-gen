@@ -269,7 +269,7 @@ function FilePill({ path }: { path: string }) {
 /* ──────────────────────────────────────────────── */
 function WorkItemCard({ wi }: { wi: PullRequestWorkItemSummary }) {
   return (
-    <div className="rounded-lg border border-border/30 bg-muted/20 p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/30">
+    <div className="rounded-lg border border-border/40 bg-card p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/30">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex items-center gap-2">
@@ -279,9 +279,9 @@ function WorkItemCard({ wi }: { wi: PullRequestWorkItemSummary }) {
             >
               {wi.type ?? "Work item"}
             </Badge>
-            <span className="font-semibold text-foreground/80">#{wi.id}</span>
+            <span className="font-mono font-semibold text-foreground">#{wi.id}</span>
             {wi.state && (
-              <span className="text-muted-foreground/50">· {wi.state}</span>
+              <span className="text-muted-foreground">· {wi.state}</span>
             )}
           </div>
           <p className="break-words text-sm font-medium text-foreground/90">
@@ -304,7 +304,7 @@ function WorkItemCard({ wi }: { wi: PullRequestWorkItemSummary }) {
             href={wi.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
+            className="shrink-0 text-muted-foreground/40 transition-colors hover:text-foreground"
           >
             <ExternalLink className="size-3.5" />
           </a>
@@ -334,11 +334,11 @@ function SourceDataSection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg border border-border/30 bg-card/50 overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-border/40 bg-card">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
       >
         <div
           className={cn(
@@ -348,10 +348,12 @@ function SourceDataSection({
         >
           <Icon className={cn("size-3", iconColorClass)} />
         </div>
-        <span className="text-xs font-semibold text-foreground/85">
+        <span className="text-xs font-semibold text-foreground">
           {title}
         </span>
-        <span className="text-[10px] text-muted-foreground/50">{count}</span>
+        <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          {count}
+        </span>
         <ChevronRight
           className={cn(
             "ml-auto size-3 shrink-0 text-muted-foreground/40 transition-transform duration-200",
@@ -1172,44 +1174,43 @@ export function GenerateNewChangelogPage() {
             <ArrowLeft className="size-3 transition-transform group-hover:-translate-x-0.5" />
             {project} / {repo}
           </button>
-          <h1 className="mt-0.5 text-xl font-bold tracking-tight sm:text-2xl">
-            <span className="text-gradient-animate">Generate changelog</span>
+          <h1 className="mt-0.5 text-xl font-semibold tracking-tight sm:text-2xl">
+            Generate changelog
           </h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             variant="secondary"
-            className="gap-1.5 text-[10px] font-normal whitespace-nowrap"
+            className="gap-1.5 whitespace-nowrap text-[10px]"
           >
             <BookOpen className="size-2.5" />
-            {history.status === "success"
-              ? `${history.data.entries.length} saved`
-              : "—"}
+            <span className="font-mono">
+              {history.status === "success" ? history.data.entries.length : "—"}
+            </span>
+            saved
           </Badge>
           {branchParam && (
-            <Badge
-              variant="outline"
-              className="text-[10px] font-mono font-normal"
-            >
+            <Badge variant="outline" className="font-mono text-[10px]">
               {branchParam}
             </Badge>
           )}
           {buildIdParam && (
             <Badge
               variant="outline"
-              className="gap-1 text-[10px] font-mono font-normal"
-              title="Pipeline run that produced this source data"
+              className="gap-1 font-mono text-[10px]"
+              title="Pipeline run id that produced this source data"
             >
               <Hash className="size-2.5" />
-              Run {buildIdParam}
+              {buildIdParam}
             </Badge>
           )}
           {runNumber && (
             <Badge
-              variant="secondary"
-              className="gap-1 text-[10px] font-mono font-normal"
+              variant="outline"
+              className="font-mono text-[10px]"
+              title="Pipeline run number"
             >
-              Pipeline run number: #{runNumber}
+              #{runNumber}
             </Badge>
           )}
         </div>
@@ -1240,7 +1241,7 @@ export function GenerateNewChangelogPage() {
         <div className="flex flex-col gap-4">
           {/* PR Card */}
           {prDetails && (
-            <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card to-muted/20">
+            <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl border border-border/50 bg-card">
               <div className="flex items-start gap-3 p-3.5">
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-950">
                   <GitPullRequest className="size-4 text-violet-600 dark:text-violet-400" />
@@ -1293,19 +1294,18 @@ export function GenerateNewChangelogPage() {
                 <div className="flex size-5 items-center justify-center rounded-md bg-primary/10">
                   <Layers className="size-3 text-primary" />
                 </div>
-                <span className="text-xs font-semibold text-foreground/80">
+                <span className="text-xs font-semibold text-foreground">
                   Source data
                 </span>
+                {loadingCommits && (
+                  <Loader2 className="size-3 animate-spin text-muted-foreground/40" />
+                )}
                 {hasSourceData && (
-                  <span className="text-[10px] text-muted-foreground/60">
-                    —{" "}
+                  <span className="ml-auto truncate text-[10px] text-muted-foreground">
                     {prDetails
                       ? `PR #${prDetails.prId} — ${commitCount} commit${commitCount !== 1 ? "s" : ""}${workItemCount > 0 ? ` + ${workItemCount} work item${workItemCount !== 1 ? "s" : ""}` : ""}`
                       : `${rawBreakdown.commits} commit${rawBreakdown.commits !== 1 ? "s" : ""}, ${rawBreakdown.prs} PR${rawBreakdown.prs !== 1 ? "s" : ""}${rawBreakdown.workItems > 0 ? `, ${rawBreakdown.workItems} work item${rawBreakdown.workItems !== 1 ? "s" : ""}` : ""}`}
                   </span>
-                )}
-                {loadingCommits && (
-                  <Loader2 className="size-3 animate-spin text-muted-foreground/40" />
                 )}
               </div>
 
@@ -1336,10 +1336,10 @@ export function GenerateNewChangelogPage() {
                             <div
                               key={idx}
                               className={cn(
-                                "rounded-lg border border-border/30 transition-all duration-200",
+                                "rounded-lg border border-border/40 transition-all duration-200",
                                 isExpanded
-                                  ? "bg-muted/40"
-                                  : "bg-card hover:bg-muted/20",
+                                  ? "bg-muted/30"
+                                  : "bg-card hover:bg-muted/30",
                               )}
                             >
                               <button
@@ -1347,7 +1347,7 @@ export function GenerateNewChangelogPage() {
                                 onClick={() => toggleItem(idx)}
                                 className="flex w-full items-start gap-2.5 px-3 py-2 text-left"
                               >
-                                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-400/50" />
+                                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-500/60" />
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center gap-2">
                                     {item.category && (
@@ -1363,16 +1363,16 @@ export function GenerateNewChangelogPage() {
                                       </Badge>
                                     )}
                                     {item.author && (
-                                      <span className="truncate text-[10px] text-muted-foreground/50">
+                                      <span className="truncate text-[10px] text-muted-foreground">
                                         {item.author}
                                       </span>
                                     )}
                                   </div>
-                                  <p className="mt-0.5 break-words text-sm font-medium text-foreground/80">
+                                  <p className="mt-0.5 break-words text-sm font-medium text-foreground">
                                     {item.title ?? "(no message)"}
                                   </p>
                                 </div>
-                                <div className="shrink-0 text-muted-foreground/30 transition-transform duration-200">
+                                <div className="shrink-0 text-muted-foreground/40 transition-transform duration-200">
                                   <ChevronRight
                                     className={cn(
                                       "size-3.5 transition-transform duration-200",
@@ -1393,7 +1393,7 @@ export function GenerateNewChangelogPage() {
                                   <div className="space-y-2 border-t border-border/20 px-3 py-2.5">
                                     {item.description &&
                                       item.description !== item.title && (
-                                        <p className="text-xs leading-relaxed text-muted-foreground/70">
+                                        <p className="text-xs leading-relaxed text-muted-foreground">
                                           {item.description}
                                         </p>
                                       )}
@@ -1410,7 +1410,7 @@ export function GenerateNewChangelogPage() {
                                         href={item.links[0]}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
+                                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
                                       >
                                         <ExternalLink className="size-2.5" />
                                         View commit
@@ -1437,7 +1437,7 @@ export function GenerateNewChangelogPage() {
                         {prsForDisplay.map((item, i) => (
                           <div
                             key={item.id ?? i}
-                            className="rounded-lg border border-border/30 bg-card p-3 transition-all hover:border-border/60 hover:bg-muted/20"
+                            className="rounded-lg border border-border/40 bg-card p-3 transition-all hover:border-border/60 hover:bg-muted/30"
                           >
                             <div className="flex items-center gap-2">
                               <Badge
@@ -1449,11 +1449,11 @@ export function GenerateNewChangelogPage() {
                               >
                                 PR
                               </Badge>
-                              <span className="font-semibold text-foreground/80">
+                              <span className="font-mono font-semibold text-foreground">
                                 #{item.id}
                               </span>
                               {item.author && (
-                                <span className="truncate text-[11px] text-muted-foreground/60">
+                                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
                                   {item.author}
                                 </span>
                               )}
@@ -1462,18 +1462,18 @@ export function GenerateNewChangelogPage() {
                                   href={item.links[0]}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
+                                  className="shrink-0 text-muted-foreground/40 transition-colors hover:text-foreground"
                                 >
                                   <ExternalLink className="size-3" />
                                 </a>
                               )}
                             </div>
-                            <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
+                            <p className="mt-1.5 break-words text-sm font-medium text-foreground">
                               {item.title ?? "(no title)"}
                             </p>
                             {item.description &&
                               item.description !== item.title && (
-                                <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
+                                <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
                                   {stripHtml(item.description)}
                                 </p>
                               )}
@@ -1503,7 +1503,7 @@ export function GenerateNewChangelogPage() {
                           : buildWorkItems.map((wi, i) => (
                               <div
                                 key={wi.id ?? i}
-                                className="rounded-lg border border-border/30 bg-card p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/20"
+                                className="rounded-lg border border-border/40 bg-card p-3 text-xs transition-all hover:border-border/60 hover:bg-muted/30"
                               >
                                 <div className="flex items-center gap-2">
                                   <Badge
@@ -1515,7 +1515,7 @@ export function GenerateNewChangelogPage() {
                                   >
                                     Work item
                                   </Badge>
-                                  <span className="font-semibold text-foreground/80">
+                                  <span className="font-mono font-semibold text-foreground">
                                     #{wi.id}
                                   </span>
                                   {wi.links?.[0] && (
@@ -1523,17 +1523,17 @@ export function GenerateNewChangelogPage() {
                                       href={wi.links[0]}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="shrink-0 text-muted-foreground/30 transition-colors hover:text-foreground"
+                                      className="shrink-0 text-muted-foreground/40 transition-colors hover:text-foreground"
                                     >
                                       <ExternalLink className="size-3" />
                                     </a>
                                   )}
                                 </div>
-                                <p className="mt-1.5 break-words text-sm font-medium text-foreground/90">
+                                <p className="mt-1.5 break-words text-sm font-medium text-foreground">
                                   {wi.title ?? ""}
                                 </p>
                                 {wi.description && (
-                                  <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground/70">
+                                  <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
                                     {stripHtml(wi.description)}
                                   </p>
                                 )}
@@ -1541,7 +1541,7 @@ export function GenerateNewChangelogPage() {
                             ))}
                       </SourceDataSection>
                     ) : prDetails && prDetails.workItems.length === 0 ? (
-                      <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border/30 px-3 py-2 text-[10px] text-muted-foreground/50">
+                      <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border/40 px-3 py-2 text-[10px] text-muted-foreground">
                         <Layers className="size-2.5" />
                         No work items linked
                       </div>
@@ -1604,7 +1604,7 @@ export function GenerateNewChangelogPage() {
               </DialogContent>
             </Dialog>
           ) : (
-            <span className="text-[11px] text-muted-foreground/50">
+            <span className="text-xs text-muted-foreground">
               No source data yet — open this page from a pipeline run in the
               dashboard's Pipeline runs table.
             </span>
@@ -1612,7 +1612,7 @@ export function GenerateNewChangelogPage() {
 
           {/* Empty hint */}
           {status === "idle" && !hasSourceData && !loadingCommits && (
-            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/30 bg-muted/10 px-3 py-2.5 text-[11px] text-muted-foreground/60">
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/40 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
               <Layers className="size-3.5 shrink-0" />
               <span>
                 No source data loaded yet. Paste changes manually in the text
@@ -1760,7 +1760,7 @@ export function GenerateNewChangelogPage() {
                             "relative flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs transition-colors sm:px-4",
                             activeAudience === tab.key
                               ? "font-semibold text-foreground"
-                              : "text-muted-foreground/60 hover:text-foreground/80",
+                              : "text-muted-foreground hover:text-foreground",
                           )}
                         >
                           {tabLoading ? (
@@ -1770,7 +1770,7 @@ export function GenerateNewChangelogPage() {
                           )}
                           {tab.label}
                           {activeAudience === tab.key && (
-                            <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground transition-all duration-300" />
+                            <span className="absolute inset-x-0 bottom-0 h-0.5 bg-primary transition-all duration-300" />
                           )}
                         </button>
                       );

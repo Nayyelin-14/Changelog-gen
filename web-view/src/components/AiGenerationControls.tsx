@@ -89,7 +89,7 @@ export function AiGenerationControls({
   // toolbar variant — full-width responsive layout
   return (
     <div className={cn(
-      "flex flex-col gap-3 rounded-xl border border-border/40 bg-card/50 p-3 sm:flex-row sm:items-center sm:justify-between",
+      "flex flex-col gap-3 rounded-xl border border-border/50 bg-card p-3 sm:flex-row sm:items-center sm:justify-between",
       className,
     )}>
       {/* Left side: provider + model selects — aligned to same height */}
