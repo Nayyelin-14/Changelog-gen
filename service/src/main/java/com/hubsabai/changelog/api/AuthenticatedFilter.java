@@ -28,8 +28,9 @@ import java.util.Set;
  *   <li>{@code /q/**} — Quarkus health/metrics; outside the REST base path anyway, kept defensive.</li>
  * </ul>
  *
- * <p>Ownership (403) is <em>not</em> decided here — see {@code AccessGuard}. This filter only
- * answers "is anyone signed in?", so that every resource can assume a user exists.
+ * <p>Ownership (403) is <em>not</em> decided here — see {@code AccessGuard}. The only 403 this
+ * filter answers is {@code github_not_connected} below: a signed-in user without a GitHub
+ * credential cannot be allowed to fetch GitHub data as an anonymous caller.
  *
  * <p>Runs at {@link Priorities#AUTHORIZATION}, after {@link AuthSessionFilter} at
  * {@link Priorities#AUTHENTICATION} has populated {@link CurrentUser}.
@@ -54,11 +55,36 @@ public class AuthenticatedFilter implements ContainerRequestFilter {
             return;
         }
         if (currentUser.isPresent() || currentUser.isService()) {
+            denyDisconnectedGithub(requestContext, path);
             return;
         }
         requestContext.abortWith(Response.status(Response.Status.UNAUTHORIZED)
                 .type(MediaType.APPLICATION_JSON)
                 .entity(Map.of("error", "not_authenticated"))
+                .build());
+    }
+
+    /**
+     * A signed-in user who disconnected GitHub has no credential to fetch GitHub data with — and
+     * GitHub still serves <b>public</b> repositories without one, so falling through would keep the
+     * dashboard working behind a "disconnected" warning that isn't true. Answer 403 with a code the
+     * frontend turns into a reconnect screen instead of silently fetching as an anonymous caller.
+     *
+     * <p>Scoped to {@code github/} only: Azure rides the shared service PAT (unaffected by a
+     * personal disconnect), {@code /api/github/pipeline/**} authenticates with its own
+     * {@link PipelineAuth} key (and already returned above), and service callers are exempt.
+     */
+    private void denyDisconnectedGithub(ContainerRequestContext requestContext, String path) {
+        if (!path.startsWith("github/") || currentUser.isService()) {
+            return;
+        }
+        if (currentUser.accessToken().isPresent()) {
+            return;
+        }
+        requestContext.abortWith(Response.status(Response.Status.FORBIDDEN)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", "github_not_connected",
+                        "hint", "Reconnect GitHub to fetch repository data."))
                 .build());
     }
 

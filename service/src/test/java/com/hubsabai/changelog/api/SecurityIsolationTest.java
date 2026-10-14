@@ -175,6 +175,33 @@ class SecurityIsolationTest {
     }
 
     @Test
+    void disconnectingGitHubAlsoStopsTheGithubRoutesInsteadOfFetchingAnonymously() {
+        given().cookie("cc_session", alice.cookie()).when().post("/api/auth/github/disconnect")
+                .then().statusCode(204);
+
+        // GitHub still serves PUBLIC repositories to an anonymous caller, so without this the
+        // dashboard would keep working behind a "disconnected" warning that isn't true.
+        given().cookie("cc_session", alice.cookie())
+                .queryParam("project", "p").queryParam("repo", "r")
+                .when().get("/api/github/projects/p/repos/r/builds")
+                .then().statusCode(403)
+                .body("error", equalTo("github_not_connected"));
+
+        // A user who is still connected is not caught by the same gate...
+        given().cookie("cc_session", bob.cookie())
+                .queryParam("project", "p").queryParam("repo", "r")
+                .when().get("/api/github/projects/p/repos/r/builds")
+                .then().body(not(containsString("github_not_connected")));
+
+        // ...and the same account keeps working everywhere that doesn't need GitHub (Azure rides
+        // the shared service PAT, which a personal disconnect doesn't touch).
+        given().cookie("cc_session", alice.cookie())
+                .queryParam("project", "p").queryParam("repo", "r")
+                .when().get("/api/pipeline/runs")
+                .then().statusCode(200);
+    }
+
+    @Test
     void deletingTheAccountRemovesItsOwnedRowsAndLeavesTheOtherUserAlone() {
         saveRecordedRun(alice, 55L, "alice's, deleted with her");
         saveRecordedRun(bob, 55L, "bob's, untouched");

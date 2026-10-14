@@ -245,6 +245,135 @@ class GitHubOrgConnectorTest {
     }
 
     @Test
+    void shouldYieldThePullRequestAndItsRealCommitsForASquashedRun() {
+        // Regresses a real bug: the run's range is base..head with base the head's FIRST parent, so a
+        // squash-merged run compares to exactly one synthetic commit — and mergePrsInto then swapped
+        // that commit for the PR, leaving change_items with a PR and ZERO commits for the AI to work
+        // from. The PR's own commits must come with it.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/actions/runs/555001"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"id":555001,"run_number":12,"status":"completed","conclusion":"success",
+                                 "created_at":"2026-10-10T10:00:00Z","updated_at":"2026-10-10T10:05:00Z",
+                                 "run_started_at":"2026-10-10T10:00:00Z","completed_at":"2026-10-10T10:05:00Z",
+                                 "head_branch":"main","head_sha":"squashsha","event":"pull_request",
+                                 "pull_requests":[{"number":42,"head":{"ref":"feat/x","sha":"c2sha"},
+                                   "base":{"ref":"main","sha":"basexxx"}}],
+                                 "workflow_id":1,"name":"CI Pipeline",
+                                 "head_commit":{"id":"squashsha","message":"feat: squashed work",
+                                   "author":{"name":"bot","email":"bot@x"}}}""")));
+        // The squash commit: one parent, so the compare covers only this synthetic commit.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/commits/squashsha"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"sha":"squashsha",
+                                 "commit":{"author":{"name":"bot","date":"2026-10-10T10:00:00Z"},
+                                   "committer":{"name":"bot","date":"2026-10-10T10:00:00Z"},
+                                   "message":"feat: squashed work"},
+                                 "parents":[{"sha":"basexxx"}],"tree":{"sha":"treesha"},
+                                 "files":[{"filename":"src/a.ts","status":"modified","additions":5,"deletions":1}]}""")));
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/compare/basexxx...squashsha"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"status":"ahead","ahead_by":1,"behind_by":0,
+                                 "files":[{"filename":"src/a.ts","status":"modified","additions":5,"deletions":1}],
+                                 "commits":[{"sha":"squashsha",
+                                   "commit":{"author":{"name":"bot","date":"2026-10-10T10:00:00Z"},
+                                     "committer":{"name":"bot","date":"2026-10-10T10:00:00Z"},
+                                     "message":"feat: squashed work"},"html_url":"u1"}]}""")));
+        // The run's PR — its merge_commit_sha IS that synthetic commit.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/pulls/42"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"number":42,"title":"feat: squashed work","body":"The PR body",
+                                 "state":"closed","merged_at":"2026-10-10T10:05:00Z",
+                                 "created_at":"2026-10-09T09:00:00Z",
+                                 "html_url":"https://github.com/test-owner/squash-repo/pull/42",
+                                 "merge_commit_sha":"squashsha","user":{"login":"alice"},
+                                 "base":{"ref":"main"}}""")));
+        // ... and the two commits it actually contains.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/pulls/42/commits"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                [{"sha":"c1sha","html_url":"u1",
+                                  "commit":{"author":{"name":"alice","date":"2026-10-09T08:00:00Z"},
+                                    "committer":{"name":"alice","date":"2026-10-09T08:00:00Z"},
+                                    "message":"feat: first half"}},
+                                 {"sha":"c2sha","html_url":"u2",
+                                  "commit":{"author":{"name":"alice","date":"2026-10-09T08:30:00Z"},
+                                    "committer":{"name":"alice","date":"2026-10-09T08:30:00Z"},
+                                    "message":"feat: second half"}}]""")));
+        for (String sha : new String[] {"c1sha", "c2sha"}) {
+            WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/commits/" + sha))
+                    .willReturn(aResponse()
+                            .withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("""
+                                    {"sha":"%s",
+                                     "commit":{"author":{"name":"alice","date":"2026-10-09T08:00:00Z"},
+                                       "committer":{"name":"alice","date":"2026-10-09T08:00:00Z"},
+                                       "message":"%s"},
+                                     "tree":{"sha":"treesha"},
+                                     "files":[{"filename":"%s"}]}"""
+                                    .formatted(sha,
+                                            sha.equals("c1sha") ? "feat: first half" : "feat: second half",
+                                            sha.equals("c1sha") ? "src/a.ts" : "src/b.ts"))));
+        }
+        // Closed-PR lookup for the swap, plus repository listing for the default branch.
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/squash-repo/pulls"))
+                .withQueryParam("state", equalTo("closed"))
+                .withQueryParam("base", equalTo("main"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                [{"number":42,"title":"feat: squashed work","body":"The PR body",
+                                  "state":"closed","merged_at":"2026-10-10T10:05:00Z",
+                                  "created_at":"2026-10-09T09:00:00Z",
+                                  "html_url":"https://github.com/test-owner/squash-repo/pull/42",
+                                  "merge_commit_sha":"squashsha","user":{"login":"alice"},
+                                  "base":{"ref":"main"}}]""")));
+        for (String path : new String[] {"/user/repos", "/orgs/test-owner/repos", "/users/test-owner/repos"}) {
+            WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo(path))
+                    .willReturn(aResponse()
+                            .withStatus(200)
+                            .withHeader("Content-Type", "application/json")
+                            .withBody("[]")));
+        }
+
+        var result = connector.fetchRunData("test-owner", "squash-repo", 555001);
+
+        List<ChangeItem> items = result.releaseData().getItems();
+        assertEquals(3, items.size(), "the PR plus its two real commits, got: " + items);
+        assertEquals(ChangeItem.ItemType.PULL_REQUEST, items.get(0).getType());
+        assertEquals("42", items.get(0).getId());
+        assertEquals(List.of("src/a.ts"), items.get(0).getFilePaths(),
+                "the swapped-in PR keeps the file list the synthetic commit had");
+        assertEquals(ChangeItem.ItemType.COMMIT, items.get(1).getType());
+        assertEquals("c1sha", items.get(1).getId());
+        assertEquals(List.of("src/a.ts"), items.get(1).getFilePaths());
+        assertEquals(ChangeItem.ItemType.COMMIT, items.get(2).getType());
+        assertEquals("c2sha", items.get(2).getId());
+
+        RunChangeContext ctx = result.runContext();
+        assertEquals(1, ctx.getPrs().size());
+        assertEquals("42", ctx.getPrs().get(0).getId());
+        assertEquals(2, ctx.getCommits().size(), "the run context mirrors change_items");
+        assertEquals("c1sha", ctx.getCommits().get(0).getSha());
+        assertEquals("c2sha", ctx.getCommits().get(1).getSha());
+    }
+
+    @Test
     void shouldSwapMergeCommitForPullRequest() {
         // The merged PR's merge_commit_sha matches a commit in the compare payload, so the raw
         // merge commit becomes the PR's richer ChangeItem.

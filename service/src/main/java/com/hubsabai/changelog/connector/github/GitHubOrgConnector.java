@@ -594,12 +594,31 @@ public class GitHubOrgConnector {
         for (ChangeItem item : items) {
             GitHubPullRequest pr = item.getId() != null ? byMergeSha.get(item.getId()) : null;
             if (pr != null) {
-                result.add(toChangeItem(project, repo, pr));
+                result.add(inheritDiffStats(toChangeItem(project, repo, pr), item));
             } else {
                 result.add(item);
             }
         }
         return result;
+    }
+
+    /**
+     * The PR item that replaces a merge/squash commit keeps the commit's own file list and diff
+     * totals: the PR API carries no file list, so without this the swap drops exactly the file
+     * paths the prompt uses to classify scope, leaving a PR item with no evidence behind it.
+     */
+    private static ChangeItem inheritDiffStats(ChangeItem prItem, ChangeItem replacedCommit) {
+        if ((prItem.getFilePaths() == null || prItem.getFilePaths().isEmpty())
+                && replacedCommit.getFilePaths() != null) {
+            prItem.setFilePaths(replacedCommit.getFilePaths());
+        }
+        if (prItem.getAdditions() == 0 && replacedCommit.getAdditions() > 0) {
+            prItem.setAdditions(replacedCommit.getAdditions());
+        }
+        if (prItem.getDeletions() == 0 && replacedCommit.getDeletions() > 0) {
+            prItem.setDeletions(replacedCommit.getDeletions());
+        }
+        return prItem;
     }
 
     private List<GitHubTag> listTagRefs(String project, String repo) {
@@ -805,6 +824,137 @@ public class GitHubOrgConnector {
         item.setLinks(pr.htmlUrl() != null ? List.of(pr.htmlUrl()) : List.of());
         item.setFilePaths(List.of());
         return item;
+    }
+
+    /** One commit of a run's change range as a changelog item (real file paths, no "feat" guess). */
+    private ChangeItem toChangeItem(String project, String repo, String effectiveOwner, GitHubCommit commit) {
+        ChangeItem item = new ChangeItem();
+        item.setType(ChangeItem.ItemType.COMMIT);
+        item.setId(commit.sha());
+        String message = commit.commit() != null && commit.commit().message() != null
+                ? commit.commit().message() : "";
+        item.setTitle(message.split("\n")[0]);
+        item.setCategory(ChangeCategoryClassifier.fromText(message));
+        item.setDescription(message);
+        item.setAuthor(authorName(commit));
+        item.setProject(project);
+        item.setRepo(repo);
+        String date = commit.commit() != null && commit.commit().author() != null && commit.commit().author().date() != null
+                ? commit.commit().author().date()
+                : commit.commit() != null && commit.commit().committer() != null && commit.commit().committer().date() != null
+                        ? commit.commit().committer().date()
+                        : null;
+        item.setDate(date);
+        item.setLinks(List.of("https://github.com/" + effectiveOwner + "/" + repo + "/commit/" + commit.sha()));
+        item.setFilePaths(fetchCommitFilePaths(effectiveOwner, repo, commit.sha()));
+        return item;
+    }
+
+    private static String authorName(GitHubCommit commit) {
+        if (commit.commit() == null) return "unknown";
+        if (commit.commit().author() != null) return commit.commit().author().name();
+        if (commit.commit().committer() != null) return commit.commit().committer().name();
+        return "unknown";
+    }
+
+    /**
+     * The run's real commits as context entries, derived from the release items so the run-context
+     * panel and {@code change_items} can't drift apart: the synthetic merge/squash commit has been
+     * swapped for the PR itself and is therefore not a commit any more.
+     */
+    private static List<RunChangeContext.CommitInfo> commitInfos(List<ChangeItem> items) {
+        List<RunChangeContext.CommitInfo> out = new ArrayList<>();
+        if (items == null) return out;
+        for (ChangeItem item : items) {
+            if (item == null || !ChangeItem.ItemType.COMMIT.equals(item.getType())) continue;
+            RunChangeContext.CommitInfo ci = new RunChangeContext.CommitInfo();
+            ci.setSha(item.getId());
+            ci.setMessage(item.getDescription());
+            ci.setAuthor(item.getAuthor());
+            ci.setDate(item.getDate());
+            ci.setFilePaths(item.getFilePaths());
+            out.add(ci);
+        }
+        return out;
+    }
+
+    /**
+     * The pull request(s) behind a workflow run. {@code pull_request}-triggered runs carry
+     * {@code pull_requests} refs; schedule/push/dynamic runs carry none, so the head commit is
+     * resolved the same way the rest of the dashboard does — first as a merge commit, then via
+     * {@code /commits/{sha}/pulls}. Returns full PR objects so callers can tell a merged PR's
+     * synthetic merge commit from a real one.
+     */
+    private List<GitHubPullRequest> resolveRunPrs(String effectiveOwner, String repo,
+            GitHubWorkflowRun run, long buildId, String headSha) {
+        List<GitHubPullRequest> resolved = new ArrayList<>();
+        List<GitHubWorkflowRun.PullRequestRef> refs = run.pullRequests();
+        if (refs != null && !refs.isEmpty()) {
+            for (GitHubWorkflowRun.PullRequestRef ref : refs) {
+                try {
+                    resolved.add(client.getPullRequest(effectiveOwner, repo, ref.number()));
+                } catch (Exception e) {
+                    LOG.warning("GitHub PR for run " + buildId + " fetch failed: " + e);
+                }
+            }
+            return resolved;
+        }
+        GitHubPullRequest pr = findPrByMergeCommit(effectiveOwner, repo, headSha);
+        if (pr == null) {
+            pr = findPrByRunHead(effectiveOwner, repo, headSha);
+        }
+        if (pr != null) {
+            resolved.add(pr);
+        }
+        return resolved;
+    }
+
+    /**
+     * A run's change range is {@code base..head} with base the head commit's <b>first parent</b>, so
+     * a squash- or merge-commit run collapses to that single synthetic commit — and after
+     * {@link #mergePrsInto} swaps it for the PR, the run shows the PR with zero commits. Pull the
+     * merged PR's own commits in alongside it. Runs whose compare already yielded real commits
+     * (rebase merges, plain pushes, multi-commit ranges) are left untouched so nothing is
+     * double-counted.
+     */
+    private List<GitHubCommit> withMergedPrCommits(String effectiveOwner, String repo,
+            List<GitHubCommit> commits, List<GitHubPullRequest> runPrs) {
+        if (commits == null || commits.size() != 1 || runPrs == null || runPrs.isEmpty()) {
+            return commits;
+        }
+        String onlySha = commits.get(0) != null ? commits.get(0).sha() : null;
+        if (onlySha == null) return commits;
+
+        Set<String> seen = new HashSet<>();
+        for (GitHubCommit commit : commits) {
+            if (commit != null && commit.sha() != null) seen.add(commit.sha());
+        }
+        List<GitHubCommit> expanded = null;
+        for (GitHubPullRequest pr : runPrs) {
+            // Only a *merged* PR's merge/sha is synthetic; an open PR's head commit is a real commit.
+            if (pr.mergedAt() == null || pr.mergeCommitSha() == null
+                    || !pr.mergeCommitSha().equals(onlySha)) {
+                continue;
+            }
+            for (GitHubCommit prCommit : fetchPrCommits(effectiveOwner, repo, pr.number())) {
+                if (prCommit == null || prCommit.sha() == null || !seen.add(prCommit.sha())) continue;
+                if (expanded == null) expanded = new ArrayList<>(commits);
+                expanded.add(prCommit);
+            }
+        }
+        return expanded != null ? expanded : commits;
+    }
+
+    /** The commits that make up one PR — the only place a squash-merged run's real commits live. */
+    private List<GitHubCommit> fetchPrCommits(String effectiveOwner, String repo, long number) {
+        try {
+            return fetch(() -> parseList(
+                    client.listPullRequestCommits(effectiveOwner, repo, number, 100), GitHubCommit.class));
+        } catch (Exception e) {
+            LOG.warning("GitHub PR commits fetch failed for " + effectiveOwner + "/" + repo
+                    + " #" + number + ": " + e);
+            return List.of();
+        }
     }
 
     private final Map<String, List<String>> commitFilePathsCache = Collections.synchronizedMap(
@@ -1032,48 +1182,37 @@ public class GitHubOrgConnector {
             return ctx;
         }
 
-        // PR(s) associated with the run — GitHub Actions runs carry pull_requests refs directly.
-        List<GitHubWorkflowRun.PullRequestRef> refs = run.pullRequests();
-        if (refs != null && !refs.isEmpty()) {
-            try {
-                GitHubPullRequest pr = client.getPullRequest(effectiveOwner, repo, refs.get(0).number());
-                RunChangeContext.PrInfo prInfo = new RunChangeContext.PrInfo();
-                prInfo.setId(String.valueOf(pr.number()));
-                prInfo.setTitle(pr.title());
-                prInfo.setDescription(pr.body());
-                prInfo.setAuthor(pr.user() != null ? pr.user().login() : null);
-                prInfo.setState(pr.state());
-                prInfo.setUrl(pr.htmlUrl());
-                prInfo.setUpdatedAt(pr.mergedAt() != null ? pr.mergedAt() : pr.createdAt());
-                ctx.setPr(prInfo);
-            } catch (Exception e) {
-                LOG.warning("GitHub PR for run " + buildId + " fetch failed: " + e);
-            }
-        } else {
-            // schedule / dynamic / push-triggered runs don't carry PR refs, but the head commit may
-            // still be a merge commit of a merged PR — resolve it the same way fetchRunChanges does,
-            // then fall back to asking GitHub which PR the head commit belongs to.
-            RunChangeContext.PrInfo prInfo = findPrByMergeCommit(effectiveOwner, repo, run.headSha());
-            if (prInfo == null) {
-                prInfo = findPrByRunHead(effectiveOwner, repo, run.headSha());
-            }
-            if (prInfo != null) {
-                ctx.setPr(prInfo);
-            }
+        // PR(s) associated with the run — Actions runs carry pull_requests refs directly; schedule/
+        // push/dynamic runs are resolved from the head commit instead (same helper as fetchRunData).
+        String headSha = run.headSha();
+        List<GitHubPullRequest> runPrs = resolveRunPrs(effectiveOwner, repo, run, buildId, headSha);
+        for (GitHubPullRequest pr : runPrs) {
+            ctx.getPrs().add(toPrInfo(pr));
         }
 
-        String headSha = run.headSha();
         String baseSha = getParentSha(effectiveOwner, repo, headSha);
         List<GitHubCommit> commits;
         if (baseSha != null) {
             commits = compareCommits(project, effectiveOwner, repo, baseSha, headSha);
         } else {
             GitHubCommit headCommit = getCommitFromClient(effectiveOwner, repo, headSha);
-            commits = headSha != null ? List.of(headCommit) : List.of();
+            commits = headSha != null && headCommit != null ? List.of(headCommit) : List.of();
+        }
+        // A squash/merge-commit run compares to a single synthetic commit — pull in the PR's own
+        // commits so this panel matches the change items the AI actually gets.
+        commits = withMergedPrCommits(effectiveOwner, repo, commits, runPrs);
+
+        // That synthetic commit is represented by the PR entry above, so it isn't listed twice.
+        Set<String> mergeShas = new HashSet<>();
+        for (GitHubPullRequest pr : runPrs) {
+            if (pr.mergedAt() != null && pr.mergeCommitSha() != null) {
+                mergeShas.add(pr.mergeCommitSha());
+            }
         }
 
         List<RunChangeContext.CommitInfo> commitInfos = new ArrayList<>();
         for (GitHubCommit commit : commits) {
+            if (commit == null || mergeShas.contains(commit.sha())) continue;
             RunChangeContext.CommitInfo ci = new RunChangeContext.CommitInfo();
             ci.setSha(commit.sha());
             String message = commit.commit() != null ? commit.commit().message() : "";
@@ -1139,7 +1278,7 @@ public class GitHubOrgConnector {
         } else {
             // No parent (initial commit) - fetch the head commit itself
             GitHubCommit headCommit = getCommitFromClient(effectiveOwner, repo, headSha);
-            commits = headSha != null ? List.of(headCommit) : List.of();
+            commits = headSha != null && headCommit != null ? List.of(headCommit) : List.of();
         }
 
         // Map to ChangeItem, now with real file paths and category classifier instead of "feat".
@@ -1203,41 +1342,26 @@ public class GitHubOrgConnector {
         } else {
             // No parent (initial commit) - fetch the head commit itself
             GitHubCommit headCommit = getCommitFromClient(effectiveOwner, repo, headSha);
-            commits = headSha != null ? List.of(headCommit) : List.of();
+            commits = headSha != null && headCommit != null ? List.of(headCommit) : List.of();
         }
 
-        // Map to ChangeItem, now with real file paths and category classifier instead of "feat".
-        List<com.hubsabai.changelog.core.model.ChangeItem> items = commits.stream().map(commit -> {
-            com.hubsabai.changelog.core.model.ChangeItem item = new com.hubsabai.changelog.core.model.ChangeItem();
-            item.setType(com.hubsabai.changelog.core.model.ChangeItem.ItemType.COMMIT);
-            item.setId(commit.sha());
-            String message = commit.commit() != null ? commit.commit().message() : "";
-            item.setTitle(message.split("\n")[0]);
-            item.setCategory(ChangeCategoryClassifier.fromText(message));
-            item.setDescription(message);
-            String author = commit.commit() != null && commit.commit().author() != null
-                    ? commit.commit().author().name()
-                    : commit.commit() != null && commit.commit().committer() != null
-                            ? commit.commit().committer().name()
-                            : "unknown";
-            item.setAuthor(author);
-            item.setProject(project);
-            item.setRepo(repo);
-            String date = commit.commit() != null && commit.commit().author() != null && commit.commit().author().date() != null
-                    ? commit.commit().author().date()
-                    : commit.commit() != null && commit.commit().committer() != null && commit.commit().committer().date() != null
-                            ? commit.commit().committer().date()
-                            : null;
-            item.setDate(date);
-            item.setLinks(List.of("https://github.com/" + effectiveOwner + "/" + repo + "/commit/" + commit.sha()));
-            item.setFilePaths(fetchCommitFilePaths(effectiveOwner, repo, commit.sha()));
-            item.setProject(project);
-            item.setRepo(repo);
-            return item;
-        }).toList();
+        // PR(s) behind the run — resolved before the change items are built so a merged PR's own
+        // commits can be included alongside it (see withMergedPrCommits). They used to be attached
+        // only afterwards, which left a PR-linked run with nothing but the synthetic merge commit.
+        List<GitHubPullRequest> runPrs = resolveRunPrs(effectiveOwner, repo, run, buildId, headSha);
 
-        // Build ReleaseData
-        com.hubsabai.changelog.core.model.ReleaseData releaseData = buildReleaseData(project, repo, defaultBranch(project, repo), items);
+        // The run's change range: a squash/merge-commit run collapses to GitHub's synthetic commit,
+        // so the merged PR's real commits are pulled in before mapping to items.
+        commits = withMergedPrCommits(effectiveOwner, repo, commits, runPrs);
+
+        // Map to ChangeItem, now with real file paths and category classifier instead of "feat".
+        List<ChangeItem> items = commits.stream()
+                .map(commit -> toChangeItem(project, repo, effectiveOwner, commit))
+                .toList();
+
+        // Build ReleaseData — mergePrsInto swaps the synthetic merge/squash commit for the PR itself,
+        // so the run yields the PR *plus* its real commits instead of the PR alone.
+        ReleaseData releaseData = buildReleaseData(project, repo, defaultBranch(project, repo), items);
 
         // Build RunChangeContext from the same data (reusing the already-fetched run and commits)
         RunChangeContext context = new RunChangeContext();
@@ -1257,54 +1381,13 @@ public class GitHubOrgConnector {
                 : null);
         context.setRun(runInfo);
 
-        // PR(s) associated with the run
-        List<GitHubWorkflowRun.PullRequestRef> refs = run.pullRequests();
-        if (refs != null && !refs.isEmpty()) {
-            for (GitHubWorkflowRun.PullRequestRef ref : refs) {
-                try {
-                    GitHubPullRequest pr = client.getPullRequest(effectiveOwner, repo, ref.number());
-                    RunChangeContext.PrInfo prInfo = new RunChangeContext.PrInfo();
-                    prInfo.setId(String.valueOf(pr.number()));
-                    prInfo.setTitle(pr.title());
-                    prInfo.setDescription(pr.body());
-                    prInfo.setAuthor(pr.user() != null ? pr.user().login() : null);
-                    prInfo.setState(pr.state());
-                    prInfo.setUrl(pr.htmlUrl());
-                    prInfo.setUpdatedAt(pr.mergedAt() != null ? pr.mergedAt() : pr.createdAt());
-                    context.getPrs().add(prInfo);
-                } catch (Exception e) {
-                    LOG.warning("GitHub PR for run " + buildId + " fetch failed: " + e);
-                }
-            }
-        } else {
-            // Same fallback as fetchRunContext for schedule/push/dynamic-triggered runs,
-            // plus head-commit resolution when the run head isn't a merge commit.
-            RunChangeContext.PrInfo prInfo = findPrByMergeCommit(effectiveOwner, repo, headSha);
-            if (prInfo == null) {
-                prInfo = findPrByRunHead(effectiveOwner, repo, headSha);
-            }
-            if (prInfo != null) {
-                context.getPrs().add(prInfo);
-            }
+        for (GitHubPullRequest pr : runPrs) {
+            context.getPrs().add(toPrInfo(pr));
         }
 
-        List<RunChangeContext.CommitInfo> commitInfos = new ArrayList<>();
-        for (GitHubCommit commit : commits) {
-            RunChangeContext.CommitInfo ci = new RunChangeContext.CommitInfo();
-            ci.setSha(commit.sha());
-            String message = commit.commit() != null ? commit.commit().message() : "";
-            ci.setMessage(message);
-            ci.setAuthor(commit.commit() != null && commit.commit().author() != null
-                    ? commit.commit().author().name()
-                    : commit.commit() != null && commit.commit().committer() != null
-                            ? commit.commit().committer().name()
-                            : "unknown");
-            ci.setDate(commit.commit() != null && commit.commit().committer() != null
-                    ? commit.commit().committer().date() : null);
-            ci.setFilePaths(fetchCommitFilePaths(effectiveOwner, repo, commit.sha()));
-            commitInfos.add(ci);
-        }
-        context.setCommits(commitInfos);
+        // The context's commit list mirrors change_items: the synthetic merge/squash commit is
+        // represented by the PR entry, so only the run's real commits are listed here.
+        context.setCommits(commitInfos(releaseData.getItems()));
         context.setFiles(collectDiffFiles(effectiveOwner, repo, baseSha, headSha));
         context.setWorkItems(List.of());
 
@@ -1338,13 +1421,13 @@ public class GitHubOrgConnector {
     /** Resolves the merged PR whose {@code merge_commit_sha} equals the given commit, if any.
      * Mirrors {@link #mergePrsInto} so run-context shows the same PR the changes endpoint does,
      * even for schedule/push/dynamic runs that GitHub reports without {@code pull_requests} refs. */
-    private RunChangeContext.PrInfo findPrByMergeCommit(String project, String repo, String sha) {
+    private GitHubPullRequest findPrByMergeCommit(String project, String repo, String sha) {
         if (sha == null || sha.isBlank()) return null;
         try {
             List<GitHubPullRequest> prs = fetchClosedPrsCached(project, repo, defaultBranch(project, repo));
             for (GitHubPullRequest pr : prs) {
                 if (pr.mergeCommitSha() != null && sha.equals(pr.mergeCommitSha()) && pr.mergedAt() != null) {
-                    return toPrInfo(pr);
+                    return pr;
                 }
             }
         } catch (Exception e) {
@@ -1360,7 +1443,7 @@ public class GitHubOrgConnector {
      * and the head isn't a merge commit. Prefers a merged PR, else the newest one touching the
      * commit.
      */
-    private RunChangeContext.PrInfo findPrByRunHead(String project, String repo, String sha) {
+    private GitHubPullRequest findPrByRunHead(String project, String repo, String sha) {
         if (sha == null || sha.isBlank()) return null;
         try {
             List<GitHubPullRequest> prs = fetch(() -> parseList(client.listPullRequestsForCommit(project, repo, sha), GitHubPullRequest.class));
@@ -1375,7 +1458,7 @@ public class GitHubOrgConnector {
                     best = pr;
                 }
             }
-            return best == null ? null : toPrInfo(best);
+            return best;
         } catch (Exception e) {
             LOG.warning("GitHub PR resolution by head commit failed for " + project + "/" + repo + ": " + e);
             return null;
