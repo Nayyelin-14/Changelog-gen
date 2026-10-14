@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Everything that can generate a changelog, keyed by id. A provider is an OpenAI-compatible
@@ -22,24 +23,29 @@ import java.util.Optional;
  * {@code ai.model}/{@code ai.fallback-models}/{@code ai.prompt.*} properties. Extra providers are
  * declared in {@code ai.providers}&lbrace;id&rbrace;.* blocks:
  * <pre>
- * ai.providers=gemini,groq,openrouter
- * ai.providers.gemini.base-url=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
- * ai.providers.gemini.api-key=...
- * ai.providers.gemini.model=gemini-2.5-flash
- * ai.providers.gemini.fallback-models=gemini-2.5-pro
- * ai.providers.gemini.prompt.developer=...
+ * ai.providers=groq,openrouter
+ * ai.providers.openrouter.base-url=https://openrouter.ai/api/v1/chat/completions
+ * ai.providers.openrouter.api-key=...
+ * ai.providers.openrouter.model=openai/gpt-oss-120b
+ * ai.providers.openrouter.fallback-models=openai/gpt-oss-20b
+ * ai.providers.openrouter.prompt.developer=...
  * </pre>
  * A provider whose block has no {@code api-key} is {@link #list() disabled} and hidden from the
  * UI — configuring a key later makes it appear without a restart of anything else.
+ *
+ * <p>{@code gemini} was dropped (its OpenAI-compatible endpoint never served a usable catalog
+ * here); {@link #DROPPED_PROVIDERS} keeps a stale {@code ai.providers} entry from resurrecting it.
  */
 @ApplicationScoped
 public class AiProviderRegistry {
 
     public static final String DEFAULT_PROVIDER = "nvidia";
 
+    /** Removed on purpose — an env file that still lists one of these must not bring it back. */
+    static final Set<String> DROPPED_PROVIDERS = Set.of("gemini");
+
     static final Map<String, String> LABELS = Map.of(
             DEFAULT_PROVIDER, "NVIDIA NIM",
-            "gemini", "Google Gemini",
             "groq", "Groq",
             "openrouter", "OpenRouter",
             "together", "Together AI",
@@ -93,9 +99,14 @@ public class AiProviderRegistry {
         if (declared.isPresent()) {
             for (String id : declared.get().split(",")) {
                 String trimmed = id.trim();
-                if (!trimmed.isEmpty() && !DEFAULT_PROVIDER.equals(trimmed)) {
-                    ids.add(trimmed.toLowerCase(Locale.ROOT));
+                if (trimmed.isEmpty() || DEFAULT_PROVIDER.equals(trimmed)) {
+                    continue;
                 }
+                String lower = trimmed.toLowerCase(Locale.ROOT);
+                if (DROPPED_PROVIDERS.contains(lower)) {
+                    continue;
+                }
+                ids.add(lower);
             }
         }
         // Auto-enable: a well-known provider whose conventional API key is configured but that

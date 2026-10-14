@@ -118,6 +118,13 @@
             <artifactId>quarkus-jdbc-h2</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Backs @InjectMock: the history-id test stubs the GitHub connector instead of
+             reaching api.github.com (version-managed by the Quarkus BOM). -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit-mockito</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

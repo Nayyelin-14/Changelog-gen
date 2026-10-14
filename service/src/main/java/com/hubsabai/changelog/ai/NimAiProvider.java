@@ -499,36 +499,88 @@ public class NimAiProvider implements AiProvider {
     }
 
     /**
+     * Model ids to offer for this provider: what the live {@code /models} catalog advertises —
+     * restricted to the allow-list when one is configured — falling back to that allow-list
+     * whenever the catalog call fails or matches none of the approved ids.
+     *
+     * <p>Without the fallback an unusable catalog collapsed to an empty list: the endpoint then
+     * answered {@code "returned an empty model list"} and the provider's models became
+     * unselectable in the UI, while the actual cause (a rejected key, a wrong base-url, or an
+     * allow-list of retired ids) was thrown away with the response body. {@link #liveCatalogIds()}
+     * logs it instead.
+     */
+    private List<String> listingCandidates() {
+        List<String> candidates = liveCatalogIds();
+        if (allowedModels.isEmpty()) {
+            return candidates;
+        }
+        List<String> approved = candidates.stream().filter(allowedModels::contains).toList();
+        if (!approved.isEmpty()) {
+            return approved;
+        }
+        LOG.warning("Model catalog for " + baseUrl + " advertised " + candidates.size()
+                + " usable model(s), none of them among the " + allowedModels.size() + " approved ("
+                + String.join(", ", allowedModels) + ") — offering the approved list instead.");
+        return List.copyOf(allowedModels);
+    }
+
+    /**
+     * Chat-capable ids from {@code GET <base-url>/models}. Does <b>not</b> throw for an
+     * HTTP-level failure: a 401/404 (rejected key, wrong base-url) or an unparseable body is
+     * logged with its status and treated as "catalog unavailable", so the caller can fall back
+     * rather than reporting an empty list that hides why.
+     */
+    private List<String> liveCatalogIds() {
+        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
+        Response raw;
+        try {
+            raw = client.target(modelsUrl)
+                    .request(MediaType.APPLICATION_JSON)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .get();
+        } catch (WebApplicationException e) {
+            LOG.warning("GET " + modelsUrl + " failed: HTTP " + e.getResponse().getStatus()
+                    + " — " + truncate(e.getResponse().readEntity(String.class)));
+            return List.of();
+        } catch (Exception e) {
+            LOG.warning("GET " + modelsUrl + " failed: " + e.getMessage());
+            return List.of();
+        }
+
+        int status = raw.getStatus();
+        String body;
+        try {
+            body = raw.readEntity(String.class);
+        } catch (Exception e) {
+            body = "";
+        } finally {
+            raw.close();
+        }
+        if (status >= 400) {
+            LOG.warning("GET " + modelsUrl + " → HTTP " + status + " — " + truncate(body));
+            return List.of();
+        }
+        try {
+            NvidiaModelsResponse response = MAPPER.readValue(body, NvidiaModelsResponse.class);
+            return response.dataOrEmpty().stream()
+                    .map(NvidiaModelsResponse.NvidiaModel::getId)
+                    .filter(NimAiProvider::looksLikeChatModel)
+                    .filter(id -> !EXCLUDED_MODELS.contains(id))
+                    .toList();
+        } catch (Exception e) {
+            LOG.warning("GET " + modelsUrl + " → unparseable catalog body: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
      * Synchronous model listing — probes all candidates and returns only confirmed-healthy models.
      * Used by generation logic and benchmarks where only ready models are acceptable.
      * For UI dropdown, use {@link #listModelsWithStatus()} which returns curated models immediately.
      */
     @Override
     public List<AiModelOption> listModels() {
-        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
-        List<NvidiaModelsResponse.NvidiaModel> catalog;
-        try {
-            Response raw = client.target(modelsUrl)
-                    .request(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + apiKey)
-                    .get();
-            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-            catalog = response.dataOrEmpty();
-        } catch (WebApplicationException e) {
-            String body = e.getResponse().readEntity(String.class);
-            throw new AiException("Failed to list models: HTTP " + e.getResponse().getStatus() + " — " + body, e);
-        } catch (Exception e) {
-            throw new AiException("Failed to list models: " + e.getMessage(), e);
-        }
-
-        List<String> candidates = catalog.stream()
-                .map(NvidiaModelsResponse.NvidiaModel::getId)
-                .filter(NimAiProvider::looksLikeChatModel)
-                .filter(id -> !EXCLUDED_MODELS.contains(id))
-                .toList();
-        List<String> probe = allowedModels.isEmpty()
-                ? candidates
-                : candidates.stream().filter(allowedModels::contains).toList();
+        List<String> probe = listingCandidates();
 
         List<CompletableFuture<AiModelOption>> futures = probe.stream()
                 .map(id -> CompletableFuture.supplyAsync(() -> healthyOption(id), PROBE_POOL))
@@ -544,7 +596,7 @@ public class NimAiProvider implements AiProvider {
             }
         }
 
-        LOG.info("Model catalog (sync): " + catalog.size() + " listed, " + healthy.size() + " health-checked OK"
+        LOG.info("Model catalog (sync): " + probe.size() + " candidate(s), " + healthy.size() + " health-checked OK"
                 + (allowedModels.isEmpty() ? "" : " (pinned to " + allowedModels.size() + " approved)"));
         return healthy.stream()
                 .sorted(Comparator.<AiModelOption, Boolean>comparing(
@@ -561,30 +613,7 @@ public class NimAiProvider implements AiProvider {
      */
     @Override
     public List<AiModelOption> listModelsWithStatus() {
-        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
-        List<NvidiaModelsResponse.NvidiaModel> catalog;
-        try {
-            Response raw = client.target(modelsUrl)
-                    .request(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + apiKey)
-                    .get();
-            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-            catalog = response.dataOrEmpty();
-        } catch (WebApplicationException e) {
-            String body = e.getResponse().readEntity(String.class);
-            throw new AiException("Failed to list models: HTTP " + e.getResponse().getStatus() + " — " + body, e);
-        } catch (Exception e) {
-            throw new AiException("Failed to list models: " + e.getMessage(), e);
-        }
-
-        List<String> candidates = catalog.stream()
-                .map(NvidiaModelsResponse.NvidiaModel::getId)
-                .filter(NimAiProvider::looksLikeChatModel)
-                .filter(id -> !EXCLUDED_MODELS.contains(id))
-                .toList();
-        List<String> probe = allowedModels.isEmpty()
-                ? candidates
-                : candidates.stream().filter(allowedModels::contains).toList();
+        List<String> probe = listingCandidates();
 
         long now = System.currentTimeMillis();
         List<AiModelOption> result = new ArrayList<>();

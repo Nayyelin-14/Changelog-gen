@@ -60,8 +60,10 @@ export function PrRedirectPage() {
         }
 
         setStoredRole("dev");
+        // `v` is the detail view's id fallback — see HistoryEntry#versionId on the backend.
+        const versionQuery = entry.version ? `?v=${encodeURIComponent(entry.version)}` : "";
         navigate(
-          `/dev/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/history/${encodeURIComponent(entry.id)}`,
+          `/dev/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/history/${encodeURIComponent(entry.id)}${versionQuery}`,
           { replace: true },
         );
       } catch (e) {

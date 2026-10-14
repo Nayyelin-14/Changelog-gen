@@ -40,6 +40,22 @@ public class HistoryEntry {
         this.developer = developer;
     }
 
+    /**
+     * The id for a versioned history row — shared by BOTH sources of history (the CHANGELOG.md
+     * parse and the Postgres tables), so one version keeps one id no matter which source served it.
+     *
+     * <p>The sources are not independent: the CHANGELOG.md path persists everything it parses
+     * (see {@code GitHubResource#history} → {@code saveHistoryEntryIfAbsent}), so the very next
+     * call finds rows and takes the Postgres path. An index/date-based id
+     * ({@code "repo-9-1.0.9-2026-07-23"} vs {@code "db-9-1.0.9"}) then flips scheme underneath the
+     * click that just opened it — the dashboard's list and the detail view's lookup disagree and the
+     * row renders as "That version couldn't be found." The version is the only identity a changelog
+     * entry actually has, so it (and nothing positional) is what the id is built from.
+     */
+    public static String versionId(String version) {
+        return "v-" + version;
+    }
+
     @JsonProperty("id")
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
