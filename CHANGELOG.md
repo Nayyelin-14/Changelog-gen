@@ -1,3 +1,8 @@
+## v1.0.20 — 2026-10-14 (promoted build.56)
+
+
+- feat: restyle the generate page — one container language, aligned hierarchy
+
 ## v1.0.19 — 2026-10-14 (promoted build.55)
 
 
