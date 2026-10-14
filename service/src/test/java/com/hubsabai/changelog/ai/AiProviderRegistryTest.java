@@ -19,7 +19,7 @@ class AiProviderRegistryTest {
         for (String key : new String[]{
                 "ai.api-key", "ai.base-url", "ai.model",
                 "ai.providers",
-                "ai.providers.gemini.base-url", "ai.providers.gemini.api-key", "ai.providers.gemini.model",
+                "ai.providers.openrouter.base-url", "ai.providers.openrouter.api-key", "ai.providers.openrouter.model",
                 "ai.providers.groq.base-url", "ai.providers.groq.api-key",
                 "ai.providers.groq.model", "ai.providers.groq.models",
                 "ai.providers.groq.fallback-models"}) {
@@ -58,41 +58,41 @@ class AiProviderRegistryTest {
     @Test
     void keylessExtraProviderIsHidden() {
         System.setProperty("ai.api-key", "test");
-        System.setProperty("ai.providers", "gemini");
-        System.setProperty("ai.providers.gemini.base-url", "https://example.test/v1/chat/completions");
-        System.setProperty("ai.providers.gemini.api-key", "");
+        System.setProperty("ai.providers", "openrouter");
+        System.setProperty("ai.providers.openrouter.base-url", "https://example.test/v1/chat/completions");
+        System.setProperty("ai.providers.openrouter.api-key", "");
 
         AiProviderRegistry registry = registry();
         assertEquals(1, registry.list().size());
-        AiException ex = assertThrows(AiException.class, () -> registry.resolve("gemini"));
+        AiException ex = assertThrows(AiException.class, () -> registry.resolve("openrouter"));
         assertTrue(ex.getMessage().contains("not configured"), ex.getMessage());
     }
 
     @Test
     void keyedExtraProviderIsUsableAndLabeled() {
         System.setProperty("ai.api-key", "test");
-        System.setProperty("ai.providers", "gemini,groq");
-        System.setProperty("ai.providers.gemini.base-url", "https://example.test/v1/chat/completions");
-        System.setProperty("ai.providers.gemini.api-key", "gemini-key");
-        System.setProperty("ai.providers.gemini.model", "gemini-2.5-flash");
+        System.setProperty("ai.providers", "openrouter,groq");
+        System.setProperty("ai.providers.openrouter.base-url", "https://example.test/v1/chat/completions");
+        System.setProperty("ai.providers.openrouter.api-key", "openrouter-key");
+        System.setProperty("ai.providers.openrouter.model", "openai/gpt-oss-120b");
         System.setProperty("ai.providers.groq.api-key", "groq-key");
 
         AiProviderRegistry registry = registry();
         List<AiProviderInfo> list = registry.list();
         assertEquals(3, list.size());
 
-        AiProviderInfo gemini = list.stream().filter(p -> p.id().equals("gemini")).findFirst().orElseThrow();
-        assertEquals("Google Gemini", gemini.label());
-        assertNotNull(registry.resolve("gemini"));
+        AiProviderInfo openrouter = list.stream().filter(p -> p.id().equals("openrouter")).findFirst().orElseThrow();
+        assertEquals("OpenRouter", openrouter.label());
+        assertNotNull(registry.resolve("openrouter"));
         assertNotNull(registry.resolve("GROQ"));
         assertThrows(AiException.class, () -> registry.resolve("together"));
     }
 
     @Test
     void unknownProviderThrows() {
-        System.setProperty("ai.providers", "gemini");
+        System.setProperty("ai.providers", "openrouter");
         AiProviderRegistry registry = registry();
-        AiException ex = assertThrows(AiException.class, () -> registry.resolve("openrouter"));
+        AiException ex = assertThrows(AiException.class, () -> registry.resolve("together"));
         assertTrue(ex.getMessage().contains("Unknown AI provider"), ex.getMessage());
     }
 
@@ -164,5 +164,26 @@ class AiProviderRegistryTest {
         assertEquals(1, registry.list().size());
         AiException ex = assertThrows(AiException.class, () -> registry.resolve("groq"));
         assertTrue(ex.getMessage().contains("not configured"), ex.getMessage());
+    }
+
+    /** Gemini is dropped: a stale env that still declares it gets no provider, no label, and an
+     * unknown-id error — not a fifth provider back in the picker. */
+    @Test
+    void droppedProviderIsIgnoredEvenWhenDeclaredWithAKey() {
+        System.setProperty("ai.api-key", "test");
+        System.setProperty("ai.providers", "gemini,openrouter");
+        System.setProperty("ai.providers.gemini.base-url", "https://example.test/v1/chat/completions");
+        System.setProperty("ai.providers.gemini.api-key", "gemini-key");
+        System.setProperty("ai.providers.gemini.model", "gemini-2.5-flash");
+        System.setProperty("ai.providers.openrouter.api-key", "openrouter-key");
+
+        AiProviderRegistry registry = registry();
+        List<AiProviderInfo> list = registry.list();
+        assertEquals(2, list.size());
+        assertTrue(list.stream().noneMatch(p -> p.id().equals("gemini")), list.toString());
+
+        AiException ex = assertThrows(AiException.class, () -> registry.resolve("gemini"));
+        assertTrue(ex.getMessage().contains("Unknown AI provider"), ex.getMessage());
+        assertNotNull(registry.resolve("openrouter"));
     }
 }

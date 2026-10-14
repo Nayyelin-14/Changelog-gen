@@ -409,11 +409,67 @@ class NimAiProviderTest {
     }
 
     @Test
-    void modelsEndpointThrowsOnHttpError() {
+    void rejectedCatalogReturnsNoModelsWithoutThrowing() {
+        // A 401 used to surface as a bare "Failed to list models" or, when the error body was
+        // valid JSON, as a silent empty catalog — the status/body is logged now instead.
         stubFor(get(urlPathEqualTo("/v1/models"))
-                .willReturn(aResponse().withStatus(401)));
+                .willReturn(aResponse().withStatus(401)
+                        .withBody("{\"error\":{\"message\":\"Invalid API Key\"}}")));
 
-        assertThrows(AiException.class, () -> provider.listModels());
+        assertTrue(provider.listModels().isEmpty());
+        assertTrue(provider.listModelsWithStatus().isEmpty());
+    }
+
+    /** Production symptom: the provider's /models answered with a rejected-key error body, the
+     * approved-model intersection came back empty, and the endpoint answered "returned an empty
+     * model list" — so the provider's own approved models became unselectable in the UI. The
+     * approved list is the fallback: those ids are exactly what generation is configured to use. */
+    @Test
+    void rejectedCatalogFallsBackToTheApprovedModelList() {
+        stubFor(get(urlPathEqualTo("/v1/models"))
+                .willReturn(aResponse().withStatus(401)
+                        .withBody("{\"error\":{\"message\":\"Invalid API Key\"}}")));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
+
+        NimAiProvider approved = providerWithAllowList("model-a,model-b");
+
+        assertTrue(approved.listModels().stream().map(AiModelOption::id).toList()
+                .containsAll(List.of("model-a", "model-b")));
+        assertTrue(approved.listModelsWithStatus().stream().map(AiModelOption::id).toList()
+                .containsAll(List.of("model-a", "model-b")));
+    }
+
+    /** Same outcome when the catalog answers 200 but only advertises ids outside the approved
+     * list (retired models on the provider's side): the picker still offers the approved ones. */
+    @Test
+    void catalogWithoutAnyApprovedModelStillOffersTheApprovedList() {
+        stubFor(get(urlPathEqualTo("/v1/models"))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"data\":[{\"id\":\"retired/model-v1\"}]}")));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
+
+        NimAiProvider approved = providerWithAllowList("model-a,model-b");
+
+        assertTrue(approved.listModels().stream().map(AiModelOption::id).toList()
+                .containsAll(List.of("model-a", "model-b")));
+        assertTrue(approved.listModelsWithStatus().stream().map(AiModelOption::id).toList()
+                .containsAll(List.of("model-a", "model-b")));
+    }
+
+    private NimAiProvider providerWithAllowList(String allowList) {
+        return new NimAiProvider(
+                wiremock.url("/v1/chat/completions"),
+                "model-a",
+                "test-api-key",
+                Optional.of("model-b"),
+                Optional.of(allowList),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
     }
 
     @Test

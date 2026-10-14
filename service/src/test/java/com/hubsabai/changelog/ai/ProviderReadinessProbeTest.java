@@ -12,7 +12,7 @@ import java.util.Optional;
 /**
  * Diagnostics — NOT part of the normal suite (skipped unless -Dmodel.readiness.probe=true).
  * Runs the exact registry construction + real listModels()/chat probe for every provider
- * configured in the local .env (gemini, groq, openrouter) plus the legacy nvidia block, then
+ * configured in the local .env (groq, openrouter) plus the legacy nvidia block, then
  * reports, per provider: base URL + model (API keys are never printed), how many models surfaced,
  * and whether a minimal chat round-trip succeeds. Run:
  *
@@ -25,7 +25,7 @@ public class ProviderReadinessProbeTest {
         Assumptions.assumeTrue("true".equals(System.getProperty("model.readiness.probe")),
                 "skipped: run with -Dmodel.readiness.probe=true");
 
-        String[] ids = {"nvidia", "gemini", "groq", "openrouter"};
+        String[] ids = {"nvidia", "groq", "openrouter"};
         List<String> rows = new ArrayList<>();
         for (String id : ids) {
             String baseUrl = dotEnv("AI_PROVIDERS_" + id.toUpperCase() + "_BASE_URL");

@@ -663,13 +663,12 @@ public class AzureDevOpsResource {
 
         List<HistoryEntry> entries = new ArrayList<>();
         for (int i = 0; i < pageVersions.size(); i++) {
-            int globalIndex = from + i;
             String version = pageVersions.get(i);
             ChangelogEntry ce = gitByVersion.get(version);
             GeneratedChangelog dbEntry = dbByVersion.get(version);
 
             if (ce != null) {
-                String id = "repo-" + globalIndex + "-" + version + "-" + ce.date();
+                String id = HistoryEntry.versionId(version);
                 ChangelogEnrichment enr = enrichment.get(version);
                 String timestamp = parseChangelogDate(ce.date());
                 String author = enr != null ? enr.author() : null;
@@ -693,7 +692,7 @@ public class AzureDevOpsResource {
                         : (raw != null && raw.createdAt != null ? raw.createdAt.toString() : null);
                 String developerText = dbEntry != null ? dbEntry.currentText : null;
                 HistoryEntry entry = new HistoryEntry(
-                        "pipeline-" + globalIndex + "-" + version, project, repo, entryBranch, version,
+                        HistoryEntry.versionId(version), project, repo, entryBranch, version,
                         authors, timestamp, developerText);
                 entry.setSource(dbEntry != null ? dbEntry.currentSource : null);
                 entries.add(entry);
@@ -733,7 +732,6 @@ public class AzureDevOpsResource {
 
         List<HistoryEntry> entries = new ArrayList<>();
         for (int i = 0; i < pageVersions.size(); i++) {
-            int idx = from + i;
             String version = pageVersions.get(i);
             GeneratedChangelog db = dbByVersion.get(version);
             ChangelogVersion cv = newByVersion.get(version);
@@ -748,7 +746,7 @@ public class AzureDevOpsResource {
                     : (cv != null && cv.createdAt != null ? cv.createdAt.toString() : null);
             String text = db != null ? db.currentText : (cv != null ? changelogService.getLatestText(cv.id, "developer") : null);
             HistoryEntry entry = new HistoryEntry(
-                    "db-" + idx + "-" + version, project, repo, branch, version,
+                    HistoryEntry.versionId(version), project, repo, branch, version,
                     authors, timestamp, text);
             if (db != null) entry.setSource(db.currentSource);
             entries.add(entry);

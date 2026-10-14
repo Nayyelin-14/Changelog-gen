@@ -180,6 +180,7 @@ export function GenerateChangelogPage() {
   // branch gets chosen.
   const currentRepoInfo = repos.status === "success" ? repos.data.find((r) => r.name === repo) : undefined;
   const branchParam = searchParams.get("branch") ?? undefined;
+  const versionParam = searchParams.get("v") ?? undefined;
   const selectedBranch = branchParam ?? shortBranchName(currentRepoInfo?.defaultBranch ?? null) ?? "dev";
 
   const loadSummary = useCallback(async () => {
@@ -234,7 +235,14 @@ export function GenerateChangelogPage() {
     { cacheKey: 'history' },
   );
   const data = history.status === "success" ? history.data.entries : [];
-  const selectedEntry = effectiveEntryId ? data.find((e) => e.id === effectiveEntryId) : undefined;
+  // The clicked row is identified by its id, with `?v=<version>` as a fallback: the history
+  // endpoint can hand out a different id for the same version when the DB it writes to on one
+  // call changes which source answers the next (see HistoryEntry#versionId), and the dashboard
+  // response that produced the link may already be minutes stale.
+  const selectedEntry = effectiveEntryId
+    ? data.find((e) => e.id === effectiveEntryId) ??
+      (versionParam ? data.find((e) => e.version === versionParam) : undefined)
+    : undefined;
 
   // Recorded pipeline runs for the dashboard's "Pipeline runs" table — uses stored run data
   // as primary source, with live provider fetch as fallback. This eliminates duplicate
@@ -282,6 +290,10 @@ export function GenerateChangelogPage() {
     // the full version detail view (versions sidebar + the three audience tabs). A draft's dev
     // text comes from the pipeline capture; QA/business can be generated right there (the
     // backend /generate accepts the run's buildId), and Push asks for the version + branch.
+    // The version rides along as a second key: history ids can change shape under a stale
+    // dashboard response (the endpoint builds ids from whichever history source answered — see
+    // HistoryEntry#versionId), so the detail view resolves by id first and falls back to this.
+    if (entry.version) params.set("v", entry.version);
     const query = params.toString();
     return `${base}/projects/${encodeURIComponent(project!)}/repos/${encodeURIComponent(repo!)}/history/${encodeURIComponent(entry.id)}${query ? `?${query}` : ""}`;
   }
@@ -340,6 +352,7 @@ export function GenerateChangelogPage() {
     model,
     setModel,
     models,
+    providerLabel,
     developerOverride,
     generated,
     checked,
@@ -840,6 +853,7 @@ export function GenerateChangelogPage() {
                                   value={model}
                                   onChange={setModel}
                                   disabled={generating !== null || !!selectedHistoryRow}
+                                  providerLabel={providerLabel}
                                 />
                                 {/* Generating mutates the CURRENT text — blocked while browsing any
                                     past revision (whichever audience it belongs to), since that's a
@@ -936,27 +950,26 @@ export function GenerateChangelogPage() {
                               <Pencil className="size-3" /> Edit
                             </Button>
                           </div>
-                          {models.status === "success" && (
-                            <div className="flex items-center gap-1">
-                              <AiModelSelect
-                                models={models.data}
-                                status={models.status}
-                                value={model}
-                                onChange={setModel}
-                                disabled={generating !== null || !!selectedHistoryRow}
-                                triggerClassName="h-7 text-xs font-medium"
-                              />
-                              {/* Blocked while browsing any past revision, even one belonging to
-                                  a DIFFERENT audience than this tab — selectedHistoryRow doesn't
-                                  clear on a tab switch, so without this check Regen would still
-                                  fire here while, say, an old QA snapshot is still selected. */}
-                              <Button size="sm" variant="outline" className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
-                                onClick={() => requestGenerate("developer", true)} disabled={generating !== null || !model || !!selectedHistoryRow}
-                                title={selectedHistoryRow ? "Go back to current to regenerate" : undefined}>
-                                {generating === "developer" ? <><Loader2 className="size-3 animate-spin" /> Regen…</> : "Regen"}
-                              </Button>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1">
+                            <AiModelSelect
+                              models={models.data}
+                              status={models.status}
+                              value={model}
+                              onChange={setModel}
+                              disabled={generating !== null || !!selectedHistoryRow}
+                              providerLabel={providerLabel}
+                              triggerClassName="h-7 text-xs font-medium"
+                            />
+                            {/* Blocked while browsing any past revision, even one belonging to
+                                a DIFFERENT audience than this tab — selectedHistoryRow doesn't
+                                clear on a tab switch, so without this check Regen would still
+                                fire here while, say, an old QA snapshot is still selected. */}
+                            <Button size="sm" variant="outline" className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
+                              onClick={() => requestGenerate("developer", true)} disabled={generating !== null || !model || !!selectedHistoryRow}
+                              title={selectedHistoryRow ? "Go back to current to regenerate" : undefined}>
+                              {generating === "developer" ? <><Loader2 className="size-3 animate-spin" /> Regen…</> : "Regen"}
+                            </Button>
+                          </div>
                           {(displayEntry.developer || developerOverride) && (
                             <Button size="sm" variant="default" className="gap-1.5" onClick={() => openPushModal(displayEntry)} disabled={pushing}>
                               {pushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
@@ -978,25 +991,24 @@ export function GenerateChangelogPage() {
                                 <Pencil className="size-3" /> Edit
                               </Button>
                             </div>
-                            {models.status === "success" && (
-                              <div className="flex items-center gap-1">
-                                <AiModelSelect
-                                  models={models.data}
-                                  status={models.status}
-                                  value={model}
-                                  onChange={setModel}
-                                  disabled={generating !== null || !!selectedHistoryRow}
-                                  triggerClassName="h-7 text-xs font-medium"
-                                />
-                                {/* Same cross-tab guard as Developer's Regen above — blocked while
-                                    ANY audience's past revision is selected, not just this tab's. */}
-                                <Button size="sm" variant="outline" className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
-                                  onClick={() => requestGenerate(activeTab, true)} disabled={generating !== null || !model || !!selectedHistoryRow}
-                                  title={selectedHistoryRow ? "Go back to current to regenerate" : undefined}>
-                                  {generating === activeTab ? <><Loader2 className="size-3 animate-spin" /> Regen…</> : "Regen"}
-                                </Button>
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1">
+                              <AiModelSelect
+                                models={models.data}
+                                status={models.status}
+                                value={model}
+                                onChange={setModel}
+                                disabled={generating !== null || !!selectedHistoryRow}
+                                providerLabel={providerLabel}
+                                triggerClassName="h-7 text-xs font-medium"
+                              />
+                              {/* Same cross-tab guard as Developer's Regen above — blocked while
+                                  ANY audience's past revision is selected, not just this tab's. */}
+                              <Button size="sm" variant="outline" className="gap-1.5 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900"
+                                onClick={() => requestGenerate(activeTab, true)} disabled={generating !== null || !model || !!selectedHistoryRow}
+                                title={selectedHistoryRow ? "Go back to current to regenerate" : undefined}>
+                                {generating === activeTab ? <><Loader2 className="size-3 animate-spin" /> Regen…</> : "Regen"}
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       )

@@ -1,5 +1,8 @@
 ## v1.0.18 — 2026-10-14 (promoted build.54)
 
+- fix: stable history ids, drop Gemini, keep Groq's models selectable
+
+## 2026-10-14 — dev (run 54)
 
 - fix: stable history ids, drop Gemini, keep Groq's models selectable
 

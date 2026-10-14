@@ -89,6 +89,7 @@ export function useChangelogEditor(
     model: state.model,
     setModel: state.setModel,
     models: state.models,
+    providerLabel: state.providerLabel,
     developerOverride: state.developerOverride,
     generated: state.generated,
     checked: state.checked,

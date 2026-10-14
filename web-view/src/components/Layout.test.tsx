@@ -6,6 +6,7 @@ import type { AuthUser } from '@/api/types';
 
 const mocks = vi.hoisted(() => ({
   reconnect: vi.fn(),
+  logout: vi.fn().mockResolvedValue(undefined),
   user: {
     id: 1,
     githubId: 11,
@@ -20,7 +21,7 @@ vi.mock('@/api/AuthContext', () => ({
     user: mocks.user,
     loading: false,
     login: vi.fn(),
-    logout: vi.fn(),
+    logout: mocks.logout,
     removeAccount: vi.fn(),
     disconnect: vi.fn(),
     reconnect: mocks.reconnect,
@@ -32,7 +33,7 @@ vi.mock('@/hooks/useAiProvider', () => ({
 }));
 
 import { Layout } from '@/components/Layout';
-import { setStoredProvider } from '@/lib/provider';
+import { getStoredProvider, setStoredProvider } from '@/lib/provider';
 
 function LocationProbe() {
   const location = useLocation();
@@ -51,25 +52,28 @@ function renderLayout(path = '/qa') {
   );
 }
 
-describe('Layout disconnected-GitHub banner', () => {
+describe('Layout when GitHub is disconnected', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     mocks.user.githubConnected = false;
+    mocks.logout.mockResolvedValue(undefined);
   });
 
-  it('shows a status banner with a reconnect action in GitHub mode', () => {
+  it('blocks the page instead of warning inside it, and keeps saved changelogs mentioned', () => {
     setStoredProvider('github');
 
     renderLayout('/dev/projects/p');
 
-    const banner = screen.getByRole('status');
-    expect(banner).toHaveTextContent(/GitHub is disconnected/i);
-    expect(banner).toHaveTextContent(/Your saved changelogs stay in your account/i);
-    expect(withinText(banner, 'Reconnect GitHub')).toBeTruthy();
+    expect(screen.getByText(/GitHub is disconnected/i)).toBeTruthy();
+    expect(
+      screen.getByText(/saved changelogs stay exactly where they are/i),
+    ).toBeTruthy();
+    // The page behind the gate must not render — a warning over half a dashboard is the bug.
+    expect(screen.queryByTestId('location')).not.toBeInTheDocument();
   });
 
-  it('calls reconnect with the current location so the user returns where they were', () => {
+  it('offers a reconnect that returns to where the user was', () => {
     setStoredProvider('github');
 
     renderLayout('/qa/project-x');
@@ -78,12 +82,24 @@ describe('Layout disconnected-GitHub banner', () => {
     expect(mocks.reconnect).toHaveBeenCalledWith('/qa/project-x');
   });
 
+  it('can switch to Azure DevOps and land on the home route with a clean query cache', () => {
+    setStoredProvider('github');
+
+    renderLayout('/dev/projects/p');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue with Azure DevOps/ }));
+
+    expect(getStoredProvider()).toBe('azure');
+    expect(screen.getByTestId('location')).toHaveTextContent('/');
+  });
+
   it('stays quiet in Azure mode — the shared PAT is unaffected', () => {
     setStoredProvider('azure');
 
     renderLayout();
 
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHub is disconnected/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('location')).toBeInTheDocument();
   });
 
   it('stays quiet for a still-connected GitHub session', () => {
@@ -92,10 +108,16 @@ describe('Layout disconnected-GitHub banner', () => {
 
     renderLayout();
 
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHub is disconnected/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('location')).toBeInTheDocument();
+  });
+
+  it('never blocks /login, so the reconnect flow cannot trap itself', () => {
+    setStoredProvider('github');
+
+    renderLayout('/login');
+
+    expect(screen.queryByText(/GitHub is disconnected/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/login');
   });
 });
-
-function withinText(root: HTMLElement, text: string): HTMLElement | null {
-  return Array.from(root.querySelectorAll('button')).find((el) => el.textContent?.includes(text)) ?? null;
-}

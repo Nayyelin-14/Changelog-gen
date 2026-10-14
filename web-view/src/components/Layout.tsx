@@ -1,10 +1,13 @@
-import { Link2, RefreshCcw } from 'lucide-react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Link2, LogOut, RefreshCcw } from 'lucide-react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/api/AuthContext';
 import { Header } from '@/components/Header';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { useResolvedAiProvider } from '@/hooks/useAiProvider';
-import { getStoredProvider } from '@/lib/provider';
+import { clearQueryCache } from '@/hooks/useQuery';
+import { getStoredProvider, setStoredProvider } from '@/lib/provider';
 
 export function Layout() {
   // A stored AI provider can outlive the admin's enabled set (key revoked, old picker value).
@@ -12,14 +15,26 @@ export function Layout() {
   // ones that read localStorage directly (chat, SSE, generate) — sends a provider the server
   // actually serves, on any page.
   useResolvedAiProvider();
-  const { user, reconnect } = useAuth();
+  const { user, reconnect, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
 
-  // A signed-in user who disconnected GitHub keeps their account and saved changelogs, but
-  // GitHub-backed fetches (repos, history, pushes) will fail until they reconnect. Surface
-  // that at the app shell instead of letting each page fail with a raw upstream error.
-  // Azure rides the shared service PAT and is unaffected by a personal disconnect.
-  const showReconnectNotice = Boolean(user) && !user?.githubConnected && getStoredProvider() === 'github';
+  // A signed-in user with no GitHub credential cannot fetch GitHub data — the API answers 403
+  // github_not_connected — so the shell blocks instead of warning: every page behind it would only
+  // render half a dashboard. Azure rides the shared service PAT and is unaffected, and /login stays
+  // reachable so the reconnect flow itself can't get trapped.
+  const githubDisconnected =
+    Boolean(user) &&
+    !user?.githubConnected &&
+    getStoredProvider() === 'github' &&
+    location.pathname !== '/login';
+  const nextPath = location.pathname + location.search;
+
+  const useAzureInstead = () => {
+    setStoredProvider('azure');
+    clearQueryCache();
+    navigate('/', { replace: true });
+  };
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-background">
@@ -35,33 +50,55 @@ export function Layout() {
         />
       </div>
       <Header />
-      {showReconnectNotice && (
-        <div
-          role="status"
-          className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400"
-        >
-          <Link2 className="size-3.5 shrink-0" />
-          <span>
-            GitHub is disconnected — repository data can't be fetched. Your saved changelogs stay in
-            your account.
-          </span>
-          <button
-            type="button"
-            onClick={() => reconnect(location.pathname + location.search)}
-            className="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 font-medium underline-offset-2 transition-colors hover:bg-amber-500/15 hover:underline"
-          >
-            <RefreshCcw className="size-3" />
-            Reconnect GitHub
-          </button>
-        </div>
-      )}
       {/* main is the ONE scroll container for pages that overflow it (their content just sizes
           naturally). Pages that opt into filling the screen (flex-1 min-h-0 down the tree) get
           a real bounded height here instead — that's what lets their own inner lists scroll
           internally instead of the whole page growing taller than the viewport. */}
       <main className="flex flex-1 flex-col overflow-x-hidden overflow-y-auto">
         <div className="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-1 flex-col px-4 py-4 sm:px-6">
-          <Outlet />
+          {githubDisconnected ? (
+            <div className="flex flex-1 items-center justify-center">
+              <Card className="w-full max-w-md border-amber-500/30 shadow-lg">
+                <CardContent className="space-y-5 p-6 text-center">
+                  <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-amber-500/10">
+                    <Link2 className="size-6 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h1 className="text-lg font-semibold tracking-tight">GitHub is disconnected</h1>
+                    <p className="text-sm text-muted-foreground">
+                      Repository data can't be fetched until GitHub is reconnected. Your account and
+                      your saved changelogs stay exactly where they are.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Button type="button" className="w-full gap-2" onClick={() => reconnect(nextPath)}>
+                      <RefreshCcw />
+                      Reconnect GitHub
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={useAzureInstead}
+                    >
+                      Continue with Azure DevOps
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full gap-2 text-muted-foreground"
+                      onClick={() => void logout()}
+                    >
+                      <LogOut />
+                      Sign out
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : (
+            <Outlet />
+          )}
         </div>
       </main>
     </div>
