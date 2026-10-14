@@ -1,3 +1,8 @@
+## v1.0.22 — 2026-10-14 (promoted build.58)
+
+
+- Stack the generate workspace rows instead of a two-column grid
+
 ## v1.0.21 — 2026-10-14 (promoted build.57)
 
 
