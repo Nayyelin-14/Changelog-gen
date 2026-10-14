@@ -1,3 +1,7 @@
+## 2026-10-14 — dev (run 57)
+
+- fix: one set of AI controls — toolbar stays a single row, hides once generated
+
 ## 2026-10-14 — dev (run 56)
 
 - feat: restyle the generate page — one container language, aligned hierarchy
