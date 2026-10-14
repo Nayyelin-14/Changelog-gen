@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 ## v1.0.21 — 2026-10-14 (promoted build.57)
 
 
@@ -18,8 +17,6 @@
 
 - fix: stable history ids, drop Gemini, keep Groq's models selectable
 
-=======
->>>>>>> dev
 ## 2026-10-14 — dev (run 56)
 
 - feat: restyle the generate page — one container language, aligned hierarchy
