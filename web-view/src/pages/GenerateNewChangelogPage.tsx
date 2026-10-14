@@ -1632,12 +1632,17 @@ export function GenerateNewChangelogPage() {
 
         {/* ── RIGHT COLUMN: AI configuration + results ── */}
         <div className="flex flex-col gap-4">
-          <AiGenerationControls
-            ai={ai}
-            onGenerate={() => handleGenerate(false)}
-            generating={status === "loading" && !hasResult}
-            disabled={!canSubmit || hasResult}
-          />
+          {/* Provider/model/Generate live here only until a result exists — the result footer
+              carries its own Edit · provider · model · Regen · Save set, and showing both left
+              two identical (but half-disabled) control bars with no clear next step. */}
+          {!showResultPanel && (
+            <AiGenerationControls
+              ai={ai}
+              onGenerate={() => handleGenerate(false)}
+              generating={status === "loading" && !hasResult}
+              disabled={!canSubmit}
+            />
+          )}
 
           {/* Generating progress (first generation only) */}
           {status === "loading" && !hasResult && (

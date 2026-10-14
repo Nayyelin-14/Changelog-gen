@@ -86,17 +86,17 @@ export function AiGenerationControls({
     );
   }
 
-  // toolbar variant — full-width responsive layout
+  // toolbar variant — always one row (provider · model · Generate); wraps, never stacks
   return (
     <div className={cn(
-      "flex flex-col gap-3 rounded-xl border border-border/50 bg-card p-3 sm:flex-row sm:items-center sm:justify-between",
+      "flex flex-row flex-wrap items-center justify-between gap-2 rounded-xl border border-border/50 bg-card p-3",
       className,
     )}>
       {/* Left side: provider + model selects — aligned to same height */}
-      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-2">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {showProvider && (
           <Select value={ai.provider} onValueChange={ai.setProvider} disabled={generating}>
-            <SelectTrigger className="h-8 w-full gap-1.5 text-xs sm:w-auto sm:min-w-[140px]">
+            <SelectTrigger className="h-8 min-w-[140px] gap-1.5 text-xs">
               <SelectValue placeholder="Provider…" />
             </SelectTrigger>
             <SelectContent className="min-w-[180px]" side="bottom" align="end">
@@ -125,7 +125,7 @@ export function AiGenerationControls({
         onClick={onGenerate}
         disabled={!canGenerate}
         className={cn(
-          "h-8 gap-1.5 px-4 text-xs transition-all whitespace-nowrap sm:w-auto",
+          "h-8 shrink-0 gap-1.5 whitespace-nowrap px-4 text-xs transition-all",
           generating && "animate-pulse",
         )}
       >
