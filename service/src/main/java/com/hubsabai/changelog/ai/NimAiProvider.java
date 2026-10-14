@@ -505,12 +505,26 @@ public class NimAiProvider implements AiProvider {
      *
      * <p>Without the fallback an unusable catalog collapsed to an empty list: the endpoint then
      * answered {@code "returned an empty model list"} and the provider's models became
-     * unselectable in the UI, while the actual cause (a rejected key, a wrong base-url, or an
-     * allow-list of retired ids) was thrown away with the response body. {@link #liveCatalogIds()}
-     * logs it instead.
+     * unselectable in the UI, while the actual cause (a wrong base-url, or an allow-list of
+     * retired ids) was thrown away with the response body. {@link #liveCatalogIds()} logs it
+     * instead.
+     *
+     * <p>The one failure that is <b>not</b> rescued is an HTTP 401/403 on the catalog call: that
+     * means the key itself was refused, so every generation would be refused too — advertising
+     * the approved models would put working-looking dropdown entries in front of the user only
+     * for each click to fail with the provider's raw 403. An empty list makes the models
+     * endpoint answer "empty model list", which the UI renders as "Models unavailable for X"
+     * with generation disabled.
      */
     private List<String> listingCandidates() {
-        List<String> candidates = liveCatalogIds();
+        CatalogIds catalog = liveCatalogIds();
+        if (catalog.keyRejected()) {
+            LOG.warning("GET " + baseUrl.replace("/chat/completions", "/models") + " → HTTP " + catalog.status()
+                    + ": the provider rejected this API key — offering no models instead of the approved"
+                    + " fallback list (the fallback would advertise models the key cannot call).");
+            return List.of();
+        }
+        List<String> candidates = catalog.ids();
         if (allowedModels.isEmpty()) {
             return candidates;
         }
@@ -524,13 +538,23 @@ public class NimAiProvider implements AiProvider {
         return List.copyOf(allowedModels);
     }
 
+    /** Outcome of the {@code /models} call: the chat-capable ids (possibly none) plus the HTTP
+     *  status that produced them ({@code -1} when the call never reached the server). */
+    private record CatalogIds(List<String> ids, int status) {
+        /** A 401/403 is the key being refused — not a catalog hiccup — so no fallback applies. */
+        boolean keyRejected() {
+            return status == 401 || status == 403;
+        }
+    }
+
     /**
      * Chat-capable ids from {@code GET <base-url>/models}. Does <b>not</b> throw for an
-     * HTTP-level failure: a 401/404 (rejected key, wrong base-url) or an unparseable body is
+     * HTTP-level failure: a 404/500 (wrong base-url, provider outage) or an unparseable body is
      * logged with its status and treated as "catalog unavailable", so the caller can fall back
-     * rather than reporting an empty list that hides why.
+     * rather than reporting an empty list that hides why. A 401/403 is returned as such so the
+     * caller can refuse the fallback too.
      */
-    private List<String> liveCatalogIds() {
+    private CatalogIds liveCatalogIds() {
         String modelsUrl = baseUrl.replace("/chat/completions", "/models");
         Response raw;
         try {
@@ -539,12 +563,13 @@ public class NimAiProvider implements AiProvider {
                     .header("Authorization", "Bearer " + apiKey)
                     .get();
         } catch (WebApplicationException e) {
-            LOG.warning("GET " + modelsUrl + " failed: HTTP " + e.getResponse().getStatus()
-                    + " — " + truncate(e.getResponse().readEntity(String.class)));
-            return List.of();
+            int status = e.getResponse() != null ? e.getResponse().getStatus() : -1;
+            LOG.warning("GET " + modelsUrl + " failed: HTTP " + status
+                    + " — " + truncate(e.getResponse() != null ? e.getResponse().readEntity(String.class) : null));
+            return new CatalogIds(List.of(), status);
         } catch (Exception e) {
             LOG.warning("GET " + modelsUrl + " failed: " + e.getMessage());
-            return List.of();
+            return new CatalogIds(List.of(), -1);
         }
 
         int status = raw.getStatus();
@@ -558,18 +583,18 @@ public class NimAiProvider implements AiProvider {
         }
         if (status >= 400) {
             LOG.warning("GET " + modelsUrl + " → HTTP " + status + " — " + truncate(body));
-            return List.of();
+            return new CatalogIds(List.of(), status);
         }
         try {
             NvidiaModelsResponse response = MAPPER.readValue(body, NvidiaModelsResponse.class);
-            return response.dataOrEmpty().stream()
+            return new CatalogIds(response.dataOrEmpty().stream()
                     .map(NvidiaModelsResponse.NvidiaModel::getId)
                     .filter(NimAiProvider::looksLikeChatModel)
                     .filter(id -> !EXCLUDED_MODELS.contains(id))
-                    .toList();
+                    .toList(), status);
         } catch (Exception e) {
             LOG.warning("GET " + modelsUrl + " → unparseable catalog body: " + e.getMessage());
-            return List.of();
+            return new CatalogIds(List.of(), status);
         }
     }
 
@@ -624,8 +649,11 @@ public class NimAiProvider implements AiProvider {
             if (!isRecommended(id)) continue;
             ModelHealth cached = MODEL_HEALTH.get(id);
             if (cached != null && (now - cached.checkedAtMillis() < (cached.ok() ? PROBE_OK_TTL_MS : PROBE_BROKEN_TTL_MS))) {
-                // Health is cached and fresh — use cached status
-                if (healthyOrNotYetBroken(cached, id) != null) {
+                // Cached health is fresh: advertise only a model whose last probe succeeded.
+                // A failed probe must not be listed as "available" — "recommended" is a ranking
+                // hint, not a promise the model still serves (a 403-ing model stays selectable
+                // for up to PROBE_FAILS_TO_HIDE × PROBE_BROKEN_TTL otherwise).
+                if (cached.ok()) {
                     result.add(AiModelOption.available(id, prettifyModelId(id), true));
                 }
             } else {

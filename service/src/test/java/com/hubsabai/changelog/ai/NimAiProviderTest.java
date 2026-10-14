@@ -420,15 +420,30 @@ class NimAiProviderTest {
         assertTrue(provider.listModelsWithStatus().isEmpty());
     }
 
-    /** Production symptom: the provider's /models answered with a rejected-key error body, the
-     * approved-model intersection came back empty, and the endpoint answered "returned an empty
-     * model list" — so the provider's own approved models became unselectable in the UI. The
-     * approved list is the fallback: those ids are exactly what generation is configured to use. */
+    /** Production symptom (Groq): the key was refused with HTTP 403 on /models *and* on every
+     * generation, yet the approved-list fallback advertised four models that all answered the
+     * user's generate click with the provider's raw 403. A refused key is refused for everything,
+     * so no fallback — the empty list makes the endpoint answer "empty model list", which the UI
+     * renders as "Models unavailable for X" with generation disabled. */
     @Test
-    void rejectedCatalogFallsBackToTheApprovedModelList() {
+    void authRejectedCatalogIsNotRescuedByTheAllowList() {
         stubFor(get(urlPathEqualTo("/v1/models"))
-                .willReturn(aResponse().withStatus(401)
-                        .withBody("{\"error\":{\"message\":\"Invalid API Key\"}}")));
+                .willReturn(aResponse().withStatus(403)
+                        .withBody("{\"error\":{\"message\":\"Forbidden\"}}")));
+
+        NimAiProvider approved = providerWithAllowList("model-a,model-b");
+
+        assertTrue(approved.listModels().isEmpty());
+        assertTrue(approved.listModelsWithStatus().isEmpty());
+    }
+
+    /** A catalog outage that is not the key (500, timeout, unparseable body) still falls back:
+     * the approved ids are exactly what generation is configured to use. */
+    @Test
+    void serverErrorCatalogFallsBackToTheApprovedModelList() {
+        stubFor(get(urlPathEqualTo("/v1/models"))
+                .willReturn(aResponse().withStatus(500)
+                        .withBody("{\"error\":{\"message\":\"upstream unavailable\"}}")));
         stubFor(post(urlPathEqualTo("/v1/chat/completions"))
                 .willReturn(aResponse().withStatus(200)
                         .withBody("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")));
@@ -439,6 +454,26 @@ class NimAiProviderTest {
                 .containsAll(List.of("model-a", "model-b")));
         assertTrue(approved.listModelsWithStatus().stream().map(AiModelOption::id).toList()
                 .containsAll(List.of("model-a", "model-b")));
+    }
+
+    /** "Recommended" is a ranking hint, not a promise a model still serves: after a failed probe
+     * the picker must stop advertising it as available, or the user keeps selecting a model that
+     * fails their generate click (the 403-ing Groq model stayed listed for up to an hour). */
+    @Test
+    void recommendedModelWithAFailedProbeIsNotAdvertisedAsAvailable() {
+        String modelsResponse = """
+                {"data":[{"id":"meta/llama-3.2-11b-vision-instruct"}]}
+                """;
+        stubFor(get(urlPathEqualTo("/v1/models"))
+                .willReturn(aResponse().withStatus(200).withBody(modelsResponse)));
+        stubFor(post(urlPathEqualTo("/v1/chat/completions"))
+                .willReturn(aResponse().withStatus(500)));
+
+        NimAiProvider approved = providerWithAllowList("meta/llama-3.2-11b-vision-instruct");
+        // Sync listing records the failed probe in the health cache (grace still offers it there).
+        assertFalse(approved.listModels().isEmpty());
+
+        assertTrue(approved.listModelsWithStatus().isEmpty());
     }
 
     /** Same outcome when the catalog answers 200 but only advertises ids outside the approved
