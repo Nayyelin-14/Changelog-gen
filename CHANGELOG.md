@@ -1,3 +1,8 @@
+## v1.0.21 — 2026-10-14 (promoted build.57)
+
+
+- fix: one set of AI controls — toolbar stays a single row, hides once generated
+
 ## v1.0.20 — 2026-10-14 (promoted build.56)
 
 
