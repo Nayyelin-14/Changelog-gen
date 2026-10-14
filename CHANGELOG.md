@@ -1,3 +1,7 @@
+## 2026-10-14 — dev (run 55)
+
+- fix: never advertise models a rejected API key cannot call
+
 ## 2026-10-14 — dev (run 54)
 
 - fix: stable history ids, drop Gemini, keep Groq's models selectable
