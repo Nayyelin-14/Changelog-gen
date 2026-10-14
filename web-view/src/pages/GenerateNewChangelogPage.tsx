@@ -1235,9 +1235,9 @@ export function GenerateNewChangelogPage() {
         </div>
       )}
 
-      {/* ═══════════ 2-COLUMN WORKSPACE ═══════════ */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        {/* ── LEFT COLUMN: Source context ── */}
+      {/* ═══════════ WORKSPACE (stacked rows) ═══════════ */}
+      <div className="flex flex-col gap-5">
+        {/* ── Source context ── */}
         <div className="flex flex-col gap-4">
           {/* PR Card */}
           {prDetails && (
@@ -1630,7 +1630,7 @@ export function GenerateNewChangelogPage() {
           )}
         </div>
 
-        {/* ── RIGHT COLUMN: AI configuration + results ── */}
+        {/* ── AI configuration + results ── */}
         <div className="flex flex-col gap-4">
           {/* Provider/model/Generate live here only until a result exists — the result footer
               carries its own Edit · provider · model · Regen · Save set, and showing both left
