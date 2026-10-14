@@ -1,3 +1,7 @@
+## 2026-10-14 — dev (run 58)
+
+- Stack the generate workspace rows instead of a two-column grid
+
 ## 2026-10-14 — dev (run 57)
 
 - fix: one set of AI controls — toolbar stays a single row, hides once generated
