@@ -1,3 +1,11 @@
+## 2026-10-15 — dev (run 63)
+
+- chore: release v1.0.24 (build.61) ***NO_CI***
+- Merge branch 'dev'
+- chore: release v1.0.25 (build.62) ***NO_CI***
+- feat(chat): curated fast-model picker, bigger widget, delete-with-confirm
+- Merge branch 'main' into dev
+
 ## 2026-10-15 — dev (run 62)
 
 - fix: surface real chat errors; stall watchdog follows alive streams
