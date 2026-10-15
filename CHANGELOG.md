@@ -1,3 +1,7 @@
+## 2026-10-15 — dev (run 61)
+
+- fix: announce chat errors to screen readers
+
 ## 2026-10-15 — dev (run 59)
 
 - fix: chat hang + model dropdown + repo fetch perf
