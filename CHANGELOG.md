@@ -1,3 +1,8 @@
+## v1.0.25 — 2026-10-15 (promoted build.62)
+
+
+- fix: surface real chat errors; stall watchdog follows alive streams
+
 ## v1.0.24 — 2026-10-15 (promoted build.61)
 
 
