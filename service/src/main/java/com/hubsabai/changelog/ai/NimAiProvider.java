@@ -458,6 +458,12 @@ public class NimAiProvider implements AiProvider {
         }
 
         StringBuilder accumulated = new StringBuilder();
+        // Reasoning models stream their thinking first (delta.reasoning with content=null),
+        // then the actual answer. Reasoning is never forwarded live — dumping a model's
+        // chain-of-thought into the chat bubble reads as a broken answer ("Here's a thinking
+        // process: 1. Analyze…"). It's kept aside only so a model that speaks EXCLUSIVELY in
+        // reasoning fields still delivers something instead of failing with "no content".
+        StringBuilder reasoning = new StringBuilder();
         AiUsage usage = null;
         try (InputStream body = httpResponse.readEntity(InputStream.class);
              BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
@@ -479,10 +485,16 @@ public class NimAiProvider implements AiProvider {
                 if (chunk.getChoices() == null || chunk.getChoices().isEmpty()) continue;
 
                 AiResponse.Message delta = chunk.getChoices().get(0).getDelta();
-                String text = delta != null ? delta.getContentOrReasoning() : null;
-                if (text != null && !text.isEmpty()) {
-                    accumulated.append(text);
-                    handler.onDelta(text);
+                if (delta == null) continue;
+                String content = delta.getContent();
+                if (content != null && !content.isEmpty()) {
+                    accumulated.append(content);
+                    handler.onDelta(content);
+                } else {
+                    String think = delta.getReasoning() != null && !delta.getReasoning().isEmpty()
+                            ? delta.getReasoning()
+                            : delta.getReasoningContent();
+                    if (think != null && !think.isEmpty()) reasoning.append(think);
                 }
                 if (chunk.getUsage() != null) {
                     usage = new AiUsage(chunk.getUsage().getPromptTokens(),
@@ -498,7 +510,14 @@ public class NimAiProvider implements AiProvider {
         }
 
         if (accumulated.length() == 0) {
-            throw new AiException("Chat returned no content (model " + modelId + ")");
+            if (reasoning.length() == 0) {
+                throw new AiException("Chat returned no content (model " + modelId + ")");
+            }
+            // Degenerate model that never emits a content delta — deliver the reasoning as one
+            // final chunk rather than throwing away an otherwise complete answer.
+            String fallback = stripCodeFence(reasoning.toString());
+            handler.onDelta(fallback);
+            return new AiResult(fallback, usage, modelId);
         }
         return new AiResult(stripCodeFence(accumulated.toString()), usage, modelId);
     }

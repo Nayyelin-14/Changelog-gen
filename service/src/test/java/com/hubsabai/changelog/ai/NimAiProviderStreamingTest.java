@@ -112,6 +112,47 @@ class NimAiProviderStreamingTest {
         assertFalse(ex.anyOutputEmitted());
     }
 
+    @Test
+    void doesNotForwardReasoningDeltasBeforeTheRealAnswer() {
+        // Reasoning models stream thinking first (delta.reasoning, content=null), then the
+        // answer. Forwarding reasoning read as a broken response — the whole chain-of-thought
+        // landed in the chat bubble. Only content chunks may reach the handler.
+        stubStream(200, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"Analyzing input...\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"checking constraints\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"
+                + "data: [DONE]\n\n");
+
+        List<String> deltas = new ArrayList<>();
+        AiResult result = provider.chatStream(List.of(new AiMessage("user", "hi")), null, deltas::add);
+
+        assertEquals(List.of("Hello", " world"), deltas);
+        assertEquals("Hello world", result.getText());
+    }
+
+    @Test
+    void deliversReasoningOnlyStreamsAsOneFinalChunk() {
+        // A model that never emits a content delta but answers entirely in reasoning fields
+        // must still deliver its answer instead of failing with "no content".
+        stubStream(200, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"The answer is 42.\"}}]}\n\n"
+                + "data: [DONE]\n\n");
+
+        List<String> deltas = new ArrayList<>();
+        AiResult result = provider.chatStream(List.of(new AiMessage("user", "hi")), null, deltas::add);
+
+        assertEquals(List.of("The answer is 42."), deltas);
+        assertEquals("The answer is 42.", result.getText());
+    }
+
+    @Test
+    void throwsWhenStreamHasNeitherContentNorReasoning() {
+        stubStream(200, "data: {\"choices\":[{\"delta\":{}}]}\n\ndata: [DONE]\n\n");
+
+        AiException ex = assertThrows(AiException.class, () ->
+                provider.chatStream(List.of(new AiMessage("user", "hi")), null, text -> {}));
+        assertTrue(ex.getMessage().contains("no content"));
+    }
+
     private void stubStream(int status, String body) {
         stubFor(post(urlPathEqualTo("/v1/chat/completions"))
                 .willReturn(aResponse().withStatus(status).withBody(body)));
