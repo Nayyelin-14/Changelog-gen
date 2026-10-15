@@ -1,3 +1,8 @@
+## v1.0.23 — 2026-10-15 (promoted build.59)
+
+
+- fix: chat hang + model dropdown + repo fetch perf
+
 ## v1.0.22 — 2026-10-14 (promoted build.58)
 
 
