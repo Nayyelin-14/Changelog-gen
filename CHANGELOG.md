@@ -1,3 +1,7 @@
+## 2026-10-15 — dev (run 65)
+
+- fix(chat): never stream reasoning as the answer; re-rank models by time-to-answer
+
 ## 2026-10-15 — dev (run 64)
 
 - fix(chat): drop Groq from curated list — Azure-IP-blocked in prod
