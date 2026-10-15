@@ -1344,6 +1344,15 @@ public class AzureDevOpsOrgConnector {
         }
     }
 
+    /** Same as {@link #hasChangelogFileSafely(String, String)} but short-TTL cached — both hits
+     * and misses. The browse page re-runs this scan on every project selection, and each miss
+     * costs two live {@code getItem} round trips (CHANGELOG.md, then changelog.md) per repo.
+     * A repo that gains a changelog shows up within the cache TTL; acceptable for a read-only
+     * browse filter, never for a push. */
+    public boolean hasChangelogFileCached(String project, String repo) {
+        return fetchChangelogFileCached(project, repo, null) != null;
+    }
+
     /**
      * Parsed entry from a repo's existing CHANGELOG.md. Lightweight — we store the raw markdown
      * body so the frontend can display it without reconstructing from structured data.

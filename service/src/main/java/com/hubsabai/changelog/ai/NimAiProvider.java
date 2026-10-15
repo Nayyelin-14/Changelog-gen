@@ -79,6 +79,13 @@ public class NimAiProvider implements AiProvider {
 
     protected final Client client;
     protected final Client probeClient;
+    /** Separate client for the {@code /models} catalog with a short read timeout. The catalog is
+     * on the hot path of the model dropdown, and it shares the 120s read timeout with generation —
+     * a provider whose {@code /models} accepts the connection and then stalls held
+     * {@code /ai/models} (and every page that awaits the picker) hostage for two minutes. A
+     * catalog that can't answer in {@link #CATALOG_TIMEOUT_MS} is "unavailable", not "worth
+     * waiting for". */
+    protected final Client catalogClient;
     protected final String baseUrl;
     protected final String model;
     protected final List<String> fallbackModels;
@@ -87,6 +94,20 @@ public class NimAiProvider implements AiProvider {
     private final String developerPromptOverride;
     private final String qaPromptOverride;
     private final String businessPromptOverride;
+
+    /** How long a fetched catalog id list is served without re-hitting {@code /models}. Models
+     * appear in the catalog rarely; a refresh every few minutes keeps the picker honest while
+     * making repeat dropdown opens instant. */
+    private static final long CATALOG_TTL_MS = TimeUnit.MINUTES.toMillis(5);
+    private static final long CATALOG_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(10);
+
+    /** Last successful {@code /models} parse, kept so a transient catalog failure (timeout, 5xx)
+     * can still serve the previous list instead of collapsing the dropdown to nothing. Never
+     * stale-served for a rejected key (see {@link CatalogIds#keyRejected()}). */
+    private record CatalogCacheEntry(CatalogIds ids, long fetchedAtMillis) {
+    }
+
+    private volatile CatalogCacheEntry catalogCache;
 
     public NimAiProvider(
             String baseUrl,
@@ -119,6 +140,10 @@ public class NimAiProvider implements AiProvider {
         this.probeClient = ClientBuilder.newBuilder()
                 .connectTimeout(Math.min(5, TimeUnit.SECONDS.toSeconds(PROBE_TIMEOUT_MS)), TimeUnit.SECONDS)
                 .readTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .build();
+        this.catalogClient = ClientBuilder.newBuilder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(CATALOG_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .build();
         this.baseUrl = baseUrl;
         this.model = model;
@@ -540,7 +565,7 @@ public class NimAiProvider implements AiProvider {
 
     /** Outcome of the {@code /models} call: the chat-capable ids (possibly none) plus the HTTP
      *  status that produced them ({@code -1} when the call never reached the server). */
-    private record CatalogIds(List<String> ids, int status) {
+    protected record CatalogIds(List<String> ids, int status) {
         /** A 401/403 is the key being refused — not a catalog hiccup — so no fallback applies. */
         boolean keyRejected() {
             return status == 401 || status == 403;
@@ -548,17 +573,24 @@ public class NimAiProvider implements AiProvider {
     }
 
     /**
-     * Chat-capable ids from {@code GET <base-url>/models}. Does <b>not</b> throw for an
-     * HTTP-level failure: a 404/500 (wrong base-url, provider outage) or an unparseable body is
-     * logged with its status and treated as "catalog unavailable", so the caller can fall back
-     * rather than reporting an empty list that hides why. A 401/403 is returned as such so the
-     * caller can refuse the fallback too.
+     * Chat-capable ids from {@code GET <base-url>/models}, TTL-cached. Does <b>not</b> throw for a
+     * HTTP-level failure: a 404/500 (wrong base-url, provider outage), a timeout, or an
+     * unparseable body is logged with its status and treated as "catalog unavailable" — served
+     * from the last good catalog when there is one, so a flaky catalog doesn't collapse the
+     * dropdown mid-session. A 401/403 is returned as such so the caller can refuse the fallback
+     * too (that's the key being refused, not a hiccup).
      */
-    private CatalogIds liveCatalogIds() {
+    protected CatalogIds liveCatalogIds() {
+        CatalogCacheEntry cached = catalogCache;
+        long now = System.currentTimeMillis();
+        if (cached != null && now - cached.fetchedAtMillis() < CATALOG_TTL_MS) {
+            return cached.ids();
+        }
+
         String modelsUrl = baseUrl.replace("/chat/completions", "/models");
         Response raw;
         try {
-            raw = client.target(modelsUrl)
+            raw = catalogClient.target(modelsUrl)
                     .request(MediaType.APPLICATION_JSON)
                     .header("Authorization", "Bearer " + apiKey)
                     .get();
@@ -566,10 +598,10 @@ public class NimAiProvider implements AiProvider {
             int status = e.getResponse() != null ? e.getResponse().getStatus() : -1;
             LOG.warning("GET " + modelsUrl + " failed: HTTP " + status
                     + " — " + truncate(e.getResponse() != null ? e.getResponse().readEntity(String.class) : null));
-            return new CatalogIds(List.of(), status);
+            return staleOrEmpty(status);
         } catch (Exception e) {
             LOG.warning("GET " + modelsUrl + " failed: " + e.getMessage());
-            return new CatalogIds(List.of(), -1);
+            return staleOrEmpty(-1);
         }
 
         int status = raw.getStatus();
@@ -583,19 +615,33 @@ public class NimAiProvider implements AiProvider {
         }
         if (status >= 400) {
             LOG.warning("GET " + modelsUrl + " → HTTP " + status + " — " + truncate(body));
-            return new CatalogIds(List.of(), status);
+            return staleOrEmpty(status);
         }
         try {
             NvidiaModelsResponse response = MAPPER.readValue(body, NvidiaModelsResponse.class);
-            return new CatalogIds(response.dataOrEmpty().stream()
+            CatalogIds ids = new CatalogIds(response.dataOrEmpty().stream()
                     .map(NvidiaModelsResponse.NvidiaModel::getId)
                     .filter(NimAiProvider::looksLikeChatModel)
                     .filter(id -> !EXCLUDED_MODELS.contains(id))
                     .toList(), status);
+            catalogCache = new CatalogCacheEntry(ids, System.currentTimeMillis());
+            return ids;
         } catch (Exception e) {
             LOG.warning("GET " + modelsUrl + " → unparseable catalog body: " + e.getMessage());
-            return new CatalogIds(List.of(), status);
+            return staleOrEmpty(status);
         }
+    }
+
+    /** The last good catalog when the current call failed for a non-auth reason — a stale list
+     * beats an empty dropdown while the provider's catalog is briefly unreachable. An auth
+     * rejection (401/403) must never be papered over: the key itself was refused, so offering
+     * models would only advertise entries every call will be refused for. */
+    private CatalogIds staleOrEmpty(int status) {
+        CatalogIds previous = catalogCache != null ? catalogCache.ids() : null;
+        if (previous != null && !previous.keyRejected()) {
+            return previous;
+        }
+        return new CatalogIds(List.of(), status);
     }
 
     /**

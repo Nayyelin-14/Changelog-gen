@@ -148,6 +148,13 @@ generate/edit/restore/push changelogs for a version.
 - **Errors:** 400 if `audience` isn't `qa`/`business`, or if there's no CHANGELOG.md / no entries / nothing reconstructable for that version.
 - **Notes:** reads the same cache the dashboard writes to — never re-triggers a fresh AI call for a version someone already generated.
 
+### `POST /api/projects/{project}/repos/{repo}/changelog-chat/stream`
+- **For:** the QA/Business "ask about this changelog" chat widget — a plain-language answer about one version, grounded in that audience's saved summary plus the raw change list. Never triggers a generation. Exists under `/api/github/...` too (`ChangelogChatService` is shared by both resources).
+- **Request:** path params `project`, `repo`; query params `audience` **(required: `qa`|`business`)**, `version` **(required)**, `provider` (optional, AI provider id, default `nvidia`), `model` (optional — the picker's choice; null uses the provider's configured default, still subject to its fallback chain). Body: `{ "question": string, "history": [{ "role", "content" }] }` (history is optional; only the last 10 turns are replayed).
+- **Response:** `text/event-stream`. Events: `event: delta` × N — `data: "<token>"`; `event: done` — `data: { model }` (which model actually answered); `event: error` — `data: { message, partial }` (`partial=true` when some text had already been streamed).
+- **Errors:** 400 up front if `audience`/`version`/`question` missing or no changelog has been generated for that version; 429 if the chat-concurrency cap is reached.
+- **Notes:** one answer has a hard 60s wall-clock budget enforced by a watchdog (the provider call runs on its own virtual thread), so a hung model can never leave the browser on "Thinking…" — the stream always ends with `done` or `error`.
+
 ### `PUT /api/projects/{project}/repos/{repo}/changelog-edit`
 - **For:** saving a human edit to one audience's text.
 - **Request:** path params `project`, `repo`; body `ChangelogEditRequest` — `{ version, branch, audience, text, editedBy }` (`version`, `audience`, `text` required).
@@ -279,6 +286,7 @@ Identical semantics to the Azure equivalents, mounted under `/api/github`:
 | `GET` | `/projects/{p}/repos/{r}/changelog-text` | Saved text for version+audience, no provider round-trip |
 | `GET` | `/projects/{p}/repos/{r}/changelog-meta` | Provenance + push status; includes `tokens`/`durationMs` from the latest revision |
 | `GET` | `/projects/{p}/repos/{r}/changelog-preview` | Read-only QA/Business view |
+| `POST` | `/projects/{p}/repos/{r}/changelog-chat/stream` | QA/Business chat (SSE: `delta`/`done`/`error`) — same shape as Azure; was missing here until the shared `ChangelogChatService` landed, which 404'd every chat in GitHub mode |
 | `GET` | `/projects/{p}/repos/{r}/changelog-repo-text` | Developer entry body exactly as it exists in the repo right now |
 | `PUT` | `/projects/{p}/repos/{r}/changelog-edit` | Save a human edit (`ChangelogEditRequest`) |
 | `PUT` | `/projects/{p}/repos/{r}/changelog-restore` | Roll back to `previous_*` |

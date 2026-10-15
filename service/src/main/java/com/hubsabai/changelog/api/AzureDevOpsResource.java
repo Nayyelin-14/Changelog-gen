@@ -3,18 +3,15 @@ package com.hubsabai.changelog.api;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hubsabai.changelog.ai.AiException;
-import com.hubsabai.changelog.ai.AiMessage;
 import com.hubsabai.changelog.ai.AiModelCatalog;
 import com.hubsabai.changelog.ai.AiModelOption;
 import com.hubsabai.changelog.ai.AiProviderInfo;
 import com.hubsabai.changelog.ai.AiProviderRegistry;
 import com.hubsabai.changelog.ai.AiResult;
-import com.hubsabai.changelog.ai.AiStreamException;
 import com.hubsabai.changelog.ai.AiUsage;
 import com.hubsabai.changelog.ai.ReleaseNotePreparer;
-import com.hubsabai.changelog.chat.ChangelogChatPromptBuilder;
 import com.hubsabai.changelog.chat.ChangelogChatRequest;
-import com.hubsabai.changelog.chat.ChatTurn;
+import com.hubsabai.changelog.chat.ChangelogChatService;
 import com.hubsabai.changelog.connector.azuredevops.AzureDevOpsOrgConnector;
 import com.hubsabai.changelog.connector.azuredevops.ChangelogFileManager;
 import com.hubsabai.changelog.connector.azuredevops.dto.CommitResponse;
@@ -75,7 +72,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -133,6 +130,9 @@ public class AzureDevOpsResource {
     @Inject
     RunChangeDataReader runChangeDataReader;
 
+    @Inject
+    ChangelogChatService chatService;
+
     @GET
     @Path("/projects")
     public List<ProjectSummary> listProjects() {
@@ -162,7 +162,7 @@ public class AzureDevOpsResource {
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<Boolean>> futures = uncached.stream()
-                    .map(r -> executor.submit(() -> orgConnector.hasChangelogFileSafely(project, r.name())))
+                    .map(r -> executor.submit(() -> orgConnector.hasChangelogFileCached(project, r.name())))
                     .toList();
             Set<String> liveConfirmed = new HashSet<>();
             for (int i = 0; i < uncached.size(); i++) {
@@ -434,13 +434,6 @@ public class AzureDevOpsResource {
 
     private static final ObjectMapper SSE_MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-
-    // Cap on concurrent chat streams — each occupies a worker thread for its whole duration.
-    private static final Semaphore CHAT_CONCURRENCY = new Semaphore(20);
-    // Only the most recent turns are replayed — bounds prompt size/cost on a long-running chat.
-    private static final int CHAT_HISTORY_LIMIT = 10;
-    // Safety timeout — prevents a hanging AI provider from occupying a worker thread forever.
-    private static final long CHAT_TIMEOUT_MS = 60_000;
 
     @POST
     @Path("/projects/{project}/repos/{repo}/generate-stream")
@@ -1626,14 +1619,13 @@ public class AzureDevOpsResource {
     /**
      * Streams a plain-language answer to a QA/Business question about one version's already-
      * generated changelog. Grounded in that audience's summary text plus the full list of
-     * changes reported for the version (see {@link ChangelogChatPromptBuilder}); never triggers
+     * changes reported for the version (built by {@code ChangelogChatPromptBuilder}); never triggers
      * a changelog generation itself, same read-only spirit as {@link #changelogPreview}. Real
-     * per-token streaming, same {@code StreamingOutput} shape as {@link #generateStream}.
+     * per-token streaming; the whole implementation (concurrency cap, grounding load, deadline,
+     * SSE framing) lives in {@link ChangelogChatService}, shared with the GitHub resource.
      *
-     * {@code CHAT_CONCURRENCY} bounds how many of these can run at once — each occupies a worker
-     * thread for its whole duration, and that pool is shared with every other endpoint in the
-     * app. See CHATBOT-PLAN.md "Performance" for why the cap ships now and a non-blocking rewrite
-     * is deferred until a load test shows it's actually needed.
+     * {@code model} is the picker's choice from the widget's model dropdown — the same catalog
+     * the generate page uses — and null falls back to the provider's configured default.
      */
     @POST
     @Path("/projects/{project}/repos/{repo}/changelog-chat/stream")
@@ -1643,100 +1635,10 @@ public class AzureDevOpsResource {
             @PathParam("repo") String repo,
             @QueryParam("audience") String audience,
             @QueryParam("provider") String provider,
+            @QueryParam("model") String model,
             @QueryParam("version") String version,
             ChangelogChatRequest request) {
-        if (!"qa".equals(audience) && !"business".equals(audience)) {
-            throw new AiException("audience must be 'qa' or 'business'.");
-        }
-        if (version == null || version.isBlank()) {
-            throw new AiException("A version is required.");
-        }
-        if (request == null || request.getQuestion() == null || request.getQuestion().isBlank()) {
-            throw new AiException("A question is required.");
-        }
-        String summaryText = cacheService.getCurrentText(project, repo, version, audience).orElse(null);
-        if (summaryText == null) {
-            throw new AiException("No " + audience + " changelog has been generated for this version yet.");
-        }
-
-        if (!CHAT_CONCURRENCY.tryAcquire()) {
-            return Response.status(429)
-                    .entity(Map.of("error", "Chat is busy right now — try again shortly."))
-                    .build();
-        }
-
-        List<ChangeItem> items = rawReleaseService.findItems(project, repo, version);
-        String systemPrompt = ChangelogChatPromptBuilder.build(repo, version, audience, summaryText, items);
-        List<AiMessage> messages = buildChatMessages(systemPrompt, request);
-        long deadline = System.currentTimeMillis() + CHAT_TIMEOUT_MS;
-
-        StreamingOutput stream = output -> {
-            var writer = new PrintWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8));
-            try {
-                AiResult result = aiProviderRegistry.resolve(provider).chatStream(messages, null, delta -> onChatDelta(writer, deadline, delta));
-                Map<String, Object> done = new LinkedHashMap<>();
-                done.put("model", result.getModel());
-                writer.write("event: done\ndata: " + SSE_MAPPER.writeValueAsString(done) + "\n\n");
-                writer.flush();
-            } catch (Exception e) {
-                writeChatError(writer, e);
-            } finally {
-                CHAT_CONCURRENCY.release();
-            }
-        };
-        return Response.ok(stream).type(MediaType.SERVER_SENT_EVENTS).header("Cache-Control", "no-cache").build();
-    }
-
-    private List<AiMessage> buildChatMessages(String systemPrompt, ChangelogChatRequest request) {
-        List<AiMessage> messages = new ArrayList<>();
-        messages.add(new AiMessage("system", systemPrompt));
-        List<ChatTurn> history = request.getHistory();
-        if (history != null && !history.isEmpty()) {
-            int from = Math.max(0, history.size() - CHAT_HISTORY_LIMIT);
-            for (ChatTurn turn : history.subList(from, history.size())) {
-                messages.add(new AiMessage(turn.getRole(), turn.getContent()));
-            }
-        }
-        messages.add(new AiMessage("user", request.getQuestion()));
-        return messages;
-    }
-
-    /** Writes one streamed chunk, then checks {@link PrintWriter#checkError()} — a disconnected
-     * client (Stop button, widget closed, tab closed, network drop) never throws from write()/
-     * flush() itself (PrintWriter swallows the underlying IOException), so checkError() is the
-     * only way this actually surfaces. Throwing here unwinds out of chatStream's
-     * try-with-resources around the NIM connection, closing it too — no separate cleanup path. */
-    private void onChatDelta(PrintWriter writer, long deadline, String delta) {
-        if (System.currentTimeMillis() > deadline) {
-            throw new AiStreamException("This response took too long and was stopped.", null, true);
-        }
-        try {
-            writer.write("event: delta\ndata: " + SSE_MAPPER.writeValueAsString(delta) + "\n\n");
-        } catch (Exception e) {
-            throw new AiStreamException("Failed to encode response chunk.", e, true);
-        }
-        writer.flush();
-        if (writer.checkError()) {
-            throw new java.io.UncheckedIOException(new java.io.IOException("client disconnected"));
-        }
-    }
-
-    /** Reports a chat failure as {@code event: error} if the connection is still alive; a client
-     * that's already gone (see {@link #onChatDelta}) has nothing left to write to. */
-    private void writeChatError(PrintWriter writer, Exception e) {
-        if (e instanceof java.io.UncheckedIOException) {
-            return;
-        }
-        boolean partial = e instanceof AiStreamException ase && ase.anyOutputEmitted();
-        String message = e instanceof AiStreamException ase ? ase.getMessage()
-                : "Something went wrong generating a response.";
-        try {
-            writer.write("event: error\ndata: " + SSE_MAPPER.writeValueAsString(
-                    Map.of("message", message, "partial", partial)) + "\n\n");
-            writer.flush();
-        } catch (Exception alsoGone) {
-            // Connection died while reporting the error — nothing more to do.
-        }
+        return chatService.stream(project, repo, audience, provider, model, version, request);
     }
 
     /**

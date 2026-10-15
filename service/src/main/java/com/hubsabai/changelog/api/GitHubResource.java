@@ -5,18 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hubsabai.changelog.ai.AiException;
 import com.hubsabai.changelog.auth.CurrentUser;
 import jakarta.ws.rs.WebApplicationException;
-import com.hubsabai.changelog.ai.AiMessage;
 import com.hubsabai.changelog.ai.AiModelCatalog;
 import com.hubsabai.changelog.ai.AiModelOption;
 import com.hubsabai.changelog.ai.AiProviderInfo;
 import com.hubsabai.changelog.ai.AiProviderRegistry;
 import com.hubsabai.changelog.ai.AiResult;
-import com.hubsabai.changelog.ai.AiStreamException;
 import com.hubsabai.changelog.ai.AiUsage;
 import com.hubsabai.changelog.ai.ReleaseNotePreparer;
-import com.hubsabai.changelog.chat.ChangelogChatPromptBuilder;
 import com.hubsabai.changelog.chat.ChangelogChatRequest;
-import com.hubsabai.changelog.chat.ChatTurn;
+import com.hubsabai.changelog.chat.ChangelogChatService;
 import com.hubsabai.changelog.connector.github.ChangelogMarkdown;
 import com.hubsabai.changelog.connector.github.GitHubOrgConnector;
 import com.hubsabai.changelog.connector.github.RunFetchResult;
@@ -68,7 +65,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.HashSet;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -90,10 +90,6 @@ public class GitHubResource {
 
     private static final ObjectMapper SSE_MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-
-    private static final Semaphore CHAT_CONCURRENCY = new Semaphore(20);
-    private static final int CHAT_HISTORY_LIMIT = 10;
-    private static final long CHAT_TIMEOUT_MS = 60_000;
 
     @Inject
     RecordedRunService recordedRunService;
@@ -120,6 +116,9 @@ public class GitHubResource {
     RunChangeDataReader runChangeDataReader;
 
     @Inject
+    ChangelogChatService chatService;
+
+    @Inject
     CurrentUser currentUser;
 
     @Inject
@@ -139,19 +138,41 @@ public class GitHubResource {
         return orgConnector.listRepositories(project);
     }
 
-    /** Repos filtered to ones with a changelog (cached in DB or CHANGELOG.md on default branch). */
+    /** Repos filtered to ones with a changelog (cached in DB or CHANGELOG.md on default branch).
+     * Checked concurrently — one repo's slow/hanging GitHub call can't hold up the whole list —
+     * and short-TTL cached in the connector, so re-selecting the same project doesn't re-probe
+     * every repo twice (CHANGELOG.md, then changelog.md) live on each page load. */
     @GET
     @Path("/projects/{project}/repos-with-changelog")
     public List<RepositorySummary> listRepositoriesWithChangelog(@PathParam("project") String project) {
-        return orgConnector.listRepositories(project).stream()
-                .filter(r -> {
-                    try {
-                        return orgConnector.hasChangelogFileSafely(project, r.name());
-                    } catch (Exception e) {
-                        return false;
-                    }
-                })
+        List<RepositorySummary> repos = orgConnector.listRepositories(project);
+        // Panache isn't available off the request thread, so the DB shortcut is read up front,
+        // same as the Azure variant of this endpoint.
+        Set<String> cachedRepos = GeneratedChangelog.reposWithImportCache("github", project, currentUser.ownerUserId());
+        List<RepositorySummary> uncached = repos.stream()
+                .filter(r -> !cachedRepos.contains(r.name()))
                 .toList();
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<Boolean>> futures = uncached.stream()
+                    .map(r -> executor.submit(() -> orgConnector.hasChangelogFileCached(project, r.name())))
+                    .toList();
+            Set<String> liveConfirmed = new HashSet<>();
+            for (int i = 0; i < uncached.size(); i++) {
+                if (futures.get(i).get()) {
+                    liveConfirmed.add(uncached.get(i).name());
+                }
+            }
+            return repos.stream()
+                    .filter(r -> cachedRepos.contains(r.name()) || liveConfirmed.contains(r.name()))
+                    .toList();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while checking changelogs for " + project, e);
+        } catch (ExecutionException e) {
+            // hasChangelogFileSafely never throws, so this only fires on an unexpected executor failure.
+            throw new IllegalStateException("Failed to check changelogs for " + project, e.getCause());
+        }
     }
 
     /** Per-repo status for the Dev dashboard's repo table. */
@@ -929,6 +950,29 @@ public class GitHubResource {
         }
         String text = cacheService.getCurrentText(project, repo, version, audience).orElse(null);
         return new ChangelogPreview(project, repo, version, audience, text);
+    }
+
+    /**
+     * Streams a plain-language answer to a QA/Business question about one version's already-
+     * generated changelog. This route was missing here while Azure had it — the widget posts to
+     * whatever API base the active git provider uses, so in GitHub mode every chat 404'd. The
+     * implementation lives in {@link ChangelogChatService}, shared with the Azure resource.
+     *
+     * {@code model} is the picker's choice from the widget's model dropdown — the same catalog
+     * the generate page uses — and null falls back to the provider's configured default.
+     */
+    @POST
+    @Path("/projects/{project}/repos/{repo}/changelog-chat/stream")
+    @Produces(MediaType.SERVER_SENT_EVENTS)
+    public Response changelogChatStream(
+            @PathParam("project") String project,
+            @PathParam("repo") String repo,
+            @QueryParam("audience") String audience,
+            @QueryParam("provider") String provider,
+            @QueryParam("model") String model,
+            @QueryParam("version") String version,
+            ChangelogChatRequest request) {
+        return chatService.stream(project, repo, audience, provider, model, version, request);
     }
 
     @GET

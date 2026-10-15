@@ -96,6 +96,7 @@ All at `/api`. No spec doc currently exists in-repo (the endpoints below are the
 | `GET` | `/projects/{project}/repos/{repo}/history` | None | Version list for a repo — parses `CHANGELOG.md` |
 | `GET` | `/projects/{project}/repos/{repo}/pull-requests/{prId}/changelog-location` | None | Which release (if any) a PR shipped in — indexed lookup, not a text search |
 | `GET` | `/projects/{project}/repos/{repo}/changelog-preview` | None | Preview a previously generated QA or business changelog |
+| `POST` | `/projects/{project}/repos/{repo}/changelog-chat/stream` | None | QA/Business "ask about this changelog" chat — SSE (`delta`/`done`/`error`); `provider` + `model` query params come from the widget's picker, hard 60s per-answer budget |
 | `GET` | `/projects/{project}/repos/{repo}/changelog-text` | None | Raw current text for a version/audience (no AI call, no staleness check) |
 | `GET` | `/projects/{project}/repos/{repo}/changelog-meta` | None | Provenance for a version/audience — source, model, editedBy, `hasPrevious`, `previousText`, push status |
 | `GET` | `/projects/{project}/repos/{repo}/changelog-repo-text` | None | The developer entry's body exactly as it exists in the repo's `CHANGELOG.md` right now — read-only, for the push confirmation diff |
