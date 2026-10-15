@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDown, Loader2, MessageCircle, Send, Square, X } from 'lucide-react';
+import { ArrowDown, Loader2, MessageCircle, MessageSquarePlus, Send, Square, X } from 'lucide-react';
 
 import { sendChangelogChatMessageStream } from '@/api/client';
 import type { ChatTurn, PreviewAudience } from '@/api/types';
@@ -271,20 +271,22 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
             {modelUsed && <> · {modelUsed}</>}
           </CardDescription>
         </div>
-        <Button onClick={handleClose} size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Close">
-          <X className="size-4" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            onClick={handleNewConversation}
+            size="icon"
+            variant="ghost"
+            className="size-7"
+            aria-label="New conversation"
+            title="New conversation — chats auto-clear after 24h of inactivity"
+          >
+            <MessageSquarePlus className="size-4" />
+          </Button>
+          <Button onClick={handleClose} size="icon" variant="ghost" className="size-7" aria-label="Close">
+            <X className="size-4" />
+          </Button>
+        </div>
       </CardHeader>
-
-      <div className="flex items-center justify-between gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-        <span>Conversations auto-clear after 24h of inactivity.</span>
-        <button
-          onClick={handleNewConversation}
-          className="shrink-0 cursor-pointer font-semibold underline-offset-2 hover:underline"
-        >
-          New conversation
-        </button>
-      </div>
 
       {/* Provider · model — same picker the generate page uses. With many providers and many
           models per provider, letting the user pick is the difference between "the chat is
@@ -293,7 +295,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
       <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-3 py-2">
         {showProvider && (
           <Select value={ai.provider} onValueChange={ai.setProvider} disabled={sending}>
-            <SelectTrigger className="h-7 min-w-0 flex-1 gap-1.5 px-2.5 text-xs font-medium">
+            <SelectTrigger className="h-7 w-auto min-w-0 max-w-[45%] shrink gap-1.5 overflow-hidden px-2.5 text-xs font-medium [&_span]:min-w-0 [&_span]:truncate">
               <SelectValue placeholder="Provider">{providerLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent side="top" align="start">
@@ -315,7 +317,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
           disabled={sending}
           providerLabel={providerLabel}
           className="min-w-0 flex-1"
-          triggerClassName="h-7 min-w-0 flex-1 text-xs font-medium"
+          triggerClassName="h-7 w-full min-w-0 gap-1.5 overflow-hidden text-xs font-medium sm:w-full [&_span]:min-w-0 [&_span]:truncate"
         />
       </div>
 

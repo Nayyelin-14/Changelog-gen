@@ -1,14 +1,39 @@
+<<<<<<< HEAD
 ## 2026-10-15 — dev (run 59)
 
 - fix: chat hang + model dropdown + repo fetch perf
 
 ## 2026-10-14 — dev (run 58)
+=======
+## v1.0.23 — 2026-10-15 (promoted build.59)
+
+
+- fix: chat hang + model dropdown + repo fetch perf
+
+## v1.0.22 — 2026-10-14 (promoted build.58)
+
+>>>>>>> main
 
 - Stack the generate workspace rows instead of a two-column grid
 
-## 2026-10-14 — dev (run 57)
+## v1.0.21 — 2026-10-14 (promoted build.57)
+
 
 - fix: one set of AI controls — toolbar stays a single row, hides once generated
+
+## v1.0.20 — 2026-10-14 (promoted build.56)
+
+
+- feat: restyle the generate page — one container language, aligned hierarchy
+
+## v1.0.19 — 2026-10-14 (promoted build.55)
+
+
+- fix: never advertise models a rejected API key cannot call
+
+## v1.0.18 — 2026-10-14 (promoted build.54)
+
+- fix: stable history ids, drop Gemini, keep Groq's models selectable
 
 ## 2026-10-14 — dev (run 56)
 
