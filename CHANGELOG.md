@@ -1,3 +1,7 @@
+## 2026-10-15 — dev (run 59)
+
+- fix: chat hang + model dropdown + repo fetch perf
+
 ## 2026-10-14 — dev (run 58)
 
 - Stack the generate workspace rows instead of a two-column grid
