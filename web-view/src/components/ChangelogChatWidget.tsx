@@ -23,28 +23,28 @@ interface ChangelogChatWidgetProps {
   version: string;
 }
 
-/** Curated chat models, fastest first — live-measured through the backend's own streaming
- * code path (first-token / total latency). Chat prioritises response speed above all, so the
- * picker shows only these vetted entries instead of every catalog model; provider+model travel
- * together as one choice. muse-glimmer is deliberately absent: 15-47s of reasoning before the
- * first visible token makes it useless for chat. */
+/** Curated chat models, fastest first — latency-measured from the production VM itself
+ * (Azure egress; full round-trip on a tiny prompt). Groq is deliberately absent: Groq/Cloudflare
+ * blocks Azure datacenter IPs entirely (403 on every model, any key), so every Groq entry would
+ * 403 in prod no matter how fast it is from a residential IP. ZAI glm is also absent: 50s to
+ * first token on a reasoning model. Provider+model travel together as one choice. */
 const CHAT_MODEL_OPTIONS = [
-  { provider: 'groq', model: 'allam-2-7b', label: 'Allam 2 7B', tag: 'Fastest' },
-  { provider: 'groq', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Fast' },
-  { provider: 'groq', model: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', tag: 'Balanced' },
-  { provider: 'groq', model: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', tag: 'Smartest' },
-  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (NVIDIA)', tag: null },
+  { provider: 'openrouter', model: 'nvidia/nemotron-3.5-lightning:free', label: 'Nemotron 3.5 Lightning', tag: 'Fastest' },
+  { provider: 'nvidia', model: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning (NVIDIA)', tag: 'Fast' },
+  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Smart' },
+  { provider: 'openrouter', model: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 3 Super 120B', tag: null },
+  { provider: 'nvidia', model: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B (NVIDIA)', tag: null },
+  { provider: 'openrouter', model: 'dots-studio/dots-3-note-preview:free', label: 'DOTS-3 Note', tag: null },
   { provider: 'nvidia', model: 'meta/llama-3.2-11b-vision-instruct', label: 'Llama 3.2 11B Vision', tag: null },
-  { provider: 'nvidia', model: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning', tag: null },
 ] as const;
 
-const DEFAULT_CHAT_MODEL = 'groq:qwen/qwen3.8-27b';
+const DEFAULT_CHAT_MODEL = 'openrouter:nvidia/nemotron-3.5-lightning:free';
 const CHAT_MODEL_STORAGE_KEY = 'changelog-chat-model';
 
 function chatModelChoice(stored: string): { provider: string; model: string; key: string } {
   const fromList = CHAT_MODEL_OPTIONS.find((o) => `${o.provider}:${o.model}` === stored);
   if (fromList) return { provider: fromList.provider, model: fromList.model, key: stored };
-  return { provider: 'groq', model: 'qwen/qwen3.8-27b', key: DEFAULT_CHAT_MODEL };
+  return { provider: 'openrouter', model: 'nvidia/nemotron-3.5-lightning:free', key: DEFAULT_CHAT_MODEL };
 }
 
 /** Backstop for a connection that went dead without telling us — the server enforces its own
