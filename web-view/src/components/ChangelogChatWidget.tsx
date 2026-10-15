@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDown, Loader2, MessageCircle, MessageSquarePlus, Send, Square, X } from 'lucide-react';
+import { ArrowDown, Loader2, MessageCircle, Send, Square, Trash2, X } from 'lucide-react';
 
 import { sendChangelogChatMessageStream } from '@/api/client';
 import type { ChatTurn, PreviewAudience } from '@/api/types';
-import { AiModelSelect } from '@/components/AiModelSelect';
 import {
   Select,
   SelectContent,
@@ -11,10 +10,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useAiModels } from '@/hooks/useAiModels';
 import { clearChatHistory, loadChatHistory, saveChatHistory, sweepExpiredChatHistory } from '@/lib/chatStorage';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 
 interface ChangelogChatWidgetProps {
@@ -22,6 +21,30 @@ interface ChangelogChatWidgetProps {
   repo: string;
   audience: PreviewAudience;
   version: string;
+}
+
+/** Curated chat models, fastest first — live-measured through the backend's own streaming
+ * code path (first-token / total latency). Chat prioritises response speed above all, so the
+ * picker shows only these vetted entries instead of every catalog model; provider+model travel
+ * together as one choice. muse-glimmer is deliberately absent: 15-47s of reasoning before the
+ * first visible token makes it useless for chat. */
+const CHAT_MODEL_OPTIONS = [
+  { provider: 'groq', model: 'allam-2-7b', label: 'Allam 2 7B', tag: 'Fastest' },
+  { provider: 'groq', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Fast' },
+  { provider: 'groq', model: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', tag: 'Balanced' },
+  { provider: 'groq', model: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', tag: 'Smartest' },
+  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (NVIDIA)', tag: null },
+  { provider: 'nvidia', model: 'meta/llama-3.2-11b-vision-instruct', label: 'Llama 3.2 11B Vision', tag: null },
+  { provider: 'nvidia', model: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning', tag: null },
+] as const;
+
+const DEFAULT_CHAT_MODEL = 'groq:qwen/qwen3.8-27b';
+const CHAT_MODEL_STORAGE_KEY = 'changelog-chat-model';
+
+function chatModelChoice(stored: string): { provider: string; model: string; key: string } {
+  const fromList = CHAT_MODEL_OPTIONS.find((o) => `${o.provider}:${o.model}` === stored);
+  if (fromList) return { provider: fromList.provider, model: fromList.model, key: stored };
+  return { provider: 'groq', model: 'qwen/qwen3.8-27b', key: DEFAULT_CHAT_MODEL };
 }
 
 /** Backstop for a connection that went dead without telling us — the server enforces its own
@@ -35,10 +58,9 @@ const CHAT_STALL_MS = 75_000;
  * backend re-fetches its own grounding text from cache, so this widget only ever needs to send
  * the question + prior turns — no changelog text is passed in as a prop.
  *
- * Provider and model come from the same picker the generate page uses ({@link useAiModels});
- * with many providers and many models per provider, a silently chosen server default that hangs
- * used to leave the chat wedged with no way out. The choice is the user's, and it travels with
- * the request. */
+ * Model selection is a single curated list of the fastest working models ({@link CHAT_MODEL_OPTIONS})
+ * — chat is latency-sensitive, so there's no provider picker and no full catalog; just the
+ * vetted-fast set, each carrying its provider with it. The choice travels with the request. */
 export function ChangelogChatWidget({ project, repo, audience, version }: ChangelogChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -55,9 +77,14 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   const activeRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const ai = useAiModels();
-  const providerLabel = ai.providerOptions.find((p) => p.id === ai.provider)?.label;
-  const showProvider = ai.providerOptions.length > 1;
+  // Single curated fast-model choice — persists across sessions, defaults to the balanced
+  // Groq Qwen if unset or if a stored entry no longer exists in the curated list.
+  const [chatModel, setChatModel] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_CHAT_MODEL;
+    return localStorage.getItem(CHAT_MODEL_STORAGE_KEY) ?? DEFAULT_CHAT_MODEL;
+  });
+  const choice = chatModelChoice(chatModel);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   function clearStall() {
     if (stallRef.current) {
@@ -140,6 +167,11 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     sweepExpiredChatHistory();
   }, []);
 
+  // Persist the curated model choice across sessions.
+  useEffect(() => {
+    localStorage.setItem(CHAT_MODEL_STORAGE_KEY, chatModel);
+  }, [chatModel]);
+
   // Always appends onto the LATEST state via the updater form — onDone/onError fire
   // asynchronously after the user's question was already appended, so building the next array
   // from the `messages` variable captured back when handleSend ran would silently drop that
@@ -218,8 +250,8 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
         },
       },
       controller.signal,
-      ai.provider,
-      ai.model,
+      choice.provider,
+      choice.model,
     );
   }
 
@@ -240,9 +272,9 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setOpen(false);
   }
 
-  // Explicit reset, so someone doesn't have to wait out the 6-hour expiry if they just want a
-  // clean slate right now (e.g. the summary this conversation was grounded in has since changed).
-  function handleNewConversation() {
+  // Explicit wipe of this conversation (in-memory + localStorage), gated behind a confirm
+  // modal so a mis-click can't destroy the thread. The 24h auto-sweep still runs regardless.
+  function handleDeleteConversation() {
     activeRef.current = false;
     clearStall();
     abortRef.current?.abort();
@@ -255,6 +287,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setIsAtBottom(true);
     setModelUsed(null);
     streamedRef.current = '';
+    setConfirmDelete(false);
   }
 
   if (!open) {
@@ -271,64 +304,57 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   }
 
   return (
-    <Card className="fixed bottom-5 right-5 z-40 flex h-[34rem] w-80 max-h-[calc(100vh-3rem)] flex-col overflow-hidden py-0 shadow-xl sm:w-96">
-      <CardHeader className="flex-row items-center justify-between gap-2 border-b border-border/60 py-3.5">
-        <div className="min-w-0">
-          <CardTitle className="text-base">Ask about this changelog</CardTitle>
-          <CardDescription className="truncate text-xs">
-            Scoped to <span className="font-semibold text-foreground">v{version}</span> — {audience}
-            {modelUsed && <> · {modelUsed}</>}
-          </CardDescription>
-        </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <Button
-            onClick={handleNewConversation}
-            size="icon"
-            variant="ghost"
-            className="size-7"
-            aria-label="New conversation"
-            title="New conversation — chats auto-clear after 24h of inactivity"
-          >
-            <MessageSquarePlus className="size-4" />
-          </Button>
-          <Button onClick={handleClose} size="icon" variant="ghost" className="size-7" aria-label="Close">
-            <X className="size-4" />
-          </Button>
-        </div>
-      </CardHeader>
+    <>
+      <Card className="fixed bottom-5 right-5 z-40 flex h-[42rem] max-h-[calc(100vh-3rem)] w-[24rem] flex-col overflow-hidden py-0 shadow-xl sm:w-[28rem]">
+        <CardHeader className="flex-row items-center justify-between gap-2 border-b border-border/60 py-3.5">
+          <div className="min-w-0">
+            <CardTitle className="text-base">Ask about this changelog</CardTitle>
+            <CardDescription className="truncate text-xs">
+              Scoped to <span className="font-semibold text-foreground">v{version}</span> — {audience}
+              {modelUsed && <> · {modelUsed}</>}
+            </CardDescription>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Button
+              onClick={() => setConfirmDelete(true)}
+              size="icon"
+              variant="ghost"
+              className="size-7 text-destructive hover:text-destructive"
+              aria-label="Delete conversation"
+              title="Delete this conversation"
+            >
+              <Trash2 className="size-4" />
+            </Button>
+            <Button onClick={handleClose} size="icon" variant="ghost" className="size-7" aria-label="Close">
+              <X className="size-4" />
+            </Button>
+          </div>
+        </CardHeader>
 
-      {/* Provider · model — same picker the generate page uses. With many providers and many
-          models per provider, letting the user pick is the difference between "the chat is
-          stuck" and "that model is down, let me switch". Shared localStorage with generation,
-          so a choice made here sticks there too. */}
-      <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-3 py-2">
-        {showProvider && (
-          <Select value={ai.provider} onValueChange={ai.setProvider} disabled={sending}>
-            <SelectTrigger className="h-7 w-auto min-w-0 max-w-[45%] shrink gap-1.5 overflow-hidden px-2.5 text-xs font-medium [&_span]:min-w-0 [&_span]:truncate">
-              <SelectValue placeholder="Provider">{providerLabel}</SelectValue>
+        {/* Curated fast-model picker — one flat list of vetted models (fastest first), no
+            provider selector. Chat is latency-sensitive; the full catalog lives on the
+            generate page, not here. */}
+        <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-3 py-2">
+          <Select value={chatModel} onValueChange={setChatModel} disabled={sending}>
+            <SelectTrigger className="h-7 w-full min-w-0 gap-1.5 overflow-hidden text-xs font-medium sm:w-full [&_span]:min-w-0 [&_span]:truncate">
+              <SelectValue placeholder="Model" />
             </SelectTrigger>
-            <SelectContent side="top" align="start">
-              {ai.providerOptions.map((p) => (
-                <SelectItem key={p.id} value={p.id} className="pr-8 text-xs">
+            <SelectContent side="top" align="start" className="max-h-72">
+              {CHAT_MODEL_OPTIONS.map((o) => (
+                <SelectItem key={`${o.provider}:${o.model}`} value={`${o.provider}:${o.model}`} className="pr-8 text-xs">
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 truncate">{p.label}</span>
+                    <span className="min-w-0 truncate">{o.label}</span>
+                    {o.tag && (
+                      <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        {o.tag}
+                      </span>
+                    )}
                   </span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-        )}
-        <AiModelSelect
-          models={ai.models}
-          status={ai.modelsStatus}
-          value={ai.model}
-          onChange={ai.setModel}
-          disabled={sending}
-          providerLabel={providerLabel}
-          className="min-w-0 flex-1"
-          triggerClassName="h-7 w-full min-w-0 gap-1.5 overflow-hidden text-xs font-medium sm:w-full [&_span]:min-w-0 [&_span]:truncate"
-        />
-      </div>
+        </div>
 
       <div className="relative flex-1 overflow-hidden">
         <CardContent ref={scrollRef} onScroll={handleScroll} className="flex h-full flex-col gap-3 overflow-y-auto p-4">
@@ -395,7 +421,30 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
           </Button>
         )}
       </div>
-    </Card>
+      </Card>
+
+      {/* Destructive-action gate — the wipe is instant and irreversible (in-memory + stored
+          history), so it gets a confirm step like any other delete. */}
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete this conversation?</DialogTitle>
+            <DialogDescription>
+              This removes all messages in this chat with <span className="font-semibold text-foreground">v{version}</span> ({audience}) — it can't be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteConversation}>
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
