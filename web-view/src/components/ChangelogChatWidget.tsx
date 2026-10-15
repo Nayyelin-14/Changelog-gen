@@ -340,7 +340,11 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
               </div>
             </div>
           )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
         </CardContent>
 
         {!isAtBottom && (
