@@ -1,3 +1,8 @@
+## v1.0.24 — 2026-10-15 (promoted build.61)
+
+
+- fix: announce chat errors to screen readers
+
 ## v1.0.23 — 2026-10-15 (promoted build.59)
 
 
