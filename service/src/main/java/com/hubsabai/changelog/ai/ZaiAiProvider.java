@@ -1,9 +1,5 @@
 package com.hubsabai.changelog.ai;
 
-import jakarta.ws.rs.client.Client;
-import jakarta.ws.rs.core.MediaType;
-import jakarta.ws.rs.core.Response;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -92,27 +88,18 @@ public class ZaiAiProvider extends NimAiProvider {
                 .toList();
     }
 
+    /** Catalog ids from the shared {@link NimAiProvider} path — same short-timeout client, same
+     * TTL cache and stale-serve, so a slow /models call can't hold the Z.AI picker hostage either. */
+    private List<String> liveCandidateIds() {
+        return liveCatalogIds().ids();
+    }
+
     /**
      * Synchronous live model discovery — probes all candidates and returns only confirmed-healthy models.
      * Returns empty list on any failure.
      */
     private List<AiModelOption> tryLiveDiscovery() {
-        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
-        List<String> candidateIds;
-        try {
-            Response raw = client.target(modelsUrl)
-                    .request(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + apiKey)
-                    .get();
-            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-            candidateIds = response.dataOrEmpty().stream()
-                    .map(NvidiaModelsResponse.NvidiaModel::getId)
-                    .filter(NimAiProvider::looksLikeChatModel)
-                    .filter(id -> !EXCLUDED_MODELS.contains(id))
-                    .toList();
-        } catch (Exception e) {
-            return List.of();
-        }
+        List<String> candidateIds = liveCandidateIds();
 
         List<String> probe = allowedModels.isEmpty()
                 ? candidateIds
@@ -140,22 +127,7 @@ public class ZaiAiProvider extends NimAiProvider {
      * live models as status=checking. Probes run in background without blocking the UI.
      */
     private List<AiModelOption> tryLiveDiscoveryWithStatus() {
-        String modelsUrl = baseUrl.replace("/chat/completions", "/models");
-        List<String> candidateIds;
-        try {
-            Response raw = client.target(modelsUrl)
-                    .request(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + apiKey)
-                    .get();
-            NvidiaModelsResponse response = MAPPER.readValue(raw.readEntity(String.class), NvidiaModelsResponse.class);
-            candidateIds = response.dataOrEmpty().stream()
-                    .map(NvidiaModelsResponse.NvidiaModel::getId)
-                    .filter(NimAiProvider::looksLikeChatModel)
-                    .filter(id -> !EXCLUDED_MODELS.contains(id))
-                    .toList();
-        } catch (Exception e) {
-            return List.of();
-        }
+        List<String> candidateIds = liveCandidateIds();
 
         List<String> probe = allowedModels.isEmpty()
                 ? candidateIds

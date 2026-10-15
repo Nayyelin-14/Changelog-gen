@@ -404,6 +404,31 @@ public class GitHubOrgConnector {
         }
     }
 
+    /** Same as {@link #hasChangelogFileSafely(String, String)} but short-TTL cached — hits and
+     * misses. The browse page runs this once per repo on every project selection, and a miss
+     * costs two live {@code getFile} round trips (CHANGELOG.md, then changelog.md) on top of the
+     * default-branch lookup, so re-probing the same repos on every page load dominated the whole
+     * request. A repo that gains a changelog shows up within the cache TTL; acceptable for a
+     * read-only browse filter, never for a push. */
+    public boolean hasChangelogFileCached(String project, String repo) {
+        String key = project + "/" + repo;
+        HasChangelogEntry cached = hasChangelogCache.get(key);
+        long now = System.currentTimeMillis();
+        if (cached != null && cached.expiresAt() > now) {
+            return cached.present();
+        }
+        boolean present = hasChangelogFileSafely(project, repo);
+        hasChangelogCache.put(key, new HasChangelogEntry(present, now + HAS_CHANGELOG_TTL_MS));
+        return present;
+    }
+
+    private record HasChangelogEntry(boolean present, long expiresAt) {
+    }
+
+    private static final long HAS_CHANGELOG_TTL_MS = 5 * 60_000L;
+
+    private final Map<String, HasChangelogEntry> hasChangelogCache = new ConcurrentHashMap<>();
+
     /** Fetches the changelog file — name + raw content — or null when neither casing exists. */
     public ChangelogFile fetchChangelogFile(String project, String repo, String branch) {
         return fetchChangelogFile(project, repo, branch, false);

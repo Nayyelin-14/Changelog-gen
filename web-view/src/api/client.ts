@@ -23,8 +23,14 @@ import type {
   RunChangeContext,
 } from './types';
 
+// A timeout, unlike axios's default of "never": every spinner in the app is driven by one of
+// these calls, and a hung backend otherwise parks it forever. SSE endpoints don't ride axios
+// (they use raw fetch below) — streaming responses have their own watchdog in the chat widget.
+export const API_TIMEOUT_MS = 60_000;
+
 export const apiClient = axios.create({
   baseURL: providerApiBase(getStoredProvider()),
+  timeout: API_TIMEOUT_MS,
 });
 
 // Centralized session-expiry handling: AuthProvider registers a single handler that clears the
@@ -63,6 +69,7 @@ apiClient.interceptors.request.use((config) => {
 // pinned to /api, not the provider base, or GitHub mode rewrites them to /api/github/pipeline/runs.
 export const rootApiClient = axios.create({
   baseURL: '/api',
+  timeout: API_TIMEOUT_MS,
 });
 
 rootApiClient.interceptors.response.use(
@@ -310,7 +317,9 @@ export async function generateChangelogStream(
 }
 
 /** Streams a QA/Business chat answer about one version's changelog via SSE. Accepts
- * {@link AbortSignal} for cancellation (Stop button, close widget, navigate away, network drop). */
+ * {@link AbortSignal} for cancellation (Stop button, close widget, navigate away, network drop).
+ * `model` is the user's picker choice — the same catalog the generate page offers — and the
+ * backend passes it to the provider as its override (null = the provider's configured default). */
 export async function sendChangelogChatMessageStream(
   project: string,
   repo: string,
@@ -325,8 +334,10 @@ export async function sendChangelogChatMessageStream(
   },
   signal: AbortSignal,
   provider?: string,
+  model?: string,
 ): Promise<void> {
   const params = new URLSearchParams({ audience, version, provider: provider || getStoredAiProvider() });
+  if (model) params.set('model', model);
   const url = `${providerApiBase(getStoredProvider())}/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-chat/stream?${params}`;
 
   let response: Response;

@@ -37,13 +37,19 @@ export function AudienceBrowsePage({ audience }: { audience: PreviewAudience }) 
   const Icon = meta.icon;
 
   const loadProjects = useCallback(() => listProjects(), []);
-  const projects = useQuery(loadProjects, []);
+  // cacheKey: the project list is static for a session and this page remounts on every
+  // role/repo navigation — without a key there's no cache and no in-flight dedup, so each
+  // landing re-fetched it (twice under StrictMode).
+  const projects = useQuery(loadProjects, [], { cacheKey: 'projects' });
 
   const loadRepos = useCallback(async () => {
     if (!selectedProject) return [];
     return listRepositoriesWithChangelog(selectedProject);
   }, [selectedProject]);
-  const repos = useQuery(loadRepos, [selectedProject]);
+  // Same for the changelog-repo scan, which is the expensive one: re-selecting a project (or
+  // coming back from a repo) now serves the 5-minute cached list instantly instead of re-running
+  // the whole has-a-changelog sweep on the backend.
+  const repos = useQuery(loadRepos, [selectedProject], { cacheKey: 'repos-with-changelog' });
 
   return (
     <div className="space-y-5">

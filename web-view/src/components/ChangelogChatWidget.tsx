@@ -3,6 +3,15 @@ import { ArrowDown, Loader2, MessageCircle, Send, Square, X } from 'lucide-react
 
 import { sendChangelogChatMessageStream } from '@/api/client';
 import type { ChatTurn, PreviewAudience } from '@/api/types';
+import { AiModelSelect } from '@/components/AiModelSelect';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useAiModels } from '@/hooks/useAiModels';
 import { clearChatHistory, loadChatHistory, saveChatHistory, sweepExpiredChatHistory } from '@/lib/chatStorage';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,9 +24,20 @@ interface ChangelogChatWidgetProps {
   version: string;
 }
 
+/** The backend enforces its own 60s budget on one answer and reports the timeout as an SSE
+ * error — this is the backstop for everything that budget can't see: a connection that died
+ * without a FIN, a proxy that swallowed the stream, a server that never got the request. Past
+ * this, sitting on "Thinking…" helps nobody. */
+const CHAT_STALL_MS = 75_000;
+
 /** Floating "ask about this changelog" chat, for QA/Business only (see CHATBOT-PLAN.md). The
  * backend re-fetches its own grounding text from cache, so this widget only ever needs to send
- * the question + prior turns — no changelog text is passed in as a prop. */
+ * the question + prior turns — no changelog text is passed in as a prop.
+ *
+ * Provider and model come from the same picker the generate page uses ({@link useAiModels});
+ * with many providers and many models per provider, a silently chosen server default that hangs
+ * used to leave the chat wedged with no way out. The choice is the user's, and it travels with
+ * the request. */
 export function ChangelogChatWidget({ project, repo, audience, version }: ChangelogChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -27,8 +47,23 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   const [error, setError] = useState<string | null>(null);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const stallRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamedRef = useRef('');
+  // False once this send is over (done, error, stop, or stall) — a chunk still in flight from an
+  // abandoned stream must not resurrect the streaming bubble after the answer was finalized.
+  const activeRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const ai = useAiModels();
+  const providerLabel = ai.providerOptions.find((p) => p.id === ai.provider)?.label;
+  const showProvider = ai.providerOptions.length > 1;
+
+  function clearStall() {
+    if (stallRef.current) {
+      clearTimeout(stallRef.current);
+      stallRef.current = null;
+    }
+  }
 
   function scrollToBottom() {
     const el = scrollRef.current;
@@ -55,6 +90,8 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   // the one being left (it's still sitting in storage under its own key).
   useEffect(() => {
     abortRef.current?.abort();
+    clearStall();
+    activeRef.current = false;
     setMessages(loadChatHistory(project, repo, version, audience));
     setInput('');
     setSending(false);
@@ -62,11 +99,17 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setError(null);
     setIsAtBottom(true);
     setModelUsed(null);
+    streamedRef.current = '';
   }, [project, repo, version, audience]);
 
   // Abort on unmount (e.g. navigating away mid-answer) — one of the four disconnect triggers,
   // same mechanism as Stop/Close (see CHATBOT-PLAN.md's disconnect-handling table).
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      clearStall();
+    };
+  }, []);
 
   // Once per mount — deletes any stored conversation (for any version/audience, not just this
   // one) whose last activity is more than a day old. localStorage can't expire things on its
@@ -113,6 +156,24 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setError(null);
     setSending(true);
     setStreamingText('');
+    streamedRef.current = '';
+    activeRef.current = true;
+    clearStall();
+    stallRef.current = setTimeout(() => {
+      stallRef.current = null;
+      // The backend's own 60s budget has long expired by now, so this is a connection nothing
+      // is going to answer — give up rather than leave "Thinking…" on screen forever. Anything
+      // already streamed is kept as a cut-off answer, not thrown away.
+      activeRef.current = false;
+      if (streamedRef.current) {
+        finalizeAssistantTurn(streamedRef.current, true);
+      } else {
+        setError('The model did not answer in time. Try a different model or provider.');
+      }
+      abortRef.current?.abort();
+      setSending(false);
+      setStreamingText('');
+    }, CHAT_STALL_MS);
 
     let accumulated = '';
     sendChangelogChatMessageStream(
@@ -124,15 +185,21 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
       history,
       {
         onDelta: (text) => {
+          if (!activeRef.current) return;
           accumulated += text;
+          streamedRef.current = accumulated;
           setStreamingText(accumulated);
         },
         onDone: (model) => {
+          activeRef.current = false;
+          clearStall();
           finalizeAssistantTurn(accumulated, false);
           setSending(false);
           if (model) setModelUsed(model);
         },
         onError: (message, partial) => {
+          activeRef.current = false;
+          clearStall();
           if (partial && accumulated) {
             finalizeAssistantTurn(accumulated, true);
           } else {
@@ -142,16 +209,22 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
         },
       },
       controller.signal,
+      ai.provider,
+      ai.model,
     );
   }
 
   function handleStop() {
+    activeRef.current = false;
+    clearStall();
     abortRef.current?.abort();
     if (streamingText) finalizeAssistantTurn(streamingText, true);
     setSending(false);
   }
 
   function handleClose() {
+    activeRef.current = false;
+    clearStall();
     abortRef.current?.abort();
     if (streamingText) finalizeAssistantTurn(streamingText, true);
     setSending(false);
@@ -161,6 +234,8 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   // Explicit reset, so someone doesn't have to wait out the 6-hour expiry if they just want a
   // clean slate right now (e.g. the summary this conversation was grounded in has since changed).
   function handleNewConversation() {
+    activeRef.current = false;
+    clearStall();
     abortRef.current?.abort();
     clearChatHistory(project, repo, version, audience);
     setMessages([]);
@@ -170,6 +245,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setError(null);
     setIsAtBottom(true);
     setModelUsed(null);
+    streamedRef.current = '';
   }
 
   if (!open) {
@@ -208,6 +284,39 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
         >
           New conversation
         </button>
+      </div>
+
+      {/* Provider · model — same picker the generate page uses. With many providers and many
+          models per provider, letting the user pick is the difference between "the chat is
+          stuck" and "that model is down, let me switch". Shared localStorage with generation,
+          so a choice made here sticks there too. */}
+      <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-3 py-2">
+        {showProvider && (
+          <Select value={ai.provider} onValueChange={ai.setProvider} disabled={sending}>
+            <SelectTrigger className="h-7 min-w-0 flex-1 gap-1.5 px-2.5 text-xs font-medium">
+              <SelectValue placeholder="Provider">{providerLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent side="top" align="start">
+              {ai.providerOptions.map((p) => (
+                <SelectItem key={p.id} value={p.id} className="pr-8 text-xs">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate">{p.label}</span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        <AiModelSelect
+          models={ai.models}
+          status={ai.modelsStatus}
+          value={ai.model}
+          onChange={ai.setModel}
+          disabled={sending}
+          providerLabel={providerLabel}
+          className="min-w-0 flex-1"
+          triggerClassName="h-7 min-w-0 flex-1 text-xs font-medium"
+        />
       </div>
 
       <div className="relative flex-1 overflow-hidden">
