@@ -221,8 +221,15 @@ public class ChangelogChatService {
             return;
         }
         boolean partial = e instanceof AiStreamException ase && ase.anyOutputEmitted();
+        // AiException messages are already operator/user-facing ("Chat call failed (model X):
+        // HTTP 429 — …", "all N models in the chain failed. Last error: …") — hiding them behind
+        // a generic sentence left users staring at "Something went wrong" with no clue whether
+        // the key was rejected, the model hung, or the provider rate-limited. Only truly
+        // unknown exception types get the generic fallback.
         String message = e instanceof AiStreamException ase ? ase.getMessage()
-                : "Something went wrong generating a response.";
+                : e instanceof AiException ai && ai.getMessage() != null && !ai.getMessage().isBlank()
+                        ? ai.getMessage()
+                        : "Something went wrong generating a response.";
         writeEvent(writer, "error", Map.of("message", message, "partial", partial));
     }
 }

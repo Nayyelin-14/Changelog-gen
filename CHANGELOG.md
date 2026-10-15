@@ -5,11 +5,13 @@
 
 ## v1.0.23 — 2026-10-15 (promoted build.59)
 
+- fix: announce chat errors to screen readers
+
+## 2026-10-15 — dev (run 59)
 
 - fix: chat hang + model dropdown + repo fetch perf
 
-## v1.0.22 — 2026-10-14 (promoted build.58)
-
+## 2026-10-14 — dev (run 58)
 
 - Stack the generate workspace rows instead of a two-column grid
 

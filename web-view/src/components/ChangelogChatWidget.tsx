@@ -24,10 +24,11 @@ interface ChangelogChatWidgetProps {
   version: string;
 }
 
-/** The backend enforces its own 60s budget on one answer and reports the timeout as an SSE
- * error — this is the backstop for everything that budget can't see: a connection that died
- * without a FIN, a proxy that swallowed the stream, a server that never got the request. Past
- * this, sitting on "Thinking…" helps nobody. */
+/** Backstop for a connection that went dead without telling us — the server enforces its own
+ * 60s budget and reports timeouts as SSE errors, so this only has to catch what that budget
+ * can't see: a connection that died without a FIN, a proxy that swallowed the stream, a
+ * server that never got the request. The timer resets on every delta, so a slow-but-alive
+ * stream is never killed here — only 75s of complete silence ends the wait. */
 const CHAT_STALL_MS = 75_000;
 
 /** Floating "ask about this changelog" chat, for QA/Business only (see CHATBOT-PLAN.md). The
@@ -63,6 +64,27 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
       clearTimeout(stallRef.current);
       stallRef.current = null;
     }
+  }
+
+  /** (Re)arms the silence watchdog. Called on send and on every delta — a stream that keeps
+   * talking is alive, no matter how slow; only complete silence for CHAT_STALL_MS is a hang. */
+  function armStall() {
+    clearStall();
+    stallRef.current = setTimeout(() => {
+      stallRef.current = null;
+      // The backend's own 60s budget has long expired by now, so this is a connection nothing
+      // is going to answer — give up rather than leave "Thinking…" on screen forever. Anything
+      // already streamed is kept as a cut-off answer, not thrown away.
+      activeRef.current = false;
+      if (streamedRef.current) {
+        finalizeAssistantTurn(streamedRef.current, true);
+      } else {
+        setError('The model did not answer in time. Try a different model or provider.');
+      }
+      abortRef.current?.abort();
+      setSending(false);
+      setStreamingText('');
+    }, CHAT_STALL_MS);
   }
 
   function scrollToBottom() {
@@ -158,22 +180,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     setStreamingText('');
     streamedRef.current = '';
     activeRef.current = true;
-    clearStall();
-    stallRef.current = setTimeout(() => {
-      stallRef.current = null;
-      // The backend's own 60s budget has long expired by now, so this is a connection nothing
-      // is going to answer — give up rather than leave "Thinking…" on screen forever. Anything
-      // already streamed is kept as a cut-off answer, not thrown away.
-      activeRef.current = false;
-      if (streamedRef.current) {
-        finalizeAssistantTurn(streamedRef.current, true);
-      } else {
-        setError('The model did not answer in time. Try a different model or provider.');
-      }
-      abortRef.current?.abort();
-      setSending(false);
-      setStreamingText('');
-    }, CHAT_STALL_MS);
+    armStall();
 
     let accumulated = '';
     sendChangelogChatMessageStream(
@@ -189,6 +196,8 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
           accumulated += text;
           streamedRef.current = accumulated;
           setStreamingText(accumulated);
+          // Still alive — restart the silence clock, a slow model isn't a hung one.
+          armStall();
         },
         onDone: (model) => {
           activeRef.current = false;
@@ -340,7 +349,11 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
               </div>
             </div>
           )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
         </CardContent>
 
         {!isAtBottom && (
