@@ -1,3 +1,8 @@
+## v1.0.28 — 2026-10-15 (promoted build.65)
+
+
+- fix(chat): never stream reasoning as the answer; re-rank models by time-to-answer
+
 ## v1.0.27 — 2026-10-15 (promoted build.64)
 
 
