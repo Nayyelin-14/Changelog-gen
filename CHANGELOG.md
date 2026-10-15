@@ -1,3 +1,7 @@
+## 2026-10-15 — dev (run 64)
+
+- fix(chat): drop Groq from curated list — Azure-IP-blocked in prod
+
 ## 2026-10-15 — dev (run 63)
 
 - chore: release v1.0.24 (build.61) ***NO_CI***
