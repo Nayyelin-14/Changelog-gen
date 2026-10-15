@@ -1,3 +1,7 @@
+## 2026-10-15 — dev (run 62)
+
+- fix: surface real chat errors; stall watchdog follows alive streams
+
 ## 2026-10-15 — dev (run 61)
 
 - fix: announce chat errors to screen readers
