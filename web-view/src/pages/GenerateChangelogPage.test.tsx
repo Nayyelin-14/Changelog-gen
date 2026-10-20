@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -160,6 +160,24 @@ function stubApis() {
   );
 }
 
+function renderDashboard() {
+  return render(
+    <MemoryRouter
+      initialEntries={[
+        `/dev/projects/Nayyelin-14/repos/Changelog-gen?branch=dev`,
+      ]}
+    >
+      <Routes>
+        <Route
+          path="/dev/projects/:project/repos/:repo"
+          element={<GenerateChangelogPage />}
+        />
+        <Route path="*" element={<p>not-found</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 function renderHistoryEntry(entryId: string, extraParams = "") {
   const query = extraParams ? `?branch=dev&${extraParams}` : "?branch=dev";
   return render(
@@ -244,6 +262,27 @@ describe('GenerateChangelogPage — version history detail', () => {
     expect(document.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText(/couldn't be found/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Pick a version from the list to see your changelog.')).not.toBeInTheDocument();
+  });
+
+  it('shows an active refresh state and asks the backend for live history', async () => {
+    renderDashboard();
+    const refresh = await screen.findByRole('button', { name: /^Refresh$/ });
+
+    let resolveHistory!: (value: Awaited<ReturnType<typeof listHistory>>) => void;
+    vi.mocked(listHistory).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveHistory = resolve; }),
+    );
+
+    fireEvent.click(refresh);
+
+    const refreshing = await screen.findByRole('button', { name: /Refreshing…/ });
+    expect(refreshing).toBeDisabled();
+    await waitFor(() => {
+      expect(vi.mocked(listHistory).mock.calls.at(-1)?.[5]).toBe(true);
+    });
+
+    resolveHistory(HISTORY as Awaited<ReturnType<typeof listHistory>>);
+    expect(await screen.findByRole('button', { name: /^Refresh$/ })).not.toBeDisabled();
   });
 
   it('disables Push when the imported text already matches the repo', async () => {

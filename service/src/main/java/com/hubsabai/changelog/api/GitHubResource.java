@@ -182,7 +182,7 @@ public class GitHubResource {
         List<RepositorySummary> repos = orgConnector.listRepositories(project);
         return repos.stream().map(r -> {
             try {
-                HistoryResponse resp = history(project, r.name(), null, 0, 10);
+                HistoryResponse resp = history(project, r.name(), null, 0, 10, false);
                 String latestVersion = null;
                 String latestVersionAt = null;
                 int needsReview = 0;
@@ -389,7 +389,8 @@ public class GitHubResource {
             @PathParam("repo") String repo,
             @QueryParam("branch") String branch,
             @DefaultValue("0") @QueryParam("page") int page,
-            @DefaultValue("10") @QueryParam("limit") int limit) {
+            @DefaultValue("10") @QueryParam("limit") int limit,
+            @DefaultValue("false") @QueryParam("refresh") boolean refresh) {
         listRepositories(project); // resolve owner existence, cheap
         String resolvedBranch = branch != null ? branch : orgConnector.defaultBranch(project, repo);
 
@@ -402,12 +403,24 @@ public class GitHubResource {
         for (ChangelogVersion cv : newVersions) {
             dbByVersion.putIfAbsent(cv.version, null);
         }
-        if (!dbByVersion.isEmpty()) {
+        // Always merge the live file with DB rows: a release commit made outside this app must
+        // appear in the dashboard. The normal path uses the short-lived cache; an explicit
+        // refresh bypasses it so the user can force the current branch contents. If GitHub is
+        // unreachable, fall back to the DB rather than breaking the whole history page.
+        ChangelogMarkdown.ChangelogFile file = null;
+        try {
+            file = refresh
+                    ? orgConnector.fetchChangelogFileFresh(project, repo, resolvedBranch)
+                    : orgConnector.fetchChangelogFileCached(project, repo, resolvedBranch);
+        } catch (Exception e) {
+            LOG.warning("Could not read CHANGELOG.md for " + project + "/" + repo + " branch "
+                    + resolvedBranch + " — falling back to DB history: " + e.getMessage());
+        }
+        if (file == null && !dbByVersion.isEmpty()) {
             return withDrafts(project, repo, resolvedBranch, page,
                     buildHistoryFromDb(project, repo, resolvedBranch, page, limit, dbByVersion));
         }
 
-        var file = orgConnector.fetchChangelogFileCached(project, repo, resolvedBranch);
         List<ChangelogMarkdown.ChangelogEntry> parsed = file != null
                 ? new ArrayList<>(orgConnector.parseChangelogEntries(file.content()))
                 : new ArrayList<>();
