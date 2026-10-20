@@ -1,3 +1,8 @@
+## v1.0.31 — 2026-10-20 (promoted build.68)
+
+
+- fix(errors): return JSON 404 for unmatched API routes
+
 ## v1.0.30 — 2026-10-20 (promoted build.67)
 
 
