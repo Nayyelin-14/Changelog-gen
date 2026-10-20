@@ -1,3 +1,7 @@
+## 2026-10-20 — dev (run 67)
+
+- fix(errors): return safe, friendly messages on outages
+
 ## v1.0.29 — 2026-10-20 (promoted build.66)
 
 ## v1.0.28 — 2026-10-15 (promoted build.65)
