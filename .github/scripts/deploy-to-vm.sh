@@ -58,9 +58,9 @@ echo "Loaded image: $(docker image inspect --format '{{.Id}}' '__IMAGE_REF__' 2>
 echo "Starting containers"
 docker compose -f docker-compose.prod.yml up -d --force-recreate
 
-echo "Waiting for /q/health ..."
+echo "Waiting for /q/health/live ..."
 ATTEMPTS=0
-until curl -sf http://localhost:8080/q/health >/dev/null 2>&1; do
+until curl -sf http://localhost:8080/q/health/live >/dev/null 2>&1; do
   ATTEMPTS=$((ATTEMPTS + 1))
   if [ "$ATTEMPTS" -ge 30 ]; then
     echo "Health check failed after 30 attempts (~150s)" >&2

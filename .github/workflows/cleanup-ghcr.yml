@@ -20,19 +20,45 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
+      - name: Detect deployed production image
+        id: prod
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          set -euo pipefail
+
+          KEY=$(mktemp)
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          trap 'rm -f "$KEY"' EXIT
+
+          IMAGE=$(ssh -i "$KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+            "${VM_USER}@${VM_HOST}" \
+            "docker inspect --format '{{.Config.Image}}' changelog-composer-app-1" 2>/dev/null || true)
+
+          if [ -z "$IMAGE" ]; then
+            echo "Could not determine the deployed production image; refusing to delete anything." >&2
+            exit 1
+          fi
+
+          echo "Deployed production image: $IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
       - name: Delete old GHCR image versions
         id: cleanup
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN }}
           RETENTION_DAYS: '7'
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          PROD_IMAGE: ${{ steps.prod.outputs.image }}
         run: |
           set -euo pipefail
 
           OWNER="${{ github.repository_owner }}"
           PKG="changelog-composer"
           RETENTION_SECONDS=$((RETENTION_DAYS * 86400))
-          NOW=$(date +%s)
 
           echo "Fetching package versions..."
           VERSIONS=$(curl -sf \
@@ -40,9 +66,17 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/user/packages/container/${PKG}/versions?per_page=100")
 
-          # Find the currently deployed image tag on production VM
-          echo "Detecting current production image..."
-          PROD_TAG=$(curl -sf https://changelog-gen.duckdns.org/q/health >/dev/null 2>&1 && echo "healthy" || echo "unreachable")
+          # The deploy workflow pins production to a digest (ghcr.io/...@sha256:...).
+          PROD_TAG=""
+          PROD_DIGEST=""
+          case "$PROD_IMAGE" in
+            *@sha256:*) PROD_DIGEST="${PROD_IMAGE##*@}" ;;
+            *:*)        PROD_TAG="${PROD_IMAGE##*:}" ;;
+          esac
+          if [ -z "$PROD_TAG" ] && [ -z "$PROD_DIGEST" ]; then
+            echo "Could not parse deployed image reference: $PROD_IMAGE" >&2
+            exit 1
+          fi
 
           # Always keep the newest tagged build (it's either deployed or the latest candidate)
           NEWEST_TAG=$(echo "$VERSIONS" | python3 -c "
@@ -60,20 +94,24 @@ jobs:
           " 2>/dev/null || echo "")
 
           echo "Newest build tag: $NEWEST_TAG"
-          echo "Production health: $PROD_TAG"
+          echo "Deployed image: $PROD_IMAGE (tag=${PROD_TAG:-none}, digest=${PROD_DIGEST:-none})"
           echo ""
 
-          DELETE_COUNT=0
-          KEEP_COUNT=0
-
-          echo "$VERSIONS" | python3 -c "
-          import json, sys
+          echo "$VERSIONS" | \
+            NEWEST_TAG="$NEWEST_TAG" \
+            PROD_TAG="$PROD_TAG" \
+            PROD_DIGEST="$PROD_DIGEST" \
+            RETENTION_SECONDS="$RETENTION_SECONDS" \
+            python3 -c "
+          import json, os, sys
           from datetime import datetime, timezone
 
           data = json.load(sys.stdin)
           now = datetime.now(timezone.utc)
-          retention = $RETENTION_SECONDS
-          newest_tag = '$NEWEST_TAG'
+          retention = int(os.environ['RETENTION_SECONDS'])
+          newest_tag = os.environ['NEWEST_TAG']
+          prod_tag = os.environ['PROD_TAG']
+          prod_digest = os.environ['PROD_DIGEST']
 
           for v in data:
               vid = v['id']
@@ -86,12 +124,20 @@ jobs:
               try:
                   created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
                   age_seconds = (now - created_dt).total_seconds()
-              except:
+              except Exception:
                   age_seconds = 0
 
               # Always keep the newest tagged build
               if newest_tag and newest_tag in build_tags:
                   print(f'KEEP  | {vid} | {tag_str} | newest build')
+                  continue
+
+              # Never delete whatever production is currently running
+              if prod_digest and v.get('name') == prod_digest:
+                  print(f'KEEP  | {vid} | {tag_str} | deployed production digest')
+                  continue
+              if prod_tag and prod_tag in build_tags:
+                  print(f'KEEP  | {vid} | {tag_str} | deployed production tag')
                   continue
 
               # Delete ALL untagged images (attestation layers, not runnable)
@@ -108,8 +154,8 @@ jobs:
 
           echo ""
           echo "--- Summary ---"
-          DELETE_COUNT=$(grep -c '^DELETE' /tmp/cleanup-plan.txt || echo 0)
-          KEEP_COUNT=$(grep -c '^KEEP' /tmp/cleanup-plan.txt || echo 0)
+          DELETE_COUNT=$(grep -c '^DELETE' /tmp/cleanup-plan.txt || true)
+          KEEP_COUNT=$(grep -c '^KEEP' /tmp/cleanup-plan.txt || true)
           echo "To delete: $DELETE_COUNT | To keep: $KEEP_COUNT"
 
           if [ "$DRY_RUN" = "true" ]; then
@@ -125,8 +171,8 @@ jobs:
 
           echo ""
           echo "Deleting..."
-          DELETED_TAGS=""
-          grep '^DELETE' /tmp/cleanup-plan.txt | while IFS='|' read -r _action vid _rest; do
+          FAILED_COUNT=0
+          while IFS='|' read -r _action vid _rest; do
             vid=$(echo "$vid" | tr -d ' ')
             # Extract tag name from the rest
             tag=$(echo "$_rest" | cut -d'|' -f1 | tr -d ' ')
@@ -135,14 +181,20 @@ jobs:
               -H "Authorization: Bearer $GHCR_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/user/packages/container/${PKG}/versions/$vid")
-            echo "  Deleted $vid ($tag): HTTP $status"
-          done
+            if [ "$status" = "204" ] || [ "$status" = "200" ]; then
+              echo "  Deleted $vid ($tag): HTTP $status"
+            else
+              echo "  FAILED  $vid ($tag): HTTP $status" >&2
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+            fi
+          done < <(grep '^DELETE' /tmp/cleanup-plan.txt || true)
 
           echo "Done."
 
           # Write outputs for the notification step
           echo "delete_count=$DELETE_COUNT" >> "$GITHUB_OUTPUT"
           echo "keep_count=$KEEP_COUNT" >> "$GITHUB_OUTPUT"
+          echo "failed_count=$FAILED_COUNT" >> "$GITHUB_OUTPUT"
 
           # Build the deleted list as a multi-line output
           {
@@ -158,6 +210,7 @@ jobs:
             echo "| Metric | Count |"
             echo "|--------|-------|"
             echo "| Deleted | $DELETE_COUNT |"
+            echo "| Failed | $FAILED_COUNT |"
             echo "| Kept | $KEEP_COUNT |"
             echo ""
             if [ "$DELETE_COUNT" -gt 0 ]; then
@@ -169,6 +222,11 @@ jobs:
               echo "_No images exceeded the ${RETENTION_DAYS}-day retention period._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "::error::$FAILED_COUNT deletion(s) failed"
+            exit 1
+          fi
 
       - name: Create issue if images were deleted
         if: steps.cleanup.outputs.delete_count != '0' && inputs.dry_run != 'true'

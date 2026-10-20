@@ -352,12 +352,19 @@ This is the only workflow that can touch production, and it **never rebuilds the
 
 ```
 select build → verify image+digest on GHCR → ssh VM → docker compose pull (docker-compose.prod.yml)
-            → docker compose up -d --force-recreate → retry /q/health → SUCCESS → bump semver → commit vX.Y.Z to main
+            → docker compose up -d --force-recreate → retry /q/health/live → SUCCESS → bump semver → commit vX.Y.Z to main
 ```
 
 Production success comes first, release version second: a failed deploy (bad image, dead health
 check) stops the workflow with `main` untouched. Rollback is just re-running this workflow with an
 older `image_tag`.
+
+**Health probes use liveness (`/q/health/live`), never the aggregate `/q/health`.** The aggregate
+includes the datasource check, so probing it every 10s holds a Postgres connection open forever.
+On Neon's free plan that prevents compute from scaling to zero and burns roughly 182 CU-hours/month
+at the 0.25 CU minimum — more than the ~100 CU-hours allowance — so the database eventually rejects
+every connection and all logins fail. Readiness is still verified at startup by Flyway and by real
+requests; use `/q/health/ready` for a one-off check, not as a recurring Docker probe.
 
 `list-available-builds.yml` (manual `workflow_dispatch`) lists the GHCR candidate tags + digests
 you can promote.
