@@ -1,3 +1,8 @@
+## v1.0.33 — 2026-10-20 (promoted build.70)
+
+
+- fix(history): refresh live repo changelog data
+
 ## v1.0.32 — 2026-10-20 (promoted build.69)
 
 - fix(push): block unchanged repo entries and confirm updates
