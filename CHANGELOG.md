@@ -1,3 +1,7 @@
+## 2026-10-20 — dev (run 70)
+
+- fix(history): refresh live repo changelog data
+
 ## 2026-10-20 — dev (run 69)
 
 - fix(push): block unchanged repo entries and confirm updates
