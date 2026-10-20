@@ -43,13 +43,16 @@ public class WebApplicationExceptionMapper implements ExceptionMapper<WebApplica
             return original;
         }
         String path = uriInfo != null ? uriInfo.getPath() : null;
+        String requestPath = uriInfo != null ? uriInfo.getRequestUri().getPath() : path;
+        boolean apiRequest = requestPath != null
+                && (requestPath.equals("/api") || requestPath.startsWith("/api/"));
 
         // RESTEasy throws its own WebApplicationException (NotFoundException) for any request
         // that matches no route at all. A frontend route like /dev/projects/xxx ends up here too
         // because RESTEasy's Vert.x handler processes every incoming request; serving the SPA
         // shell lets Quinoa/React handle it instead of showing a raw JSON 404.
         if (resourceInfo == null || resourceInfo.getResourceMethod() == null) {
-            if (path != null && !path.startsWith("/api") && !path.startsWith("api/")) {
+            if (!apiRequest) {
                 String html = readIndexHtml();
                 if (html != null) {
                     return Response.ok(html, MediaType.TEXT_HTML_TYPE).build();

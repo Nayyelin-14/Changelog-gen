@@ -4,11 +4,15 @@ import com.hubsabai.changelog.ai.AiException;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.container.ResourceInfo;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriInfo;
 import java.lang.reflect.Method;
+import java.net.URI;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class ExceptionMappersTest {
 
@@ -144,6 +148,19 @@ class ExceptionMappersTest {
         WebApplicationException ex = new WebApplicationException((Response) null);
         Response response = mapper.toResponse(ex);
         assertEquals(502, response.getStatus());
+    }
+
+    @Test
+    void unmatchedApiRouteReturnsJsonNotFoundInsteadOfTheSpaShell() {
+        WebApplicationExceptionMapper mapper = new WebApplicationExceptionMapper();
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(uriInfo.getPath()).thenReturn("definitely-not-a-route");
+        when(uriInfo.getRequestUri()).thenReturn(URI.create("http://localhost/api/definitely-not-a-route"));
+        mapper.uriInfo = uriInfo;
+
+        Response response = mapper.toResponse(new WebApplicationException(Response.status(404).build()));
+        assertEquals(404, response.getStatus());
+        assertTrue(response.getEntity().toString().contains("couldn't find"));
     }
 
     @Test
