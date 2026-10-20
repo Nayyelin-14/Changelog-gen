@@ -225,12 +225,17 @@ export function GenerateChangelogPage() {
     { cacheKey: 'changelog-status' },
   );
 
+  // Set by the Refresh button so this one request bypasses the server's file cache. It is reset
+  // immediately after the load starts, so paging or navigation stays on the cheap cached path.
+  const forceHistoryRefreshRef = useRef(false);
   const loadHistory = useCallback(async () => {
     if (!project || !repo) throw new Error('repo-not-ready');
+    const forceRefresh = forceHistoryRefreshRef.current;
+    forceHistoryRefreshRef.current = false;
     if (isHistoryView) {
-      return listHistory(project, repo, selectedBranch, page, 20);
+      return listHistory(project, repo, selectedBranch, page, 20, forceRefresh);
     }
-    return listHistory(project, repo, selectedBranch, 0, 9999);
+    return listHistory(project, repo, selectedBranch, 0, 9999, forceRefresh);
   }, [project, repo, selectedBranch, page, isHistoryView]);
   const history = useQuery(
     loadHistory,
@@ -264,6 +269,7 @@ export function GenerateChangelogPage() {
   // to success/failure on their own instead of waiting for a manual Refresh. Stops entirely once
   // every run has a result — nothing is in flight, nothing to watch.
   const hasInFlightRuns = builds.status === "success" && builds.data.some((r) => !r.result);
+  const dashboardRefreshing = summary.refreshing || changelogStatus.refreshing || history.refreshing || builds.refreshing;
   const refreshBuilds = builds.refresh;
   useEffect(() => {
     if (!hasInFlightRuns) return;
@@ -1291,15 +1297,17 @@ export function GenerateChangelogPage() {
                   variant="ghost"
                   className="gap-1.5 text-muted-foreground"
                   onClick={() => {
+                    forceHistoryRefreshRef.current = true;
                     summary.refresh();
                     changelogStatus.refresh();
                     history.refresh();
                     builds.refresh();
                   }}
-                  title="Refresh — pipeline runs and versions can change on their own from real CI activity"
+                  disabled={dashboardRefreshing}
+                  title="Refresh — re-read the latest CHANGELOG.md and pipeline activity"
                 >
-                  <RotateCcw className="size-3.5" />
-                  Refresh
+                  <RotateCcw className={dashboardRefreshing ? "size-3.5 animate-spin" : "size-3.5"} />
+                  {dashboardRefreshing ? "Refreshing…" : "Refresh"}
                 </Button>
               </div>
             </div>

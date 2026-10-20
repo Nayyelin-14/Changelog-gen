@@ -1,6 +1,5 @@
 ## v1.0.32 — 2026-10-20 (promoted build.69)
 
-
 - fix(push): block unchanged repo entries and confirm updates
 
 ## v1.0.31 — 2026-10-20 (promoted build.68)
@@ -10,6 +9,10 @@
 ## v1.0.30 — 2026-10-20 (promoted build.67)
 
 - fix(errors): return safe, friendly messages on outages
+
+## 2026-10-20 — dev (run 70)
+
+- fix(history): refresh live repo changelog data
 
 ## 2026-10-20 — dev (run 69)
 

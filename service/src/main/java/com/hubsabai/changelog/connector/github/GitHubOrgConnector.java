@@ -466,6 +466,20 @@ public class GitHubOrgConnector {
         return fetchChangelogFile(project, repo, branch, true);
     }
 
+    /** Bypasses the cached read and replaces it with the branch's current file. Used by an
+     * explicit dashboard refresh: a release commit must show up immediately, not on restart. */
+    public ChangelogFile fetchChangelogFileFresh(String project, String repo, String branch) {
+        String resolvedBranch = branch != null ? branch : defaultBranch(project, repo);
+        String key = project + "/" + repo + "/" + resolvedBranch + "/true";
+        ChangelogFile file = fetchChangelogFile(project, repo, resolvedBranch, false);
+        if (file != null) {
+            changelogFileCache.put(key, file);
+        } else {
+            changelogFileCache.remove(key);
+        }
+        return file;
+    }
+
     private final Map<String, ChangelogFile> changelogFileCache = new ConcurrentHashMap<>();
 
     /** TTL cache for the org-wide repo list. {@code listRepositories} fans out to 2-3 GitHub API

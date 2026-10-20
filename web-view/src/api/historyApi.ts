@@ -11,10 +11,11 @@ export async function listHistory(
   branch?: string,
   page?: number,
   limit?: number,
+  refresh?: boolean,
 ): Promise<HistoryResponse> {
   const { data } = await apiClient.get<HistoryResponse>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/history`,
-    { params: { branch, page, limit } },
+    { params: { branch, page, limit, refresh: refresh || undefined } },
   );
   return data;
 }

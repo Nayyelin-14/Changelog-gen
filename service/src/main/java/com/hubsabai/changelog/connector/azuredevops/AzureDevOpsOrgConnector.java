@@ -1395,6 +1395,15 @@ public class AzureDevOpsOrgConnector {
         return file;
     }
 
+    /** Bypasses the cached read and replaces it with the branch's current file. Used by an
+     * explicit dashboard refresh: a release commit must show up immediately, not after the TTL. */
+    public ChangelogFile fetchChangelogFileFresh(String project, String repo, String branch) {
+        String key = project + "/" + repo + "/" + (branch != null ? branch : "");
+        ChangelogFile file = fetchChangelogFile(project, repo, branch);
+        changelogFileCache.put(key, new ChangelogFileCacheEntry(file, System.currentTimeMillis()));
+        return file;
+    }
+
     public ChangelogFile fetchChangelogFile(String project, String repo, String branch) {
         for (String filename : CHANGELOG_FILENAMES) {
             try {

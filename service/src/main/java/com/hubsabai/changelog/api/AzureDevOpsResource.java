@@ -204,7 +204,7 @@ public class AzureDevOpsResource {
 
     private RepoOverview buildRepoOverview(String project, RepositorySummary repo) {
         try {
-            HistoryResponse resp = history(project, repo.name(), null, 0, UNGENERATED_PR_LIMIT);
+            HistoryResponse resp = history(project, repo.name(), null, 0, UNGENERATED_PR_LIMIT, false);
             String latestVersion = null;
             String latestVersionAt = null;
             int needsReview = 0;
@@ -572,7 +572,8 @@ public class AzureDevOpsResource {
             @PathParam("repo") String repo,
             @QueryParam("branch") String branch,
             @DefaultValue("0") @QueryParam("page") int page,
-            @DefaultValue("10") @QueryParam("limit") int limit) {
+            @DefaultValue("10") @QueryParam("limit") int limit,
+            @DefaultValue("false") @QueryParam("refresh") boolean refresh) {
         String resolvedBranch = resolveBranch(project, repo, branch);
 
         // DB-native side: every version this repo has ever had reported/generated/edited.
@@ -591,14 +592,24 @@ public class AzureDevOpsResource {
             dbByVersion.putIfAbsent(cv.version, null);
         }
 
-        // If we have DB data for this repo, build response from DB only — skip git entirely
-        if (!dbByVersion.isEmpty()) {
+        // Always merge the live file with DB rows: a release commit made outside this app must
+        // appear in the dashboard. The normal path uses the short-lived cache; an explicit
+        // refresh bypasses it so the user can force the current branch contents. If Azure DevOps
+        // is unreachable, fall back to the DB rather than breaking the whole history page.
+        ChangelogFile file = null;
+        try {
+            file = refresh
+                    ? orgConnector.fetchChangelogFileFresh(project, repo, resolvedBranch)
+                    : orgConnector.fetchChangelogFileCached(project, repo, resolvedBranch);
+        } catch (Exception e) {
+            LOG.warning("Could not read CHANGELOG.md for " + project + "/" + repo + " branch "
+                    + resolvedBranch + " — falling back to DB history: " + e.getMessage());
+        }
+        if (file == null && !dbByVersion.isEmpty()) {
             return withDrafts(project, repo, resolvedBranch, page,
                     buildHistoryFromDb(project, repo, resolvedBranch, page, limit, dbByVersion));
         }
 
-        // No DB data — try git as fallback
-        ChangelogFile file = orgConnector.fetchChangelogFileCached(project, repo, resolvedBranch);
         List<ChangelogEntry> parsed = file != null
                 ? new ArrayList<>(orgConnector.parseChangelogEntries(file.content()))
                 : new ArrayList<>();
