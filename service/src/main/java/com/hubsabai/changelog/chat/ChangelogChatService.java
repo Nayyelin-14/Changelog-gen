@@ -31,6 +31,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -221,15 +222,9 @@ public class ChangelogChatService {
             return;
         }
         boolean partial = e instanceof AiStreamException ase && ase.anyOutputEmitted();
-        // AiException messages are already operator/user-facing ("Chat call failed (model X):
-        // HTTP 429 — …", "all N models in the chain failed. Last error: …") — hiding them behind
-        // a generic sentence left users staring at "Something went wrong" with no clue whether
-        // the key was rejected, the model hung, or the provider rate-limited. Only truly
-        // unknown exception types get the generic fallback.
-        String message = e instanceof AiStreamException ase ? ase.getMessage()
-                : e instanceof AiException ai && ai.getMessage() != null && !ai.getMessage().isBlank()
-                        ? ai.getMessage()
-                        : "Something went wrong generating a response.";
-        writeEvent(writer, "error", Map.of("message", message, "partial", partial));
+        LOG.log(Level.WARNING, "Chat stream failed", e);
+        writeEvent(writer, "error", Map.of(
+                "message", "The AI service couldn't finish that response. Please try again.",
+                "partial", partial));
     }
 }

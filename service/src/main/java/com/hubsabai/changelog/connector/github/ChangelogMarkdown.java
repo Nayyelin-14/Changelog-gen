@@ -80,6 +80,42 @@ public final class ChangelogMarkdown {
         return bodyStart < nextHeaderStart ? markdown.substring(bodyStart, nextHeaderStart).strip() : "";
     }
 
+    /** Returns the first matching version's body in document order, or empty if no header matches.
+     * Matching mirrors {@link #replaceChangelogEntryBody} so the two never disagree about which
+     * entry a version refers to. */
+    public static Optional<String> findChangelogEntryBody(String markdown, String version) {
+        if (markdown == null || version == null) {
+            return Optional.empty();
+        }
+        Matcher matcher = CHANGELOG_VERSION_HEADER.matcher(markdown);
+        int prevStart = -1;
+        String prevVersion = null;
+        while (matcher.find()) {
+            if (version.equals(prevVersion)) {
+                return Optional.of(extractBody(markdown, prevStart, matcher.start()));
+            }
+            prevVersion = matcher.group(1) != null ? matcher.group(1) : matcher.group(3);
+            prevStart = matcher.start();
+        }
+        if (version.equals(prevVersion)) {
+            return Optional.of(extractBody(markdown, prevStart, markdown.length()));
+        }
+        return Optional.empty();
+    }
+
+    /** Comparison form used to decide whether a push would actually change the repo: line endings
+     * are normalized and surrounding whitespace is ignored, matching how entries are parsed. */
+    public static String normalizeEntryBody(String body) {
+        return body == null ? "" : body.replace("\r\n", "\n").replace('\r', '\n').strip();
+    }
+
+    /** Canonical version form for matching/persisting: trimmed, without a leading {@code v}. */
+    public static String canonicalVersion(String version) {
+        if (version == null) return null;
+        String trimmed = version.strip();
+        return trimmed.startsWith("v") || trimmed.startsWith("V") ? trimmed.substring(1) : trimmed;
+    }
+
     /** Replaces one version's entry body, preserving surrounding whitespace. Empty if no header
      * matches {@code version}. */
     public static Optional<String> replaceChangelogEntryBody(String markdown, String version, String newBody) {

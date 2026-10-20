@@ -1362,6 +1362,10 @@ public class AzureDevOpsOrgConnector {
     /** The changelog file's own name (CHANGELOG.md vs changelog.md) plus its raw content. */
     public record ChangelogFile(String filename, String content) {}
 
+    /** Outcome of a changelog push: either a new commit was created, or the repo already held
+     * exactly this entry and nothing was written. */
+    public record ChangelogPushResult(String commitUrl, boolean alreadyUpToDate) {}
+
     /** Fetches the repo's changelog file — name and raw content — or null when neither casing exists. */
     public ChangelogFile fetchChangelogFile(String project, String repo) {
         return fetchChangelogFile(project, repo, null);
@@ -1491,6 +1495,42 @@ public class AzureDevOpsOrgConnector {
         return bodyStart < nextHeaderStart ? markdown.substring(bodyStart, nextHeaderStart).strip() : "";
     }
 
+    /** Returns the first matching version's body in document order, or empty if no header matches.
+     * Matching mirrors {@link #replaceChangelogEntryBody} so the two never disagree about which
+     * entry a version refers to. */
+    public Optional<String> findChangelogEntryBody(String markdown, String version) {
+        if (markdown == null || version == null) {
+            return Optional.empty();
+        }
+        Matcher matcher = CHANGELOG_VERSION_HEADER.matcher(markdown);
+        int prevStart = -1;
+        String prevVersion = null;
+        while (matcher.find()) {
+            if (version.equals(prevVersion)) {
+                return Optional.of(extractBody(markdown, prevStart, matcher.start()));
+            }
+            prevVersion = matcher.group(1) != null ? matcher.group(1) : matcher.group(3);
+            prevStart = matcher.start();
+        }
+        if (version.equals(prevVersion)) {
+            return Optional.of(extractBody(markdown, prevStart, markdown.length()));
+        }
+        return Optional.empty();
+    }
+
+    /** Comparison form used to decide whether a push would actually change the repo: line endings
+     * are normalized and surrounding whitespace is ignored, matching how entries are parsed. */
+    public static String normalizeEntryBody(String body) {
+        return body == null ? "" : body.replace("\r\n", "\n").replace('\r', '\n').strip();
+    }
+
+    /** Canonical version form for matching/persisting: trimmed, without a leading {@code v}. */
+    private static String canonicalVersion(String version) {
+        if (version == null) return null;
+        String trimmed = version.strip();
+        return trimmed.startsWith("v") || trimmed.startsWith("V") ? trimmed.substring(1) : trimmed;
+    }
+
     /**
      * Replaces one version's body text in CHANGELOG.md, leaving all other entries untouched.
      * Uses the same regex matcher as {@link #parseChangelogEntries} for consistency. Preserves
@@ -1591,29 +1631,49 @@ public class AzureDevOpsOrgConnector {
      * on its own otherwise). Re-fetches the file fresh to reflect the repo's current state, not
      * whatever the caller's page loaded earlier.
      *
-     * @return a link to the resulting commit. Failures — a new entry whose version doesn't look
-     *         like a real version, empty text, the branch not existing, or the branch having
-     *         moved since the file was fetched (Azure DevOps rejects a push whose base commit is
-     *         stale) — propagate as unchecked exceptions.
+     * @return the resulting commit link, or an already-up-to-date result when the repo's entry
+     *         body already matches {@code newBody} exactly. Failures — a new entry whose version
+     *         doesn't look like a real version, empty text, the branch not existing, or the branch
+     *         having moved since the file was fetched (Azure DevOps rejects a push whose base
+     *         commit is stale) — propagate as unchecked exceptions.
      */
-    public String pushChangelogEdit(String project, String repo, String branch, String version, String newBody) {
+    public ChangelogPushResult pushChangelogEdit(String project, String repo, String branch, String version, String newBody) {
+        String normalizedVersion = canonicalVersion(version);
+        if (normalizedVersion == null || normalizedVersion.isBlank()) {
+            throw new AiException("A version is required to push a changelog.");
+        }
+        version = normalizedVersion;
+        if (newBody == null || newBody.isBlank()) {
+            throw new AiException("Nothing to push — the changelog text is empty.");
+        }
+
         ChangelogFile file = fetchChangelogFile(project, repo, branch);
         boolean fileExists = file != null;
         String filename = fileExists ? file.filename() : CHANGELOG_FILENAMES.get(0);
         String existingContent = fileExists ? file.content() : null;
 
-        Optional<String> replaced = fileExists
+        Optional<String> existingBody = fileExists
+                ? findChangelogEntryBody(existingContent, version)
+                : Optional.empty();
+        if (existingBody.isPresent()
+                && normalizeEntryBody(existingBody.get()).equals(normalizeEntryBody(newBody))) {
+            LOG.info("Push v" + version + " to " + project + "/" + repo + " branch " + branch
+                    + " skipped — the repo already has this exact entry");
+            return new ChangelogPushResult(null, true);
+        }
+
+        Optional<String> replaced = existingBody.isPresent()
                 ? replaceChangelogEntryBody(existingContent, version, newBody)
                 : Optional.empty();
+        if (existingBody.isPresent() && replaced.isEmpty()) {
+            throw new AiException("Couldn't update v" + version + " in CHANGELOG.md — refusing to create a duplicate entry.");
+        }
         boolean isNewEntry = replaced.isEmpty();
         String updated;
         if (isNewEntry) {
             if (!VALID_NEW_VERSION.matcher(version).matches()) {
                 throw new AiException("'" + version + "' doesn't look like a real version (expected something"
                         + " like 1.2.3) — refusing to create a new CHANGELOG.md entry for it.");
-            }
-            if (newBody == null || newBody.isBlank()) {
-                throw new AiException("Nothing to push — the changelog text is empty.");
             }
             updated = insertNewChangelogEntry(existingContent, version, newBody);
         } else {
@@ -1669,8 +1729,9 @@ public class AzureDevOpsOrgConnector {
                             : " — it may have moved since this page loaded. Refresh and try again."));
         }
 
-        return "https://dev.azure.com/" + org + "/" + project + "/_git/" + repo
+        String commitUrl = "https://dev.azure.com/" + org + "/" + project + "/_git/" + repo
                 + (commitId != null ? "/commit/" + commitId : "");
+        return new ChangelogPushResult(commitUrl, false);
     }
 
     /**

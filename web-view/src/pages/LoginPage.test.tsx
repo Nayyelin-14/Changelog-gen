@@ -49,6 +49,13 @@ describe('LoginPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('explains a temporary service outage without technical detail', () => {
+    renderLogin('?error=service_unavailable');
+    expect(
+      screen.getByText(/temporarily unavailable. Please try again in a moment/i),
+    ).toBeInTheDocument();
+  });
+
   it('falls back to a generic message for unknown errors', () => {
     renderLogin('?error=weird_new_code');
     expect(

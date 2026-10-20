@@ -540,7 +540,9 @@ public class AzureDevOpsResource {
                     writer.flush();
                 } catch (Exception e) {
                     hadError = true;
-                    String errJson = SSE_MAPPER.writeValueAsString(Map.of("error", e.getMessage() != null ? e.getMessage() : "Generation failed"));
+                    String errJson = SSE_MAPPER.writeValueAsString(Map.of(
+                            "error", "generation_failed",
+                            "message", "We couldn't finish generating that changelog. Please try again."));
                     writer.write("event: error\ndata: " + errJson + "\n\n");
                     writer.flush();
                     break;
@@ -1764,7 +1766,7 @@ public class AzureDevOpsResource {
      */
     @POST
     @Path("/projects/{project}/repos/{repo}/changelog-push")
-    public Map<String, String> pushChangelog(
+    public Map<String, Object> pushChangelog(
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             GenerateCommitRequest request) {
@@ -1776,6 +1778,13 @@ public class AzureDevOpsResource {
             throw new AiException("Pushing to the repo is only supported for the developer view right now.");
         }
         if (version == null || version.isBlank()) {
+            throw new AiException("A version is required to push a changelog.");
+        }
+        String trimmedVersion = version.strip();
+        String pushVersion = (trimmedVersion.startsWith("v") || trimmedVersion.startsWith("V"))
+                ? trimmedVersion.substring(1)
+                : trimmedVersion;
+        if (pushVersion.isBlank()) {
             throw new AiException("A version is required to push a changelog.");
         }
         if (branch == null || branch.isBlank()) {
@@ -1790,14 +1799,26 @@ public class AzureDevOpsResource {
         boolean needsCaching = requestText != null && !requestText.isBlank();
         String text = needsCaching
                 ? requestText
-                : cacheService.getCurrentText(project, repo, version, "developer")
-                        .orElseThrow(() -> new AiException("Nothing generated or edited yet for v" + version + " — nothing to push."));
+                : cacheService.getCurrentText(project, repo, pushVersion, "developer")
+                        .orElseThrow(() -> new AiException("Nothing generated or edited yet for v" + pushVersion + " — nothing to push."));
 
         // pushChangelogEdit now replaces v{version}'s entry if one exists, creates a new entry if
         // not, and creates CHANGELOG.md itself from scratch if the branch has no changelog file
         // at all yet — validated (must look like a real version, text must be non-empty), and
         // failures propagate as exceptions rather than an empty result to check for.
-        String commitUrl = orgConnector.pushChangelogEdit(project, repo, branch, version, text);
+        AzureDevOpsOrgConnector.ChangelogPushResult result =
+                orgConnector.pushChangelogEdit(project, repo, branch, pushVersion, text);
+
+        // The repo already holds exactly this entry — no commit was created, so there is nothing
+        // to cache, mark pushed, or attach to a pipeline run. Report the no-op explicitly rather
+        // than fabricating a commit URL the caller could open.
+        if (result.alreadyUpToDate()) {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("commitUrl", null);
+            response.put("alreadyUpToDate", true);
+            return response;
+        }
+        String commitUrl = result.commitUrl();
 
         if (needsCaching) {
             // Only now that it's safely committed in the real repo do we let the DB know about
@@ -1807,27 +1828,28 @@ public class AzureDevOpsResource {
             // to resolve it must never make this endpoint report the push as failed.
             String inputHash = null;
             try {
-                ResolvedRelease resolved = resolveReleaseData(project, repo, version, branch);
+                ResolvedRelease resolved = resolveReleaseData(project, repo, pushVersion, branch);
                 inputHash = InputHash.of(ReleaseNotePreparer.prepare(resolved.data().getItems()));
             } catch (AiException e) {
                 LOG.warning("Could not resolve release data for " + project + "/" + repo + " v" + version
                         + " while recording a pushed changelog — caching without an input hash: " + e.getMessage());
             }
             String model = request.getModel() != null && !request.getModel().isBlank() ? request.getModel() : "unknown";
-            cacheService.put(project, repo, version, "developer", model, text, inputHash);
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
+            cacheService.put(project, repo, pushVersion, "developer", model, text, inputHash);
+            long vid = changelogService.getOrCreateVersion(project, repo, pushVersion, null, null, null, null, null).id;
             changelogService.createSnapshot(vid, "developer", text, "ai", model, 0, 0, null);
         }
-        cacheService.markPushed(project, repo, version, "developer", text, commitUrl);
+        cacheService.markPushed(project, repo, pushVersion, "developer", text, commitUrl);
 
         // Version-free save → push-modal flow: fill the human-chosen version into the recorded
         // run the draft was saved against, and clear the now-obsolete draft.
         if (buildId != null && buildId > 0) {
-            recordedRunService.applyPushedVersion("azure", project, repo, buildId, version);
+            recordedRunService.applyPushedVersion("azure", project, repo, buildId, pushVersion);
         }
 
-        Map<String, String> response = new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
         response.put("commitUrl", commitUrl);
+        response.put("alreadyUpToDate", false);
         return response;
     }
 

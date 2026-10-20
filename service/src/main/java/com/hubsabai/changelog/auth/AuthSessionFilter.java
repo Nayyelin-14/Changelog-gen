@@ -1,5 +1,7 @@
 package com.hubsabai.changelog.auth;
 
+import com.hubsabai.changelog.api.DatabaseFailures;
+import com.hubsabai.changelog.api.RequestIdFilter;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.annotation.Priority;
 import jakarta.inject.Inject;
@@ -11,17 +13,23 @@ import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.ext.Provider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 /**
  * Resolves the {@code cc_session} cookie into the request-scoped {@link CurrentUser}. Runs for
- * every request (it's a plain {@code @Provider}) but only ever reads — the session token is never
- * logged and never leaves the server. It deliberately does <em>not</em> reject anything: default-deny
- * lives in {@code api.AuthenticatedFilter} (401) and ownership in {@code api.AccessGuard} (403),
- * so that {@code /api/auth/**} stays reachable from a logged-out browser.
+ * every request but only ever reads. A database outage must not turn every request into a 500:
+ * the request continues as anonymous and {@code AuthenticatedFilter} answers 503 for protected
+ * endpoints instead of pretending the session expired.
  */
 @Provider
 @RegisterForReflection
 @Priority(Priorities.AUTHENTICATION)
 public class AuthSessionFilter implements ContainerRequestFilter {
+
+    public static final String AUTH_UNAVAILABLE = "auth.session.unavailable";
+
+    private static final Logger LOG = Logger.getLogger(AuthSessionFilter.class.getName());
 
     @Inject
     SessionService sessions;
@@ -43,7 +51,17 @@ public class AuthSessionFilter implements ContainerRequestFilter {
         if (cookie == null) {
             return;
         }
-        sessions.resolve(cookie).ifPresent(resolved ->
-                currentUser.set(resolved.user(), resolved.accessToken()));
+        try {
+            sessions.resolve(cookie).ifPresent(resolved ->
+                    currentUser.set(resolved.user(), resolved.accessToken()));
+        } catch (RuntimeException e) {
+            requestContext.setProperty(AUTH_UNAVAILABLE, Boolean.TRUE);
+            String requestId = RequestIdFilter.current();
+            if (DatabaseFailures.isUnavailable(e)) {
+                LOG.log(Level.WARNING, "Session lookup unavailable [requestId=" + requestId + "]", e);
+            } else {
+                LOG.log(Level.WARNING, "Session lookup failed [requestId=" + requestId + "]", e);
+            }
+        }
     }
 }

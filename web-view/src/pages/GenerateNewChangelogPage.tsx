@@ -98,6 +98,11 @@ function stripHtml(html: string | null): string {
     .trim();
 }
 
+/** Mirrors the backend's no-op comparison so a push that would write nothing is disabled. */
+function normalizeChangelogText(text: string | null | undefined): string {
+  return (text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
 /** Builds ChangeItem[] AND the {@code ===} transport text for a PR's data, so both the
  * columns (source data) and the "Raw data sent to AI" popup see the same items. */
 function formatPullRequestMessages(pr: PRDetails): {
@@ -493,10 +498,11 @@ export function GenerateNewChangelogPage() {
   const detectPushMode = useCallback(async () => {
     if (!project || !repo || !pushVersion) return "CREATE_INITIAL";
     // Check if any history entry has this version and is generated
+    const normalized = pushVersion.trim().replace(/^v/i, "");
     const entriesWithVersion =
       history.status === "success"
         ? history.data.entries.filter(
-            (e) => e.version === pushVersion && e.generated !== false,
+            (e) => (e.version ?? "").replace(/^v/i, "") === normalized && e.generated !== false,
           )
         : [];
     if (entriesWithVersion.length > 0) {
@@ -531,9 +537,14 @@ export function GenerateNewChangelogPage() {
     pushVersionNormalized !== pushOwnVersionNormalized &&
     (existingVersionSet.has(pushVersionNormalized) ||
       (!!pushLatestVersion && pushVersionNormalized === pushLatestVersion));
+  // The repo text is fetched before the dialog opens — if it already matches the on-screen text,
+  // the backend would return already_up_to_date without creating a commit.
+  const pushNoChanges =
+    !!pushRepoText.trim() &&
+    normalizeChangelogText(pushRepoText) === normalizeChangelogText(audienceTexts.developer);
 
   async function handlePush() {
-    if (!project || !repo || !pushVersion || !pushBranch || pushVersionTaken || pushLoading) return;
+    if (!project || !repo || !pushVersion || !pushBranch || pushVersionTaken || pushNoChanges || pushLoading) return;
     setPushLoading(true);
     setPushError(null);
     // Detect push mode based on whether version already has a CHANGELOG.md entry
@@ -546,19 +557,27 @@ export function GenerateNewChangelogPage() {
       const result = await pushChangelog(
         project,
         repo,
-        pushVersion,
+        pushVersionNormalized,
         pushBranch,
         activeAudience as any,
         previewText ? { text: previewText, model: resultModel } : undefined,
         buildIdParam ? Number(buildIdParam) : undefined,
       );
+      if (result.alreadyUpToDate) {
+        setPushConfirmOpen(false);
+        toast.info(`v${pushVersionNormalized} is already in ${pushBranch}`, {
+          description: "No commit was created because the changelog text already matches.",
+        });
+        return;
+      }
+      if (!result.commitUrl) throw new Error("The push completed without a commit URL.");
       setPushResult(result.commitUrl);
       setPushConfirmOpen(false);
-      toast.success(`Pushed v${pushVersion} to ${pushBranch}`, {
+      toast.success(`Pushed v${pushVersionNormalized} to ${pushBranch}`, {
         description: `Committed directly — no PR needed.`,
         action: {
           label: "View commit",
-          onClick: () => window.open(result.commitUrl, "_blank", "noreferrer"),
+          onClick: () => window.open(result.commitUrl!, "_blank", "noreferrer"),
         },
       });
     } catch (e) {
@@ -582,7 +601,7 @@ export function GenerateNewChangelogPage() {
             const freshText = await getChangelogRepoText(
               project,
               repo,
-              pushVersion,
+              pushVersionNormalized,
               pushBranch,
             );
             setPushRepoText(freshText ?? "");
@@ -608,7 +627,7 @@ export function GenerateNewChangelogPage() {
           const freshText = await getChangelogRepoText(
             project,
             repo,
-            pushVersion,
+            pushVersionNormalized,
             pushBranch,
           );
           setPushRepoText(freshText ?? "");
@@ -623,22 +642,30 @@ export function GenerateNewChangelogPage() {
           const result = await pushChangelog(
             project,
             repo,
-            pushVersion,
+            pushVersionNormalized,
             pushBranch,
             activeAudience as any,
             freshText ? { text: freshText, model: resultModel } : undefined,
             buildIdParam ? Number(buildIdParam) : undefined,
           );
+          if (result.alreadyUpToDate) {
+            setPushConfirmOpen(false);
+            toast.info(`v${pushVersionNormalized} is already in ${pushBranch}`, {
+              description: "No commit was created because the changelog text already matches.",
+            });
+            return;
+          }
+          if (!result.commitUrl) throw new Error("The push completed without a commit URL.");
           setPushResult(result.commitUrl);
           setPushConfirmOpen(false);
           toast.success(
-            `Pushed v${pushVersion} to ${pushBranch} (retry after refresh)`,
+            `Pushed v${pushVersionNormalized} to ${pushBranch} (retry after refresh)`,
             {
               description: `Committed directly — no PR needed.`,
               action: {
                 label: "View commit",
                 onClick: () =>
-                  window.open(result.commitUrl, "_blank", "noreferrer"),
+                  window.open(result.commitUrl!, "_blank", "noreferrer"),
               },
             },
           );
@@ -1072,9 +1099,9 @@ export function GenerateNewChangelogPage() {
     setPushError(null);
     setPushRepoTextLoading(true);
     setPushBranch(branchParam);
-    setPushVersion(version || "");
+    const pushVer = (version || "").trim().replace(/^v/i, "");
+    setPushVersion(pushVer);
     setPushResolution(null);
-    const pushVer = version || "";
     try {
       const repoText = pushVer
         ? await getChangelogRepoText(project, repo, pushVer, branchParam)
@@ -1119,8 +1146,9 @@ export function GenerateNewChangelogPage() {
     setPushError(null);
     setPushRepoTextLoading(true);
     try {
-      const repoText = pushVersion
-        ? await getChangelogRepoText(project, repo, pushVersion, newBranch)
+      const pushVer = pushVersion.trim().replace(/^v/i, "");
+      const repoText = pushVer
+        ? await getChangelogRepoText(project, repo, pushVer, newBranch)
         : "";
       setPushRepoText(repoText ?? "");
     } catch (e) {
@@ -1145,8 +1173,9 @@ export function GenerateNewChangelogPage() {
     setPushError(null);
     setPushRepoTextLoading(true);
     try {
-      const repoText = newVersion.trim()
-        ? await getChangelogRepoText(project, repo, newVersion.trim(), pushBranch)
+      const normalized = newVersion.trim().replace(/^v/i, "");
+      const repoText = normalized
+        ? await getChangelogRepoText(project, repo, normalized, pushBranch)
         : "";
       setPushRepoText(repoText ?? "");
     } catch {
@@ -1950,15 +1979,19 @@ export function GenerateNewChangelogPage() {
 
       <ConfirmDialog
         open={pushConfirmOpen}
-        title={`Push v${pushVersion || "?"} to the repo?`}
-        description={`This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${pushVersion || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`}
+        title={`Push v${pushVersionNormalized || "?"} to the repo?`}
+        description={
+          pushNoChanges
+            ? `v${pushVersionNormalized || "?"} already matches the Developer entry in CHANGELOG.md on ${pushBranch ?? "?"} — there is nothing to push.`
+            : `This commits directly to ${pushBranch ?? "?"} — no PR — replacing v${pushVersionNormalized || "?"}'s Developer entry in CHANGELOG.md with the text shown below.`
+        }
         diff={{ before: pushRepoText, after: audienceTexts.developer ?? "" }}
         confirmLabel="Push"
         pendingLabel="Pushing…"
         loading={pushLoading}
         error={pushError}
         friendlyError={pushError ? friendlyPushError(pushError, pushErrorStatus) : null}
-        confirmDisabled={pushVersionTaken}
+        confirmDisabled={pushVersionTaken || pushNoChanges}
         onConfirm={handlePush}
         onCancel={() => {
           setPushConfirmOpen(false);
@@ -1991,6 +2024,11 @@ export function GenerateNewChangelogPage() {
           {pushVersionTaken && (
             <p className="text-[11px] text-destructive">
               v{pushVersionNormalized} already exists in this repo — choose a new version.
+            </p>
+          )}
+          {pushNoChanges && (
+            <p className="text-[11px] text-muted-foreground">
+              The repo already has this exact text for v{pushVersionNormalized} on {pushBranch} — nothing to push.
             </p>
           )}
           {branches.status === "success" && branches.data.length > 0 && (

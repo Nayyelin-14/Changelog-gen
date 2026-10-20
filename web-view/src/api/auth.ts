@@ -9,7 +9,7 @@ export async function getAuthMe(): Promise<AuthUser | null> {
     const { data } = await rootApiClient.get<AuthUser>('/auth/me');
     return data;
   } catch (error) {
-    if (error instanceof ApiError && (error.status === 401 || error.status === 503)) return null;
+    if (error instanceof ApiError && error.status === 401) return null;
     throw error;
   }
 }

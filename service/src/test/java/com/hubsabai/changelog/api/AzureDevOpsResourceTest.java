@@ -1,6 +1,8 @@
 package com.hubsabai.changelog.api;
 
 import com.hubsabai.changelog.auth.TestSessionFixture;
+import com.hubsabai.changelog.connector.azuredevops.WireMockAzureDevOpsResource;
+import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -8,11 +10,18 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 @QuarkusTest
+@QuarkusTestResource(WireMockAzureDevOpsResource.class)
 class AzureDevOpsResourceTest {
 
     /**
@@ -220,6 +229,41 @@ class AzureDevOpsResourceTest {
                 .then()
                 .statusCode(400)
                 .body("error", org.hamcrest.Matchers.containsString("version is required"));
+    }
+
+    @Test
+    void changelogPushReportsAlreadyUpToDateWithoutCreatingACommit() {
+        String markdown = """
+                # Changelog
+
+                ## [1.1.0] - 2026-07-01
+
+                - fixed the thing
+                - added a feature
+                """;
+        WireMockAzureDevOpsResource.server().resetAll();
+        WireMockAzureDevOpsResource.server().stubFor(get(urlPathEqualTo(
+                        "/test-org/proj/_apis/git/repositories/repo-noop/items"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"path\":\"/CHANGELOG.md\",\"content\":\""
+                                + markdown.replace("\n", "\\n") + "\"}")));
+
+        authenticated()
+                .contentType("application/json")
+                .body("""
+                        {"version":"v1.1.0","branch":"main","audience":"developer",
+                         "text":"- fixed the thing\\n- added a feature"}
+                        """)
+                .when().post("/api/projects/proj/repos/repo-noop/changelog-push")
+                .then()
+                .statusCode(200)
+                .body("alreadyUpToDate", is(true))
+                .body("commitUrl", nullValue());
+
+        WireMockAzureDevOpsResource.server().verify(0, postRequestedFor(urlPathEqualTo(
+                "/test-org/proj/_apis/git/repositories/repo-noop/pushes")));
     }
 
     @Test

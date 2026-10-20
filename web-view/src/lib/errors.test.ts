@@ -22,10 +22,28 @@ describe('friendlyApiError', () => {
     );
   });
 
-  it('keeps server messages for other statuses', () => {
-    expect(friendlyApiError(new ApiError('409 nothing to restore', 409), 'fallback')).toBe(
-      '409 nothing to restore',
+  it('keeps safe 4xx messages for other statuses', () => {
+    expect(friendlyApiError(new ApiError('nothing to restore', 409, 'conflict'), 'fallback')).toBe(
+      'nothing to restore',
     );
+  });
+
+  it('maps a temporary outage without leaking the failure reason', () => {
+    expect(
+      friendlyApiError(
+        new ApiError('quota exceeded', 503, 'service_unavailable'),
+        'fallback',
+      ),
+    ).toBe('The service is temporarily unavailable. Please try again in a moment.');
+  });
+
+  it('recognizes a disconnected GitHub account by code', () => {
+    expect(
+      friendlyApiError(
+        new ApiError('GitHub is disconnected.', 403, 'github_not_connected'),
+        'fallback',
+      ),
+    ).toBe('GitHub is disconnected — reconnect it to fetch repository data.');
   });
 
   it('falls back for non-ApiError values', () => {

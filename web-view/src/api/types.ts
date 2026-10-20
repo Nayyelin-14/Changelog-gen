@@ -234,6 +234,13 @@ export interface ChangelogMeta {
   durationMs: number | null;
 }
 
+/** Outcome of a push-to-repo call. `alreadyUpToDate` is true when the repo's CHANGELOG.md
+ * already contained exactly this entry and no commit was created; `commitUrl` is then null. */
+export interface ChangelogPushResult {
+  commitUrl: string | null;
+  alreadyUpToDate: boolean;
+}
+
 /** Where (if anywhere) a PR's changes actually landed — `prerelease` is a real, expected state
  * (reported by the pipeline, not yet promoted to a release), not an error. */
 export interface ChangelogLocation {

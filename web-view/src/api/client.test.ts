@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
+  ApiError,
   apiClient,
   rootApiClient,
   generateChangelogStream,
@@ -10,7 +11,7 @@ import {
 } from '@/api/client';
 import { setStoredProvider } from '@/lib/provider';
 
-function stubStatus(client: typeof apiClient, status: number, url?: string) {
+function stubStatus(client: typeof apiClient, status: number, data: unknown = { error: 'expired' }) {
   client.defaults.adapter = (config) =>
     Promise.reject({
       response: {
@@ -18,11 +19,10 @@ function stubStatus(client: typeof apiClient, status: number, url?: string) {
         statusText: status === 401 ? 'Unauthorized' : 'Error',
         headers: {},
         config,
-        data: { error: 'expired' },
+        data,
       },
       config,
     });
-  void url;
 }
 
 describe('centralized 401 handling', () => {
@@ -68,6 +68,28 @@ describe('centralized 401 handling', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('never surfaces a raw 5xx server message', async () => {
+    stubStatus(apiClient, 500, { error: 'SQLState 53000 quota exceeded' });
+
+    const error = await apiClient.get('/projects').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(500);
+    expect((error as ApiError).message).toBe(
+      'Something went wrong on our side. Please try again.',
+    );
+    expect((error as ApiError).message).not.toContain('SQL');
+  });
+
+  it('maps 503 to a calm, retryable message', async () => {
+    stubStatus(apiClient, 503, { error: 'service_unavailable', message: 'quota exceeded' });
+
+    const error = await apiClient.get('/projects').catch((e: unknown) => e);
+    expect((error as ApiError).status).toBe(503);
+    expect((error as ApiError).message).toBe(
+      'The service is temporarily unavailable. Please try again in a moment.',
+    );
+  });
+
   it('notifyUnauthorized is safe with no handler registered', () => {
     expect(() => notifyUnauthorized()).not.toThrow();
   });
@@ -86,7 +108,7 @@ describe('centralized 401 handling', () => {
         onDone: () => {},
         onError: () => {},
       }),
-    ).rejects.toThrow('expired');
+    ).rejects.toThrow('The service is temporarily unavailable. Please try again.');
     expect(handler).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
@@ -112,7 +134,10 @@ describe('centralized 401 handling', () => {
     );
 
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(onError).toHaveBeenCalledWith('expired', false);
+    expect(onError).toHaveBeenCalledWith(
+      'The service is temporarily unavailable. Please try again.',
+      false,
+    );
     vi.unstubAllGlobals();
   });
 });

@@ -1,5 +1,8 @@
 package com.hubsabai.changelog.auth;
 
+import com.hubsabai.changelog.api.ApiErrors;
+import com.hubsabai.changelog.api.DatabaseFailures;
+import com.hubsabai.changelog.api.RequestIdFilter;
 import com.hubsabai.changelog.storage.OwnedDataCleanupService;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -10,6 +13,7 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
@@ -21,6 +25,8 @@ import java.net.URI;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * GitHub OAuth entry points plus the session endpoints {@code /auth/me}, {@code /auth/logout},
@@ -49,6 +55,8 @@ import java.util.Map;
 @Path("/auth")
 @Produces(MediaType.APPLICATION_JSON)
 public class GitHubAuthResource {
+
+    private static final Logger LOG = Logger.getLogger(GitHubAuthResource.class.getName());
 
     /** Binds the {@code next} return path (and connect mode) to the CSRF state — set at authorize,
      * cleared at callback. */
@@ -84,6 +92,9 @@ public class GitHubAuthResource {
     @ConfigProperty(name = "auth.cookie.secure", defaultValue = "true")
     boolean configuredSecureCookies;
 
+    @Context
+    ContainerRequestContext requestContext;
+
     /** In dev profile, never set Secure flag — dev runs over plain HTTP. */
     private boolean secureCookies() {
         return profile.contains("dev") ? false : configuredSecureCookies;
@@ -98,7 +109,9 @@ public class GitHubAuthResource {
     @GET
     @Path("/github/authorize")
     public Response authorize(@QueryParam("next") String next, @QueryParam("mode") String mode) {
-        ensureEnabled();
+        if (!oauth.enabled()) {
+            return redirect(loginWithError("service_unavailable"));
+        }
         String maybeNext = next != null && !next.isBlank() ? next : DEFAULT_NEXT;
         String cleanNext = sanitizeNext(maybeNext);
         boolean connect = MODE_CONNECT.equalsIgnoreCase(mode);
@@ -121,7 +134,9 @@ public class GitHubAuthResource {
             @QueryParam("code") String code,
             @QueryParam("state") String state,
             @QueryParam("error") String error) {
-        ensureEnabled();
+        if (!oauth.enabled()) {
+            return redirect(loginWithError("service_unavailable"));
+        }
         if (error != null) {
             return redirect(loginWithError("access_denied"));
         }
@@ -156,6 +171,13 @@ public class GitHubAuthResource {
                             clearStateCookie())
                     .build();
         } catch (RuntimeException e) {
+            String requestId = RequestIdFilter.current();
+            if (DatabaseFailures.isUnavailable(e)) {
+                LOG.log(Level.WARNING, "GitHub callback failed: database unavailable [requestId="
+                        + requestId + "]", e);
+                return redirect(loginWithError("service_unavailable"));
+            }
+            LOG.log(Level.WARNING, "GitHub callback failed [requestId=" + requestId + "]", e);
             return redirect(loginWithError("oauth_failed"));
         }
     }
@@ -164,6 +186,10 @@ public class GitHubAuthResource {
     @GET
     @Path("/me")
     public Response me() {
+        if (requestContext != null
+                && Boolean.TRUE.equals(requestContext.getProperty(AuthSessionFilter.AUTH_UNAVAILABLE))) {
+            return ApiErrors.serviceUnavailable();
+        }
         return currentUser.get()
                 .map(u -> (Response) Response.ok(mePayload(u)).build())
                 .orElseGet(() -> Response.status(Response.Status.UNAUTHORIZED)
@@ -303,15 +329,6 @@ public class GitHubAuthResource {
             oauth.revokeAccessTokenBestEffort(crypto.decrypt(user.accessToken));
         } catch (RuntimeException ignored) {
             // Best-effort by design.
-        }
-    }
-
-    private void ensureEnabled() {
-        if (!oauth.enabled()) {
-            throw new ForbiddenException(Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", "GitHub sign-in is not configured yet."))
-                    .type(MediaType.APPLICATION_JSON)
-                    .build());
         }
     }
 
