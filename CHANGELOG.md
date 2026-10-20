@@ -1,3 +1,7 @@
+## 2026-10-20 — dev (run 69)
+
+- fix(push): block unchanged repo entries and confirm updates
+
 ## 2026-10-20 — dev (run 68)
 
 - fix(errors): return JSON 404 for unmatched API routes
