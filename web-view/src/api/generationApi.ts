@@ -101,13 +101,13 @@ export async function generateChangelogStream(
       }),
       signal,
     });
-  } catch (e) {
+  } catch {
     if (signal?.aborted) return; // the abort itself threw — not a real error to report
-    throw e;
+    throw new Error("We couldn't reach the service. Check your connection and try again.");
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error || `HTTP ${response.status}`);
+    throw new Error(body?.message || 'The service is temporarily unavailable. Please try again.');
   }
 
   try {
@@ -119,15 +119,17 @@ export async function generateChangelogStream(
         } else if (event === 'done') {
           callbacks.onDone(data.durationMs, data.totalTokens);
         } else if (event === 'error') {
-          callbacks.onError(new Error(data.error));
+          callbacks.onError(new Error(data.message || "We couldn't finish that generation. Please try again."));
         }
       } catch {
         // ignore malformed events
       }
     }
-  } catch (e) {
+  } catch {
     // An in-progress abort() makes the reader itself throw — that's navigate-away working as
     // intended, not a failure to surface to the user.
-    if (!signal?.aborted) throw e;
+    if (!signal?.aborted) {
+      throw new Error("We couldn't reach the service. Check your connection and try again.");
+    }
   }
 }

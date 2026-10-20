@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/api/AuthContext';
 import { Header } from '@/components/Header';
+import { ServiceStatusBanner } from '@/components/ServiceStatusBanner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useResolvedAiProvider } from '@/hooks/useAiProvider';
@@ -56,6 +57,7 @@ export function Layout() {
           internally instead of the whole page growing taller than the viewport. */}
       <main className="flex flex-1 flex-col overflow-x-hidden overflow-y-auto">
         <div className="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-1 flex-col px-4 py-4 sm:px-6">
+          <ServiceStatusBanner />
           {githubDisconnected ? (
             <div className="flex flex-1 items-center justify-center">
               <Card className="w-full max-w-md border-amber-500/30 shadow-lg">

@@ -68,6 +68,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     try {
       applyUser(await getAuthMe());
+    } catch {
+      // Keep the identity we already have. The API client raises the global service-status
+      // banner; a transient outage must not silently sign the user out.
     } finally {
       setLoading(false);
     }

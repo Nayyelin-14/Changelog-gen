@@ -540,7 +540,9 @@ public class AzureDevOpsResource {
                     writer.flush();
                 } catch (Exception e) {
                     hadError = true;
-                    String errJson = SSE_MAPPER.writeValueAsString(Map.of("error", e.getMessage() != null ? e.getMessage() : "Generation failed"));
+                    String errJson = SSE_MAPPER.writeValueAsString(Map.of(
+                            "error", "generation_failed",
+                            "message", "We couldn't finish generating that changelog. Please try again."));
                     writer.write("event: error\ndata: " + errJson + "\n\n");
                     writer.flush();
                     break;

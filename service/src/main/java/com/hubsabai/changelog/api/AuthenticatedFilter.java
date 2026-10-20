@@ -1,5 +1,6 @@
 package com.hubsabai.changelog.api;
 
+import com.hubsabai.changelog.auth.AuthSessionFilter;
 import com.hubsabai.changelog.auth.CurrentUser;
 import jakarta.annotation.Priority;
 import jakarta.inject.Inject;
@@ -52,6 +53,10 @@ public class AuthenticatedFilter implements ContainerRequestFilter {
         String path = resourcePath(requestContext);
 
         if (isPublicPath(path) || hasPipelineAuth()) {
+            return;
+        }
+        if (Boolean.TRUE.equals(requestContext.getProperty(AuthSessionFilter.AUTH_UNAVAILABLE))) {
+            requestContext.abortWith(ApiErrors.serviceUnavailable());
             return;
         }
         if (currentUser.isPresent() || currentUser.isService()) {

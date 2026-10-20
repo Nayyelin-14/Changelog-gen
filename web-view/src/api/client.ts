@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, type AxiosInstance } from 'axios';
 
 import { providerApiBase, getStoredProvider } from '../lib/provider';
 import { getStoredAiProvider } from '../lib/aiProvider';
@@ -51,10 +51,134 @@ export function notifyUnauthorized(): void {
   unauthorizedHandler?.();
 }
 
+/** A tiny store the app shell subscribes to so infrastructure failures surface as one calm,
+ * persistent banner instead of per-request raw errors. 4xx responses still mean the service is
+ * reachable; only transport failures and 5xx mark it offline. */
+export type ServiceStatus = 'online' | 'offline';
+
+const serviceStatusListeners = new Set<(status: ServiceStatus) => void>();
+let serviceStatus: ServiceStatus = 'online';
+
+export function subscribeServiceStatus(listener: (status: ServiceStatus) => void): () => void {
+  serviceStatusListeners.add(listener);
+  listener(serviceStatus);
+  return () => {
+    serviceStatusListeners.delete(listener);
+  };
+}
+
+function setServiceStatus(next: ServiceStatus): void {
+  if (serviceStatus === next) return;
+  serviceStatus = next;
+  serviceStatusListeners.forEach((listener) => listener(next));
+}
+
+type ApiErrorBody = {
+  error?: string;
+  message?: string;
+  hint?: string;
+  requestId?: string;
+};
+
+const FRIENDLY: Record<string, string> = {
+  not_authenticated: 'Your session has expired. Please sign in again.',
+  github_not_connected: 'GitHub is disconnected — reconnect it to fetch repository data.',
+  forbidden: "You don't have permission to do that.",
+  not_found: "We couldn't find what you were looking for.",
+  rate_limited: "You're doing that too quickly. Please wait a moment and try again.",
+  service_unavailable: 'The service is temporarily unavailable. Please try again in a moment.',
+  upstream_unavailable: 'An external service is temporarily unavailable. Please try again in a moment.',
+  timeout: 'That took too long. Please try again.',
+  internal_error: 'Something went wrong on our side. Please try again.',
+  ai_request_failed: "The AI request couldn't be completed. Please try again or choose a different model.",
+  bad_request: 'Please check the details and try again.',
+  network_error: "We can't reach the service right now. Check your connection and try again.",
+};
+
+function friendlyMessage(
+  status: number | undefined,
+  body: ApiErrorBody | undefined,
+  transportMessage: string,
+): string {
+  if (status === undefined) {
+    return /timeout|timed out/i.test(transportMessage) ? FRIENDLY.timeout : FRIENDLY.network_error;
+  }
+  if (status === 401) return FRIENDLY.not_authenticated;
+  if (status === 403) {
+    return body?.error === 'github_not_connected'
+      ? FRIENDLY.github_not_connected
+      : FRIENDLY.forbidden;
+  }
+  if (status === 404) return FRIENDLY.not_found;
+  if (status === 429) return FRIENDLY.rate_limited;
+  if (status >= 500) {
+    if (status === 502) return FRIENDLY.upstream_unavailable;
+    if (status === 503) return FRIENDLY.service_unavailable;
+    if (status === 504) return FRIENDLY.timeout;
+    return FRIENDLY.internal_error;
+  }
+  // A 4xx message is actionable (validation, stale base commit, ownership, …) and is already
+  // sanitized server-side. Prefer it, but still map bare codes to friendly copy.
+  if (body?.message) return body.message;
+  const code = body?.error;
+  if (code && /\s/.test(code)) return code;
+  if (code && FRIENDLY[code]) return FRIENDLY[code];
+  return FRIENDLY.bad_request;
+}
+
+export class ApiError extends Error {
+  readonly status: number | undefined;
+  readonly code: string | undefined;
+  readonly requestId: string | undefined;
+
+  constructor(message: string, status?: number, code?: string, requestId?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.requestId = requestId;
+  }
+}
+
+function onResponseError(error: AxiosError<ApiErrorBody>) {
+  if (axios.isCancel(error)) return Promise.reject(error);
+
+  const rawStatus = error.response?.status;
+  const status = rawStatus && rawStatus > 0 ? rawStatus : undefined;
+  if (status === undefined || status >= 500) {
+    setServiceStatus('offline');
+  } else {
+    setServiceStatus('online');
+  }
+  if (status === 401 && !isAuthUrl(error.config?.url)) notifyUnauthorized();
+
+  const body = error.response?.data;
+  const headerId = error.response?.headers?.['x-request-id'];
+  const requestId = body?.requestId ?? (typeof headerId === 'string' ? headerId : undefined);
+  return Promise.reject(
+    new ApiError(
+      friendlyMessage(status, body, error.message),
+      status,
+      body?.error,
+      requestId,
+    ),
+  );
+}
+
 /** `/auth/*` answers 401 by design (`/me` for a logged-out browser) — those are not session
  * expiry and must not trigger the global handler. */
 function isAuthUrl(url: string | undefined): boolean {
   return (url ?? '').startsWith('/auth');
+}
+
+function installInterceptors(client: AxiosInstance): void {
+  client.interceptors.response.use(
+    (response) => {
+      setServiceStatus('online');
+      return response;
+    },
+    onResponseError,
+  );
 }
 
 // Provider can change at runtime (localStorage) without a reload — re-resolve the base URL on
@@ -64,47 +188,13 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
-// Root-agnostic calls — endpoints that are shared across providers (the recorded-pipeline-run
-// store lives at /pipeline/runs, outside the /github or / azure route trees). These must be
-// pinned to /api, not the provider base, or GitHub mode rewrites them to /api/github/pipeline/runs.
 export const rootApiClient = axios.create({
   baseURL: '/api',
   timeout: API_TIMEOUT_MS,
 });
 
-rootApiClient.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError<{ error?: string; hint?: string }>) => {
-    const status = error.response?.status;
-    if (status === 401 && !isAuthUrl(error.config?.url)) notifyUnauthorized();
-    const body = error.response?.data;
-    const message = body?.error ?? error.response?.statusText ?? error.message;
-    const full = body?.hint ? `${message} — ${body.hint}` : message;
-    return Promise.reject(new ApiError(`${status ?? '—'} ${full}`, status));
-  },
-);
-
-export class ApiError extends Error {
-  readonly status: number | undefined;
-
-  constructor(message: string, status: number | undefined) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError<{ error?: string; hint?: string }>) => {
-    const status = error.response?.status;
-    if (status === 401 && !isAuthUrl(error.config?.url)) notifyUnauthorized();
-    const body = error.response?.data;
-    const message = body?.error ?? error.response?.statusText ?? error.message;
-    const full = body?.hint ? `${message} — ${body.hint}` : message;
-    return Promise.reject(new ApiError(`${status ?? '—'} ${full}`, status));
-  },
-);
+installInterceptors(apiClient);
+installInterceptors(rootApiClient);
 
 export async function listProjects(): Promise<ProjectSummary[]> {
   const { data } = await apiClient.get<ProjectSummary[]>('/projects');
@@ -284,14 +374,14 @@ export async function generateChangelogStream(
       }),
       signal,
     });
-  } catch (e) {
+  } catch {
     if (signal?.aborted) return; // the abort itself threw — not a real error to report
-    throw e;
+    throw new Error("We couldn't reach the service. Check your connection and try again.");
   }
   if (!response.ok) {
     if (response.status === 401) notifyUnauthorized();
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error || `HTTP ${response.status}`);
+    throw new Error(body?.message || 'The service is temporarily unavailable. Please try again.');
   }
 
   try {
@@ -303,16 +393,18 @@ export async function generateChangelogStream(
         } else if (event === 'done') {
           callbacks.onDone(data.durationMs, data.totalTokens);
         } else if (event === 'error') {
-          callbacks.onError(new Error(data.error));
+          callbacks.onError(new Error(data.message || "We couldn't finish that generation. Please try again."));
         }
       } catch {
         // ignore malformed events
       }
     }
-  } catch (e) {
+  } catch {
     // An in-progress abort() makes the reader itself throw — that's navigate-away working as
     // intended, not a failure to surface to the user.
-    if (!signal?.aborted) throw e;
+    if (!signal?.aborted) {
+      throw new Error("We couldn't reach the service. Check your connection and try again.");
+    }
   }
 }
 
@@ -348,15 +440,15 @@ export async function sendChangelogChatMessageStream(
       body: JSON.stringify({ question, history }),
       signal,
     });
-  } catch (e) {
+  } catch {
     if (signal.aborted) return; // the abort itself threw — not a real error to report
-    callbacks.onError(e instanceof Error ? e.message : 'Failed to reach the server.', false);
+    callbacks.onError("We couldn't reach the service. Check your connection and try again.", false);
     return;
   }
   if (!response.ok) {
     if (response.status === 401) notifyUnauthorized();
     const body = await response.json().catch(() => null);
-    callbacks.onError(body?.error || `HTTP ${response.status}`, false);
+    callbacks.onError(body?.message || 'The service is temporarily unavailable. Please try again.', false);
     return;
   }
 
@@ -376,10 +468,10 @@ export async function sendChangelogChatMessageStream(
         // ignore malformed events
       }
     }
-  } catch (e) {
+  } catch {
     // An in-progress abort() makes the reader itself throw — that's the Stop button/widget
     // close/navigate-away path working as intended, not a failure to surface to the user.
-    if (!signal.aborted) callbacks.onError(e instanceof Error ? e.message : 'Connection lost.', true);
+    if (!signal.aborted) callbacks.onError('The connection was lost. Please try again.', true);
   }
 }
 

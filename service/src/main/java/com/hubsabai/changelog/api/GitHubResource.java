@@ -832,7 +832,9 @@ public class GitHubResource {
                 } catch (Exception e) {
                     hadError = true;
                     writer.write("event: error\ndata: " + SSE_MAPPER.writeValueAsString(
-                            Map.of("error", e.getMessage() != null ? e.getMessage() : "Generation failed")) + "\n\n");
+                            Map.of("error", "generation_failed",
+                                    "message", "We couldn't finish generating that changelog. Please try again."))
+                            + "\n\n");
                     writer.flush();
                     break;
                 }

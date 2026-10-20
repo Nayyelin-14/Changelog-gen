@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   CheckCircle2,
   FileLock2,
   Fingerprint,
@@ -27,6 +28,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   github_linked_elsewhere:
     'That GitHub account already belongs to a different account here. Sign in with it directly, or disconnect it there first — accounts are never merged.',
   not_authenticated: 'Your session ended before this finished — please sign in again.',
+  service_unavailable:
+    'The service is temporarily unavailable. Please try again in a moment.',
+  upstream_unavailable:
+    'A connected service is temporarily unavailable. Please try again in a moment.',
 };
 const UNKNOWN_ERROR = 'Something went wrong during GitHub sign-in; please try again.';
 
@@ -113,8 +118,12 @@ export function LoginPage() {
 
         <CardContent className="space-y-6 px-8 py-7">
           {error && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              {ERROR_MESSAGES[error] ?? UNKNOWN_ERROR}
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-xl border border-destructive/25 bg-destructive/5 px-3.5 py-3 text-xs text-destructive"
+            >
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <p className="leading-relaxed">{ERROR_MESSAGES[error] ?? UNKNOWN_ERROR}</p>
             </div>
           )}
 

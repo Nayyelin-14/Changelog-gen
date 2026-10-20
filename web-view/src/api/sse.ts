@@ -69,14 +69,14 @@ export async function sendChangelogChatMessageStream(
       body: JSON.stringify({ question, history }),
       signal,
     });
-  } catch (e) {
+  } catch {
     if (signal.aborted) return; // the abort itself threw — not a real error to report
-    callbacks.onError(e instanceof Error ? e.message : 'Failed to reach the server.', false);
+    callbacks.onError("We couldn't reach the service. Check your connection and try again.", false);
     return;
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    callbacks.onError(body?.error || `HTTP ${response.status}`, false);
+    callbacks.onError(body?.message || 'The service is temporarily unavailable. Please try again.', false);
     return;
   }
 
@@ -96,9 +96,9 @@ export async function sendChangelogChatMessageStream(
         // ignore malformed events
       }
     }
-  } catch (e) {
+  } catch {
     // An in-progress abort() makes the reader itself throw — that's the Stop button/widget
     // close/navigate-away path working as intended, not a failure to surface to the user.
-    if (!signal.aborted) callbacks.onError(e instanceof Error ? e.message : 'Connection lost.', true);
+    if (!signal.aborted) callbacks.onError('The connection was lost. Please try again.', true);
   }
 }

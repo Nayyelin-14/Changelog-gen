@@ -40,7 +40,7 @@ unexecuted tests. Always check the `Skipped:` count.
 cd service && ./mvnw test
 ```
 
-A healthy full run is ~238 tests, 0 failures, 3 skipped (the 3 skips are conditional model
+A healthy full run is ~286 tests, 0 failures, 3 skipped (the 3 skips are conditional model
 catalog/latency/readiness tests that need a live provider). If the skipped count jumps into the
 dozens, a `@QuarkusTest` app almost certainly failed to bind 8081.
 

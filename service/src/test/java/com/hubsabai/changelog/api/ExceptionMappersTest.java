@@ -38,12 +38,31 @@ class ExceptionMappersTest {
     }
 
     @Test
-    void aiExceptionReturns400WithHint() {
-        Response response = aiMapper.toResponse(new AiException("model xyz failed"));
+    void aiExceptionReturns400WithSafeMessage() {
+        Response response = aiMapper.toResponse(new AiException("provider secret leaked"));
         assertEquals(400, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("model xyz failed"));
-        assertTrue(body.contains("Try a different model"));
+        assertTrue(body.contains("AI request couldn't be completed"));
+        assertTrue(!body.contains("provider secret leaked"));
+    }
+
+    @Test
+    void aiExceptionKeepsShortValidationMessages() {
+        Response response = aiMapper.toResponse(new AiException("A version is required."));
+        assertEquals(400, response.getStatus());
+        String body = response.getEntity().toString();
+        assertTrue(body.contains("A version is required."));
+    }
+
+    @Test
+    void aiExceptionHidesProviderDiagnostics() {
+        Response response = aiMapper.toResponse(
+                new AiException("Chat call failed (model xyz): HTTP 429 — token=abc"));
+        assertEquals(400, response.getStatus());
+        String body = response.getEntity().toString();
+        assertTrue(body.contains("AI request couldn't be completed"));
+        assertTrue(!body.contains("HTTP 429"));
+        assertTrue(!body.contains("token=abc"));
     }
 
     @Test
@@ -55,19 +74,22 @@ class ExceptionMappersTest {
     }
 
     @Test
-    void illegalStateExceptionReturns502WithItsMessage() {
-        Response response = illegalStateMapper.toResponse(new IllegalStateException("Azure DevOps returned HTML"));
+    void illegalStateExceptionReturns502WithoutProviderDetail() {
+        Response response = illegalStateMapper.toResponse(
+                new IllegalStateException("Azure DevOps returned HTML with token=abc"));
         assertEquals(502, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("Azure DevOps returned HTML"));
+        assertTrue(body.contains("external service is temporarily unavailable"));
+        assertTrue(!body.contains("token=abc"));
+        assertTrue(!body.contains("Azure DevOps returned HTML"));
     }
 
     @Test
-    void illegalStateExceptionReturns502WithFallbackWhenMessageIsNull() {
+    void illegalStateExceptionWithNoMessageStillReturnsSafe502() {
         Response response = illegalStateMapper.toResponse(new IllegalStateException());
         assertEquals(502, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("Upstream call failed"));
+        assertTrue(body.contains("external service is temporarily unavailable"));
     }
 
     @Test
@@ -78,19 +100,20 @@ class ExceptionMappersTest {
         Response response = mapper.toResponse(ex);
         assertEquals(404, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("Project, repository, or branch not found"));
+        assertTrue(body.contains("couldn't find"));
     }
 
     @Test
-    void webApplicationExceptionWith401ReturnsCredentialMessage() {
+    void webApplicationExceptionWith401ReturnsSafeReconnectMessage() {
         WebApplicationExceptionMapper mapper = mapperForMatchedRoute();
         Response upstream = Response.status(401).build();
         WebApplicationException ex = new WebApplicationException(upstream);
         Response response = mapper.toResponse(ex);
         assertEquals(502, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("PAT"));
-        assertTrue(body.contains("expired, revoked"));
+        assertTrue(body.contains("connection needs attention"));
+        assertTrue(!body.contains("PAT"));
+        assertTrue(!body.contains("expired, revoked"));
     }
 
     @Test
@@ -101,7 +124,18 @@ class ExceptionMappersTest {
         Response response = mapper.toResponse(ex);
         assertEquals(502, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("Azure DevOps request failed"));
+        assertTrue(body.contains("external service is temporarily unavailable"));
+    }
+
+    @Test
+    void webApplicationExceptionPassesThroughExplicitSafeEnvelope() {
+        WebApplicationExceptionMapper mapper = mapperForMatchedRoute();
+        WebApplicationException ex = new WebApplicationException(ApiErrors.serviceUnavailable());
+        Response response = mapper.toResponse(ex);
+        assertEquals(503, response.getStatus());
+        String body = response.getEntity().toString();
+        assertTrue(body.contains("service_unavailable"));
+        assertTrue(body.contains("temporarily unavailable"));
     }
 
     @Test
@@ -122,7 +156,7 @@ class ExceptionMappersTest {
         Response response = mapper.toResponse(ex);
         assertEquals(404, response.getStatus());
         String body = response.getEntity().toString();
-        assertTrue(body.contains("Not found."));
+        assertTrue(body.contains("couldn't find"));
         assertTrue(!body.contains("Project, repository, or branch"));
     }
 }

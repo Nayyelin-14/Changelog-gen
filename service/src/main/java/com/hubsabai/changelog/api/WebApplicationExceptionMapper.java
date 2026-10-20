@@ -11,15 +11,13 @@ import jakarta.ws.rs.ext.Provider;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Downstream Azure DevOps REST client calls (bad project/repo/branch name, revoked PAT, etc.)
- * throw {@link WebApplicationException} carrying the upstream status code. Without this mapper
- * they fall through to Quarkus's default handler and leak a raw Java stack trace to API clients
- * instead of a usable error.
+ * Downstream provider failures (bad project/repo/branch name, revoked PAT, etc.) arrive as
+ * {@link WebApplicationException}. Provider text can carry URLs and credentials, so this mapper
+ * logs the upstream status server-side and answers with a safe message.
  */
 @Provider
 public class WebApplicationExceptionMapper implements ExceptionMapper<WebApplicationException> {
@@ -34,80 +32,60 @@ public class WebApplicationExceptionMapper implements ExceptionMapper<WebApplica
 
     @Override
     public Response toResponse(WebApplicationException exception) {
+        Response original = exception.getResponse();
+        // Explicitly-safe responses (ApiErrors) must pass through untouched. This keeps 503s
+        // from ensureEnabled() and other intentional error envelopes from being re-labelled as
+        // an upstream 502.
+        if (original != null
+                && original.getEntity() instanceof java.util.Map<?, ?> body
+                && body.containsKey("error")
+                && body.containsKey("message")) {
+            return original;
+        }
         String path = uriInfo != null ? uriInfo.getPath() : null;
 
         // RESTEasy throws its own WebApplicationException (NotFoundException) for any request
-        // that matches no route at all — no resource method gets matched in that case.
-        //
-        // A frontend route like /dev/projects/xxx ends up here too because RESTEasy's Vert.x
-        // handler processes every incoming request (even with quarkus.rest.path=/api it still
-        // catches all paths and only then checks route matching). Returning {"error":"Not found."}
-        // for those would prevent Quinoa's SPA routing from ever serving index.html — the user
-        // gets a raw JSON error on every page refresh.
-        //
-        // The path-prefix check is safe here because this branch (no matched resource method)
-        // never fires for a real API endpoint failure — those always have a matched method.
+        // that matches no route at all. A frontend route like /dev/projects/xxx ends up here too
+        // because RESTEasy's Vert.x handler processes every incoming request; serving the SPA
+        // shell lets Quinoa/React handle it instead of showing a raw JSON 404.
         if (resourceInfo == null || resourceInfo.getResourceMethod() == null) {
             if (path != null && !path.startsWith("/api") && !path.startsWith("api/")) {
-                // Serve the SPA shell so React can parse the URL and render the right page.
-                // Quinoa embeds the built frontend under META-INF/resources/index.html.
                 String html = readIndexHtml();
                 if (html != null) {
                     return Response.ok(html, MediaType.TEXT_HTML_TYPE).build();
                 }
             }
-            return Response.status(Response.Status.NOT_FOUND)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(Map.of("error", "Not found."))
-                    .build();
+            return ApiErrors.notFound();
         }
 
         int upstreamStatus = exception.getResponse() != null ? exception.getResponse().getStatus() : 502;
-
-        // Only intercept Azure DevOps upstream failures (the default/root resource).
-        // GitHubResource and other providers throw WebApplicationException with their own
-        // status codes — those should pass through with their original status + message.
         boolean isGitHubPath = path != null && path.contains("/github");
-        if (isGitHubPath && upstreamStatus != 502) {
-            String msg = exception.getMessage() != null ? exception.getMessage() : "Request failed.";
-            return Response.status(upstreamStatus)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(Map.of("error", msg))
-                    .build();
-        }
 
-        LOG.log(Level.WARNING, "Azure DevOps call failed with HTTP " + upstreamStatus + " for our API path: " + (path != null ? path : "unknown"));
+        LOG.log(Level.WARNING, "Upstream call failed with HTTP " + upstreamStatus
+                + " for API path " + (path != null ? path : "unknown")
+                + " [requestId=" + RequestIdFilter.current() + "]");
 
         if (upstreamStatus == 404) {
-            return Response.status(Response.Status.NOT_FOUND)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(Map.of("error", "Project, repository, or branch not found — check the names and try again."))
-                    .build();
+            return ApiErrors.notFound();
+        }
+
+        if (isGitHubPath) {
+            return ApiErrors.upstreamUnavailable();
         }
 
         // Azure DevOps sign-in redirect (302) and 401/403 all mean the stored credential is
-        // missing, expired, revoked, or out of scope — never "the repo is gone". Naming that
-        // directly saves a wild goose chase (the old message said "request failed (HTTP 302)").
+        // missing, expired, revoked, or out of scope. Say what to do without naming the PAT.
         if (upstreamStatus == 302 || upstreamStatus == 401 || upstreamStatus == 403) {
-            return Response.status(Response.Status.BAD_GATEWAY)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(Map.of("error",
-                            "Azure DevOps rejected the request (HTTP " + upstreamStatus + "): the configured "
-                                    + "AZURE_DEVOPS_PAT credential is missing, expired, revoked, or lacks access to this project. "
-                                    + "Refresh the PAT in the server's .env and restart the service."))
-                    .build();
+            return ApiErrors.json(Response.Status.BAD_GATEWAY.getStatusCode(),
+                    ApiErrors.UPSTREAM_UNAVAILABLE,
+                    "The Azure DevOps connection needs attention. Please ask an administrator to reconnect it.",
+                    false);
         }
 
-        return Response.status(Response.Status.BAD_GATEWAY)
-                .type(MediaType.APPLICATION_JSON)
-                .entity(Map.of("error", "Azure DevOps request failed (HTTP " + upstreamStatus + ")."))
-                .build();
+        return ApiErrors.upstreamUnavailable();
     }
 
-    /** Reads the Quinoa-built SPA shell from the classpath. Quinoa copies the built frontend
-     * (web-view/dist/) into META-INF/resources/ at package time, so index.html is on the classpath
-     * inside the fast-jar. Returns null if the file isn't found (e.g. the JAR was built without
-     * Quinoa, or something deleted it — stick to the API 404 rather than crashing). */
+    /** Reads the Quinoa-built SPA shell from the classpath. */
     private static String readIndexHtml() {
         try (InputStream in = Thread.currentThread().getContextClassLoader()
                 .getResourceAsStream("META-INF/resources/index.html")) {
