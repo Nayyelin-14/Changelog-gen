@@ -35,5 +35,5 @@ RUN mkdir -p /data/changelog-composer && chown -R app:app /app /data/changelog-c
 EXPOSE 8080
 USER app
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
-  CMD curl -f http://localhost:8080/q/health || exit 1
+  CMD curl -f http://localhost:8080/q/health/live || exit 1
 ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
