@@ -11,14 +11,19 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.putRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
@@ -510,9 +515,53 @@ class GitHubOrgConnectorTest {
                 .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json")
                         .withBody("{\"ref\":\"refs/heads/main\",\"sha\":\"commitsha\"}")));
 
-        String commitUrl = connector.pushChangelogEdit("test-owner", "repo-one", "main", "1.1.0",
+        GitHubOrgConnector.ChangelogPushResult result = connector.pushChangelogEdit("test-owner", "repo-one", "main", "1.1.0",
                 "- fixed the thing\n- added a feature");
 
-        assertEquals("https://github.com/test-owner/repo-one/commit/commitsha", commitUrl);
+        assertFalse(result.alreadyUpToDate());
+        assertEquals("https://github.com/test-owner/repo-one/commit/commitsha", result.commitUrl());
+    }
+
+    @Test
+    void shouldNotCreateACommitWhenTheRepoAlreadyHasTheExactEntry() {
+        String markdown = """
+                # Releases
+
+                ## v1.1.0 — 2026-07-01
+
+                - fixed the thing
+                - added a feature
+                """;
+        String encoded = Base64.getEncoder().encodeToString(markdown.getBytes(StandardCharsets.UTF_8));
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/contents/CHANGELOG.md"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"content\":\"" + encoded + "\",\"encoding\":\"base64\"}")));
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/commits"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                [{"sha":"base123","commit":{"author":{"name":"a","date":"2026-07-01T00:00:00Z"},
+                                  "committer":{"name":"a","date":"2026-07-01T00:00:00Z"},"message":"base"},"html_url":"u"}]""")));
+        WireMockGitHubOrgResource.server().stubFor(get(urlPathEqualTo("/repos/test-owner/repo-one/commits/base123"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"sha":"base123","commit":{"author":{"name":"a","date":"2026-07-01T00:00:00Z"},
+                                  "committer":{"name":"a","date":"2026-07-01T00:00:00Z"},"message":"base",
+                                  "tree":{"sha":"treeparent"}},"tree":{"sha":"treeparent"},"html_url":"u"}""")));
+
+        GitHubOrgConnector.ChangelogPushResult result = connector.pushChangelogEdit("test-owner", "repo-one", "main", "1.1.0",
+                "- fixed the thing\n- added a feature");
+
+        assertTrue(result.alreadyUpToDate());
+        assertNull(result.commitUrl());
+        WireMockGitHubOrgResource.server().verify(0, postRequestedFor(urlPathEqualTo("/repos/test-owner/repo-one/git/blobs")));
+        WireMockGitHubOrgResource.server().verify(0, postRequestedFor(urlPathEqualTo("/repos/test-owner/repo-one/git/trees")));
+        WireMockGitHubOrgResource.server().verify(0, postRequestedFor(urlPathEqualTo("/repos/test-owner/repo-one/git/commits")));
+        WireMockGitHubOrgResource.server().verify(0, putRequestedFor(urlPathEqualTo("/repos/test-owner/repo-one/git/refs/heads%2Fmain")));
     }
 }

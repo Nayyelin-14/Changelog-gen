@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { GenerateResult, ChangelogAudience } from './types';
+import type { GenerateResult, ChangelogAudience, ChangelogPushResult } from './types';
 
 export async function saveChangelogEdit(
   project: string,
@@ -100,8 +100,8 @@ export async function pushChangelog(
   branch: string,
   audience: ChangelogAudience,
   unsaved?: { text: string; model?: string },
-): Promise<{ commitUrl: string }> {
-  const { data } = await apiClient.post<{ commitUrl: string }>(
+): Promise<ChangelogPushResult> {
+  const { data } = await apiClient.post<ChangelogPushResult>(
     `/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}/changelog-push`,
     { version, branch, audience, text: unsaved?.text, model: unsaved?.model },
   );

@@ -60,6 +60,10 @@ import java.util.stream.IntStream;
 @ApplicationScoped
 public class GitHubOrgConnector {
 
+    /** Outcome of a changelog push: either a new commit was created, or the repo already held
+     * exactly this entry and nothing was written. */
+    public record ChangelogPushResult(String commitUrl, boolean alreadyUpToDate) {}
+
     private static final Logger LOG = Logger.getLogger(GitHubOrgConnector.class.getName());
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -1541,13 +1545,26 @@ public class GitHubOrgConnector {
      * GitHub Data API, then advances the branch ref.  If the branch moved since the read,
      * the caller can retry (the frontend handles stale-base detection).
      *
-     * @return the commit's html_url. Failures propagate as unchecked exceptions whose messages
-     *         contain keywords ({@code stale}, {@code base commit}, {@code conflict}) the
-     *         frontend uses for retry logic.
+     * @return the commit's html_url, or an already-up-to-date result when the repo's entry body
+     *         already matches {@code newBody} exactly. Failures propagate as unchecked exceptions
+     *         whose messages contain keywords ({@code stale}, {@code base commit}, {@code conflict})
+     *         the frontend uses for retry logic.
      */
-    public String pushChangelogEdit(String project, String repo, String branch, String version, String newBody) {
+    public ChangelogPushResult pushChangelogEdit(String project, String repo, String branch, String version, String newBody) {
         String userLogin = currentUser.isResolvable() && currentUser.get() != null
                 ? currentUser.get().login().orElse("unknown") : "anonymous";
+
+        String normalizedVersion = ChangelogMarkdown.canonicalVersion(version);
+        if (normalizedVersion == null || normalizedVersion.isBlank()) {
+            throw new IllegalStateException("A version is required to push a changelog.");
+        }
+        version = normalizedVersion;
+
+        // Reject empty text before any GitHub call — an entry body can never be cleared by a push,
+        // and this also keeps the no-op comparison below from NPEing on a null body.
+        if (newBody == null || newBody.isBlank()) {
+            throw new IllegalStateException("Nothing to push — the changelog text is empty.");
+        }
 
         // 1. Resolve the target branch and its current HEAD.
         String resolvedBranch = branch != null ? branch : defaultBranch(project, repo);
@@ -1562,18 +1579,32 @@ public class GitHubOrgConnector {
         String filename = fileExists ? file.filename() : ChangelogMarkdown.CHANGELOG_FILENAMES.get(0);
         String existingContent = fileExists ? file.content() : null;
 
-        // 3. Apply the edit (replace existing entry or insert a new one).
-        Optional<String> replaced = fileExists
+        // 3. Apply the edit (replace an existing entry, or insert a new one). If the target entry
+        // already matches the repo exactly, stop here: no blob/tree/commit and no branch update.
+        Optional<String> existingBody = fileExists
+                ? ChangelogMarkdown.findChangelogEntryBody(existingContent, version)
+                : Optional.empty();
+        if (existingBody.isPresent()
+                && ChangelogMarkdown.normalizeEntryBody(existingBody.get())
+                        .equals(ChangelogMarkdown.normalizeEntryBody(newBody))) {
+            LOG.info("Push v" + version + " to " + project + "/" + repo + " branch " + resolvedBranch
+                    + " skipped — the repo already has this exact entry");
+            return new ChangelogPushResult(null, true);
+        }
+
+        Optional<String> replaced = existingBody.isPresent()
                 ? ChangelogMarkdown.replaceChangelogEntryBody(existingContent, version, newBody)
                 : Optional.empty();
+        if (existingBody.isPresent() && replaced.isEmpty()) {
+            // The version was found but the mutation could not target it — never fall through to
+            // inserting a second section for the same version.
+            throw new IllegalStateException("Couldn't update v" + version + " in CHANGELOG.md — refusing to create a duplicate entry.");
+        }
         boolean isNewEntry = replaced.isEmpty();
         String updated;
         if (isNewEntry) {
             if (!ChangelogMarkdown.VALID_NEW_VERSION.matcher(version).matches()) {
                 throw new IllegalStateException("'" + version + "' doesn't look like a real version — refusing to push.");
-            }
-            if (newBody == null || newBody.isBlank()) {
-                throw new IllegalStateException("Nothing to push — the changelog text is empty.");
             }
             updated = ChangelogMarkdown.insertNewChangelogEntry(existingContent, version, newBody);
         } else {
@@ -1662,7 +1693,7 @@ public class GitHubOrgConnector {
             String commitUrl = "https://github.com/" + project + "/" + repo + "/commit/" + commitSha;
             LOG.info("Push succeeded — commit " + commitSha.substring(0, Math.min(8, commitSha.length()))
                     + " on " + resolvedBranch + " by " + userLogin);
-            return commitUrl;
+            return new ChangelogPushResult(commitUrl, false);
         } catch (IllegalStateException e) {
             throw e; // re-throw stale-branch and validation errors as-is (frontend retry logic)
         } catch (GitHubPushException e) {

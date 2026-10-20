@@ -25,6 +25,7 @@ import {
 
 import {
   fetchRepoChanges,
+  getChangelogRepoText,
   getRecordedRuns,
   hasChangelog,
   listBranches,
@@ -73,6 +74,12 @@ const TABS = [DEVELOPER_TAB, ...GENERATED_TABS];
 function shortBranchName(ref: string | null): string | undefined {
   if (!ref) return undefined;
   return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+}
+
+/** Mirrors the backend's no-op comparison so the dialog can disable a push that would write
+ * nothing. Only used for UI guidance — the server remains authoritative. */
+function normalizeChangelogText(text: string | null | undefined): string {
+  return (text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
 /** Maps raw backend/API push errors to user-friendly messages. */
@@ -407,6 +414,9 @@ export function GenerateChangelogPage() {
   const [pushModalVersion, setPushModalVersion] = useState("");
   const [pushModalBranch, setPushModalBranch] = useState("");
   const [pushModalResolution, setPushModalResolution] = useState<ReleaseVersionResolution | null>(null);
+  const [pushRepoText, setPushRepoText] = useState<string | null>(null);
+  const [pushRepoTextStatus, setPushRepoTextStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [pushUpdateConfirmOpen, setPushUpdateConfirmOpen] = useState(false);
   const branches = useQuery(
     useCallback(() => (project && repo ? listBranches(project, repo) : Promise.resolve([])), [project, repo]),
     [project, repo],
@@ -431,11 +441,25 @@ export function GenerateChangelogPage() {
     (existingVersionSet.has(pushModalNormalizedVersion) ||
       (!!pushModalLatestVersion && pushModalNormalizedVersion === pushModalLatestVersion));
 
+  // The repo is the source of truth: compare against what is actually in CHANGELOG.md on the
+  // selected branch, not against this entry's imported/stored copy. A null repo body means the
+  // version is new; an identical body means Push would create a no-op commit and is disabled.
+  const pushModalCurrentText = developerOverride ?? displayEntry?.developer ?? "";
+  const pushModalRepoHasEntry = pushRepoTextStatus === "success" && pushRepoText !== null;
+  const pushModalNoChanges =
+    pushModalRepoHasEntry &&
+    normalizeChangelogText(pushRepoText) === normalizeChangelogText(pushModalCurrentText);
+  const pushModalWillUpdate = pushModalRepoHasEntry && !pushModalNoChanges;
+  const pushModalCheckingRepo = pushRepoTextStatus === "loading";
+
   async function openPushModal(entry: GenerationRecord) {
     setPushError(null);
     setPushModalVersion(entry.version ?? "");
     setPushModalBranch(entry.branch ?? selectedBranch ?? "main");
     setPushModalResolution(null);
+    setPushRepoText(null);
+    setPushRepoTextStatus("idle");
+    setPushUpdateConfirmOpen(false);
     setPushModalOpen(true);
     // Resolve the repo's latest version (for the "latest on this branch" hint) and prefill the
     // suggested next version for drafts (the repo has no entry for them yet).
@@ -448,27 +472,92 @@ export function GenerateChangelogPage() {
     }
   }
 
+  // Best-effort live check while the dialog is open. It is debounced because the version field is
+  // editable; the backend still re-checks the target branch at push time (the frontend's cached
+  // version list can be stale, especially after switching branches).
+  useEffect(() => {
+    if (!pushModalOpen || !project || !repo || !pushModalVersion.trim() || !pushModalBranch) {
+      setPushRepoText(null);
+      setPushRepoTextStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setPushRepoTextStatus("loading");
+    const timer = window.setTimeout(() => {
+      getChangelogRepoText(project, repo, pushModalVersion.trim().replace(/^v/i, ""), pushModalBranch)
+        .then((text) => {
+          if (cancelled) return;
+          setPushRepoText(text);
+          setPushRepoTextStatus("success");
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setPushRepoText(null);
+          setPushRepoTextStatus("error");
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [pushModalOpen, project, repo, pushModalVersion, pushModalBranch]);
+
   async function handlePushModalConfirm() {
-    if (!project || !repo || !displayEntry || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken || pushing) return;
+    if (
+      !project ||
+      !repo ||
+      !displayEntry ||
+      !pushModalVersion.trim() ||
+      !pushModalBranch ||
+      pushModalVersionTaken ||
+      pushModalNoChanges ||
+      pushModalCheckingRepo ||
+      pushing
+    ) return;
+    // Updating an existing entry is legitimate, but it overwrites what is in the repo — require
+    // an explicit confirmation that names the version before writing the commit.
+    if (pushModalWillUpdate) {
+      setPushUpdateConfirmOpen(true);
+      return;
+    }
+    await doPush();
+  }
+
+  async function doPush() {
+    if (!project || !repo || !displayEntry) return;
     setPushing(true);
     setPushError(null);
     try {
-      const text = developerOverride ?? displayEntry.developer;
+      const text = pushModalCurrentText;
       const res = await pushChangelog(
         project,
         repo,
-        pushModalVersion.trim(),
+        pushModalVersion.trim().replace(/^v/i, ""),
         pushModalBranch,
         "developer",
         text ? { text } : undefined,
         pushBuildId,
       );
-      setPushResultByEntry((prev) => ({ ...prev, [displayEntry.id]: res.commitUrl }));
+      if (res.alreadyUpToDate) {
+        setPushModalOpen(false);
+        setPushUpdateConfirmOpen(false);
+        clearMeta("developer");
+        toast.info(`v${pushModalNormalizedVersion} is already in ${pushModalBranch}`, {
+          description: "No commit was created because the changelog text already matches.",
+        });
+        return;
+      }
+      if (!res.commitUrl) {
+        throw new Error("The push completed without a commit URL.");
+      }
+      const commitUrl = res.commitUrl;
+      setPushResultByEntry((prev) => ({ ...prev, [displayEntry.id]: commitUrl }));
       setPushModalOpen(false);
+      setPushUpdateConfirmOpen(false);
       clearMeta("developer");
-      toast.success(`Pushed v${pushModalVersion.trim()} to ${pushModalBranch}`, {
+      toast.success(`Pushed v${pushModalNormalizedVersion} to ${pushModalBranch}`, {
         description: "Committed directly — no PR needed.",
-        action: { label: "View commit", onClick: () => window.open(res.commitUrl, "_blank", "noreferrer") },
+        action: { label: "View commit", onClick: () => window.open(commitUrl, "_blank", "noreferrer") },
       });
     } catch (e) {
       const rawMessage = e instanceof Error ? e.message : "Failed to push to repo.";
@@ -1033,7 +1122,7 @@ export function GenerateChangelogPage() {
                     {/* Push modal — asks which branch + which version before writing to the repo.
                         Version is required (run-keyed drafts have none; the field is prefilled
                         with the repo's suggested next semver). */}
-                    <Dialog open={pushModalOpen} onOpenChange={(open) => { setPushModalOpen(open); if (!open) setPushError(null); }}>
+                    <Dialog open={pushModalOpen} onOpenChange={(open) => { setPushModalOpen(open); if (!open) { setPushError(null); setPushUpdateConfirmOpen(false); } }}>
                       <DialogContent className="sm:max-w-md">
                         <DialogHeader>
                           <DialogTitle>Push to repo</DialogTitle>
@@ -1070,6 +1159,21 @@ export function GenerateChangelogPage() {
                             {pushModalVersionTaken && (
                               <p className="text-[11px] text-destructive">
                                 v{pushModalNormalizedVersion} already exists in this repo — choose a new version.
+                              </p>
+                            )}
+                            {pushModalCheckingRepo && (
+                              <p className="text-[11px] text-muted-foreground">
+                                Checking the repo for v{pushModalNormalizedVersion || "…"}…
+                              </p>
+                            )}
+                            {pushModalNoChanges && (
+                              <p className="text-[11px] text-muted-foreground">
+                                v{pushModalNormalizedVersion} is already in {pushModalBranch} with this exact text — nothing to push.
+                              </p>
+                            )}
+                            {pushModalWillUpdate && (
+                              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                                v{pushModalNormalizedVersion} already exists in {pushModalBranch}. Pushing will update that section.
                               </p>
                             )}
                           </div>
@@ -1116,12 +1220,24 @@ export function GenerateChangelogPage() {
                           <Button variant="outline" size="sm" onClick={() => { setPushModalOpen(false); setPushError(null); }} disabled={pushing}>
                             Cancel
                           </Button>
-                          <Button size="sm" onClick={handlePushModalConfirm} disabled={pushing || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken}>
-                            {pushing ? <><Loader2 className="size-3 animate-spin" /> Pushing…</> : <><Upload className="size-3" /> Push</>}
+                          <Button size="sm" onClick={handlePushModalConfirm} disabled={pushing || pushModalCheckingRepo || pushModalNoChanges || !pushModalVersion.trim() || !pushModalBranch || pushModalVersionTaken}>
+                            {pushing ? <><Loader2 className="size-3 animate-spin" /> Pushing…</> : pushModalWillUpdate ? <><Upload className="size-3" /> Update v{pushModalNormalizedVersion}</> : <><Upload className="size-3" /> Push</>}
                           </Button>
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
+
+                    <ConfirmDialog open={pushUpdateConfirmOpen}
+                      title={`Update v${pushModalNormalizedVersion} in ${pushModalBranch}?`}
+                      description={`v${pushModalNormalizedVersion} already exists in CHANGELOG.md on ${pushModalBranch}. This replaces that section with the text shown below and creates a new commit.`}
+                      diff={{ before: pushRepoText ?? "", after: pushModalCurrentText }}
+                      confirmLabel={`Update v${pushModalNormalizedVersion}`}
+                      pendingLabel="Updating…"
+                      loading={pushing}
+                      error={pushError}
+                      friendlyError={pushError ? friendlyPushError(pushError, pushErrorStatus) : null}
+                      onConfirm={() => { setPushUpdateConfirmOpen(false); void doPush(); }}
+                      onCancel={() => { setPushUpdateConfirmOpen(false); setPushError(null); }} />
 
                     <RestoreConfirmDialog open={restorePushedConfirmingTab !== null}
                       tabLabel={restorePushedConfirmingTab ? (TABS.find((t) => t.key === restorePushedConfirmingTab)?.label ?? "") : ""}

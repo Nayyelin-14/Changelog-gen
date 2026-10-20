@@ -1167,7 +1167,7 @@ public class GitHubResource {
 
     @POST
     @Path("/projects/{project}/repos/{repo}/changelog-push")
-    public Map<String, String> pushChangelog(
+    public Map<String, Object> pushChangelog(
             @PathParam("project") String project,
             @PathParam("repo") String repo,
             GenerateCommitRequest request) {
@@ -1186,6 +1186,10 @@ public class GitHubResource {
         if (version == null || version.isBlank()) {
             throw new AiException("A version is required to push a changelog.");
         }
+        String pushVersion = ChangelogMarkdown.canonicalVersion(version);
+        if (pushVersion == null || pushVersion.isBlank()) {
+            throw new AiException("A version is required to push a changelog.");
+        }
         if (branch == null || branch.isBlank()) {
             throw new AiException("A branch is required to push a changelog.");
         }
@@ -1193,37 +1197,49 @@ public class GitHubResource {
         boolean needsCaching = requestText != null && !requestText.isBlank();
         String text = needsCaching
                 ? requestText
-                : cacheService.getCurrentText(project, repo, version, "developer")
-                        .orElseThrow(() -> new AiException("Nothing generated or edited yet for v" + version + " — nothing to push."));
+                : cacheService.getCurrentText(project, repo, pushVersion, "developer")
+                        .orElseThrow(() -> new AiException("Nothing generated or edited yet for v" + pushVersion + " — nothing to push."));
 
-        String commitUrl = orgConnector.pushChangelogEdit(project, repo, branch, version, text);
+        GitHubOrgConnector.ChangelogPushResult result = orgConnector.pushChangelogEdit(project, repo, branch, pushVersion, text);
+
+        // The repo already holds exactly this entry — no commit was created, so there is nothing
+        // to cache, mark pushed, or attach to a pipeline run. Report the no-op explicitly rather
+        // than fabricating a commit URL the caller could open.
+        if (result.alreadyUpToDate()) {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("commitUrl", null);
+            response.put("alreadyUpToDate", true);
+            return response;
+        }
+        String commitUrl = result.commitUrl();
 
         if (needsCaching) {
             String inputHash = null;
             try {
-                ReleaseData data = orgConnector.fetchRepoChanges(project, repo, null, version, branch);
+                ReleaseData data = orgConnector.fetchRepoChanges(project, repo, null, pushVersion, branch);
                 if (!data.getItems().isEmpty()) {
                     inputHash = InputHash.of(ReleaseNotePreparer.prepare(data.getItems()));
                 }
             } catch (Exception e) {
-                LOG.warning("Could not resolve release data for " + project + "/" + repo + " v" + version
+                LOG.warning("Could not resolve release data for " + project + "/" + repo + " v" + pushVersion
                         + " while recording a pushed changelog — caching without an input hash: " + e.getMessage());
             }
             String model = request.getModel() != null && !request.getModel().isBlank() ? request.getModel() : "unknown";
-            cacheService.put(project, repo, version, "developer", model, text, inputHash);
-            long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
+            cacheService.put(project, repo, pushVersion, "developer", model, text, inputHash);
+            long vid = changelogService.getOrCreateVersion(project, repo, pushVersion, null, null, null, null, null).id;
             changelogService.createSnapshot(vid, "developer", text, "ai", model, 0, 0, null);
         }
-        cacheService.markPushed(project, repo, version, "developer", text, commitUrl);
+        cacheService.markPushed(project, repo, pushVersion, "developer", text, commitUrl);
 
         // Version-free save → push-modal flow: fill the human-chosen version into the recorded
         // run the draft was saved against, and clear the now-obsolete draft.
         if (buildId != null && buildId > 0) {
-            recordedRunService.applyPushedVersion("github", project, repo, buildId, version);
+            recordedRunService.applyPushedVersion("github", project, repo, buildId, pushVersion);
         }
 
-        Map<String, String> response = new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
         response.put("commitUrl", commitUrl);
+        response.put("alreadyUpToDate", false);
         return response;
     }
 

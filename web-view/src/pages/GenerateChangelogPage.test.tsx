@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -14,6 +14,9 @@ vi.mock('@/api/client', async (importOriginal) => {
     listBranches: vi.fn(),
     getChangelogMeta: vi.fn(),
     getChangelogText: vi.fn(),
+    getChangelogRepoText: vi.fn(),
+    pushChangelog: vi.fn(),
+    resolveReleaseVersion: vi.fn(),
   };
 });
 
@@ -39,12 +42,14 @@ vi.mock('@/hooks/useAiModels', () => ({
 import {
   fetchRepoChanges,
   getChangelogMeta,
+  getChangelogRepoText,
   getChangelogText,
   getRecordedRuns,
   hasChangelog,
   listBranches,
   listHistory,
   listRepositories,
+  resolveReleaseVersion,
 } from '@/api/client';
 import { clearQueryCache } from '@/hooks/useQuery';
 import { GenerateChangelogPage } from '@/pages/GenerateChangelogPage';
@@ -140,6 +145,14 @@ function stubApis() {
   vi.mocked(getRecordedRuns).mockResolvedValue([]);
   vi.mocked(listBranches).mockResolvedValue([]);
   vi.mocked(getChangelogText).mockResolvedValue(null);
+  vi.mocked(getChangelogRepoText).mockResolvedValue(null);
+  vi.mocked(resolveReleaseVersion).mockResolvedValue({
+    latestVersion: null,
+    suggestedNextVersion: null,
+    currentBranchSha: null,
+    changelogExists: true,
+    requiresInitialVersion: false,
+  });
   vi.mocked(getChangelogMeta).mockImplementation(async (_p, _r, version) =>
     (version === '1.0.15' ? META_EMPTY : META_WITH_REVISION) as Awaited<
       ReturnType<typeof getChangelogMeta>
@@ -231,5 +244,29 @@ describe('GenerateChangelogPage — version history detail', () => {
     expect(document.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText(/couldn't be found/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Pick a version from the list to see your changelog.')).not.toBeInTheDocument();
+  });
+
+  it('disables Push when the imported text already matches the repo', async () => {
+    vi.mocked(getChangelogRepoText).mockResolvedValue(HISTORY.entries[0].developer);
+
+    renderHistoryEntry('v-1.0.17');
+    fireEvent.click(await screen.findByRole('button', { name: /Push to repo/i }));
+
+    expect(await screen.findByText(/already in dev with this exact text/i)).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: /^Push$/ })).toBeDisabled();
+  });
+
+  it('asks for explicit confirmation before updating an existing repo entry', async () => {
+    vi.mocked(getChangelogRepoText).mockResolvedValue('- stale repo text');
+
+    renderHistoryEntry('v-1.0.17');
+    fireEvent.click(await screen.findByRole('button', { name: /Push to repo/i }));
+
+    expect(await screen.findByText(/Pushing will update that section/i)).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Update v1.0.17/i }));
+
+    expect(await screen.findByText(/This replaces that section with the text shown below/i)).toBeInTheDocument();
   });
 });
