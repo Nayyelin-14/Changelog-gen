@@ -1,3 +1,8 @@
+## v1.0.32 — 2026-10-20 (promoted build.69)
+
+
+- fix(push): block unchanged repo entries and confirm updates
+
 ## v1.0.31 — 2026-10-20 (promoted build.68)
 
 - fix(errors): return JSON 404 for unmatched API routes
