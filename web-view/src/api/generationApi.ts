@@ -115,7 +115,7 @@ export async function generateChangelogStream(
       try {
         const data = JSON.parse(dataStr);
         if (event === 'audience') {
-          callbacks.onAudience(data.audience, data.text, data.usage);
+          callbacks.onAudience(data.audience, data.text, data.usage, data.model);
         } else if (event === 'done') {
           callbacks.onDone(data.durationMs, data.totalTokens);
         } else if (event === 'error') {

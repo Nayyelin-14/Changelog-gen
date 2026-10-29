@@ -28,25 +28,25 @@ interface ChangelogChatWidgetProps {
  * models are "reasoning" models: they think first (hidden — never shown as the answer), then
  * answer; the latency below is to the first real answer token, not the raw request round trip.
  * Groq is absent entirely: Groq/Cloudflare blocks Azure datacenter IPs (403 on every model,
- * any key), so every Groq entry would 403 in prod. NVIDIA nemotron-3.5-lightning is absent
- * despite good raw latency — it thinks ~22s before answering a real question. ZAI glm absent:
- * ~50s to first token. Provider+model travel together as one choice. */
+ * any key), so every Groq entry would 403 in prod. Retired/dead models are absent too —
+ * nvidia/nemotron-3-super-120b-a12b returns 404 and its :free OpenRouter alias is paid-only.
+ * ZAI glm absent: ~50s to first token. Provider+model travel together as one choice. */
 const CHAT_MODEL_OPTIONS = [
-  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Fastest' },
+  { provider: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b', label: 'Nemotron 3.5 Bolt', tag: 'Fastest' },
   { provider: 'openrouter', model: 'dots-studio/dots-3-note-preview:free', label: 'DOTS-3 Note', tag: 'Fast' },
+  { provider: 'nvidia', model: 'nvidia/nemotron-3-ultra-550b-a55b', label: 'Nemotron 3 Ultra 550B', tag: 'Smart' },
   { provider: 'openrouter', model: 'nvidia/nemotron-3.5-lightning:free', label: 'Nemotron 3.5 Lightning', tag: 'Light' },
-  { provider: 'nvidia', model: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B', tag: 'Smart' },
-  { provider: 'openrouter', model: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 3 Super (free)', tag: null },
+  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: null },
   { provider: 'nvidia', model: 'meta/llama-3.2-11b-vision-instruct', label: 'Llama 3.2 11B Vision', tag: null },
 ] as const;
 
-const DEFAULT_CHAT_MODEL = 'nvidia:openai/gpt-oss-20b';
+const DEFAULT_CHAT_MODEL = 'nvidia:nvidia/nemotron-3.5-bolt-e4b';
 const CHAT_MODEL_STORAGE_KEY = 'changelog-chat-model';
 
 function chatModelChoice(stored: string): { provider: string; model: string; key: string } {
   const fromList = CHAT_MODEL_OPTIONS.find((o) => `${o.provider}:${o.model}` === stored);
   if (fromList) return { provider: fromList.provider, model: fromList.model, key: stored };
-  return { provider: 'nvidia', model: 'openai/gpt-oss-20b', key: DEFAULT_CHAT_MODEL };
+  return { provider: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b', key: DEFAULT_CHAT_MODEL };
 }
 
 /** Backstop for a connection that went dead without telling us — the server enforces its own

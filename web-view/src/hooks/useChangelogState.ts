@@ -182,6 +182,8 @@ export function useChangelogState(
     setModel: ai.setModel,
     models: { status: ai.modelsStatus, data: ai.models } as any,
     provider: ai.provider,
+    setProvider: ai.setProvider,
+    providerOptions: ai.providerOptions,
     // Names the provider in the model dropdown's error/empty copy ("Models unavailable for
     // Groq") — without it a broken catalog on this page is just a missing Regen button.
     providerLabel: ai.providerOptions.find((p) => p.id === ai.provider)?.label,

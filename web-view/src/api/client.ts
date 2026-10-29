@@ -339,7 +339,7 @@ export async function generateChangelogStream(
   project: string,
   repo: string,
   callbacks: {
-    onAudience: (audience: string, text: string, usage?: AiUsage | null) => void;
+    onAudience: (audience: string, text: string, usage?: AiUsage | null, model?: string | null) => void;
     onDone: (durationMs: number, totalTokens: number) => void;
     onError: (error: Error) => void;
   },
@@ -390,7 +390,7 @@ export async function generateChangelogStream(
       try {
         const data = JSON.parse(dataStr);
         if (event === 'audience') {
-          callbacks.onAudience(data.audience, data.text, data.usage);
+          callbacks.onAudience(data.audience, data.text, data.usage, data.model);
         } else if (event === 'done') {
           callbacks.onDone(data.durationMs, data.totalTokens);
         } else if (event === 'error') {

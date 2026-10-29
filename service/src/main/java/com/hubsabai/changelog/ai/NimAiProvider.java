@@ -59,7 +59,7 @@ public class NimAiProvider implements AiProvider {
     protected static final long PROBE_OK_TTL_MS = TimeUnit.HOURS.toMillis(6);
     protected static final long PROBE_BROKEN_TTL_MS = TimeUnit.MINUTES.toMillis(20);
     protected static final int PROBE_CONCURRENCY = 12;
-    /** Probe read timeout. Generation uses a separate 120s read timeout; the probe only needs to
+    /** Probe read timeout. Generation uses a separate 60s read timeout; the probe only needs to
      * learn whether a model answers chat at all, but real NVIDIA cold starts can take well over 8s,
      * so probing with 8s hid genuinely usable models. 30s keeps the picker representative without
      * turning the dropdown into a second generation call. */
@@ -80,7 +80,7 @@ public class NimAiProvider implements AiProvider {
     protected final Client client;
     protected final Client probeClient;
     /** Separate client for the {@code /models} catalog with a short read timeout. The catalog is
-     * on the hot path of the model dropdown, and it shares the 120s read timeout with generation —
+     * on the hot path of the model dropdown, and it shares the 60s read timeout with generation —
      * a provider whose {@code /models} accepts the connection and then stalls held
      * {@code /ai/models} (and every page that awaits the picker) hostage for two minutes. A
      * catalog that can't answer in {@link #CATALOG_TIMEOUT_MS} is "unavailable", not "worth
@@ -135,7 +135,7 @@ public class NimAiProvider implements AiProvider {
             Optional<String> businessPrompt) {
         this.client = ClientBuilder.newBuilder()
                 .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
                 .build();
         this.probeClient = ClientBuilder.newBuilder()
                 .connectTimeout(Math.min(5, TimeUnit.SECONDS.toSeconds(PROBE_TIMEOUT_MS)), TimeUnit.SECONDS)
@@ -412,7 +412,7 @@ public class NimAiProvider implements AiProvider {
                             response.getUsage().getCompletionTokens(),
                             response.getUsage().getTotalTokens());
                 }
-                return new AiResult(stripCodeFence(text), usage);
+                return new AiResult(stripCodeFence(text), usage, modelId);
             }
             throw new AiException("LLM returned no choices for " + audience + " (model " + modelId
                     + "). Raw response: " + truncate(rawBody));
@@ -770,7 +770,7 @@ public class NimAiProvider implements AiProvider {
      * Returns the model option only if the model is known to answer chat requests, probing it once
      * when its cached health has expired. A column of the catalog can advertise models whose serving
      * endpoint hangs or 404s (Kimi K3 and GLM 5.3-flash hang today) — surfacing them would send every
-     * regenerate into a 120s read-timeout. Probing replicates exactly what generation does (a minimal
+     * regenerate into a 60s read-timeout. Probing replicates exactly what generation does (a minimal
      * chat call) so the dropdown stays in sync with reality.
      */
     protected AiModelOption healthyOption(String id) {
@@ -871,13 +871,13 @@ public class NimAiProvider implements AiProvider {
     );
 
     protected static final List<String> RECOMMENDED_MODELS = List.of(
-        "meta/llama-3.2-11b-vision-instruct",
-        "nvidia/nemotron-3-super-120b-a12b",
-        "meta/muse-glimmer-30b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nvidia/nemotron-3.5-bolt-e4b",
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "openai/gpt-oss-20b",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "nvidia/nemotron-3-ultra-550b-a55b"
+        "meta/llama-3.2-11b-vision-instruct",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "meta/muse-glimmer-30b",
+        "minimaxai/minimax-m3.1-flash"
     );
 
     protected static boolean isRecommended(String id) {

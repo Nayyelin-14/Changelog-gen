@@ -42,7 +42,7 @@ public class ModelLatencyProbeTest {
         String baseUrl = envOrSystem("AI_BASE_URL", "https://integrate.api.nvidia.com/v1/chat/completions");
         String apiKey = envOrSystem("AI_API_KEY", "");
         Assumptions.assumeFalse(apiKey.isBlank(), "skipped: no AI_API_KEY");
-        String defaultModel = envOrSystem("AI_MODEL", "meta/llama-3.2-11b-vision-instruct");
+        String defaultModel = envOrSystem("AI_MODEL", "nvidia/nemotron-3.5-bolt-e4b");
 
         int maxModels = Integer.getInteger("model.latency.probe.maxModels", Integer.MAX_VALUE);
         int trials = Integer.max(1, Integer.min(3, Integer.getInteger("model.latency.probe.trials", 1)));
@@ -162,13 +162,12 @@ public class ModelLatencyProbeTest {
 
     private static int recommendedRank(String id) {
         List<String> recommended = List.of(
-                "meta/llama-3.2-11b-vision-instruct",
-                "nvidia/nemotron-3-super-120b-a12b",
-                "meta/muse-glimmer-30b",
-                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "nvidia/nemotron-3.5-bolt-e4b",
+                "nvidia/nemotron-3-ultra-550b-a55b",
                 "openai/gpt-oss-20b",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "nvidia/nemotron-3-ultra-550b-a55b");
+                "meta/llama-3.2-11b-vision-instruct",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "meta/muse-glimmer-30b");
         int rank = recommended.indexOf(id);
         return rank < 0 ? Integer.MAX_VALUE : rank;
     }

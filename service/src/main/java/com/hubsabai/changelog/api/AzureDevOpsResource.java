@@ -393,7 +393,7 @@ public class AzureDevOpsResource {
             // transparently. force=true = "Regenerate": skip cache and always call the AI.
             boolean wasCached = !force && version != null && !version.isBlank()
                     && cacheService.getCurrent(project, repo, version, audience, inputHash).isPresent();
-            AiResult result = generationService.ensureAudience(project, repo, version, provider, audience, model, true, data, inputHash, force, effectiveCommit, new HashMap<>());
+            AiResult result = generationService.ensureAudience(project, repo, version, provider, audience, model, false, data, inputHash, force, effectiveCommit, new HashMap<>());
             long durationMs = System.currentTimeMillis() - start;
             return new GenerateResponse(
                     "developer".equals(audience) ? result.getText() : null,
@@ -419,9 +419,9 @@ public class AzureDevOpsResource {
                 && cacheService.getCurrent(project, repo, version, "qa", inputHash).isPresent()
                 && cacheService.getCurrent(project, repo, version, "business", inputHash).isPresent();
         Map<String, AiResult> computed = new HashMap<>();
-        AiResult developerResult = generationService.ensureAudience(project, repo, version, provider, "developer", model, true, data, inputHash, force, effectiveCommit, computed);
-        AiResult qaResult = generationService.ensureAudience(project, repo, version, provider, "qa", model, true, data, inputHash, force, effectiveCommit, computed);
-        AiResult businessResult = generationService.ensureAudience(project, repo, version, provider, "business", model, true, data, inputHash, force, effectiveCommit, computed);
+        AiResult developerResult = generationService.ensureAudience(project, repo, version, provider, "developer", model, false, data, inputHash, force, effectiveCommit, computed);
+        AiResult qaResult = generationService.ensureAudience(project, repo, version, provider, "qa", model, false, data, inputHash, force, effectiveCommit, computed);
+        AiResult businessResult = generationService.ensureAudience(project, repo, version, provider, "business", model, false, data, inputHash, force, effectiveCommit, computed);
 
         long durationMs = System.currentTimeMillis() - start;
         List<AiUsage> usage = Stream.of(developerResult, qaResult, businessResult)
@@ -522,11 +522,14 @@ public class AzureDevOpsResource {
             // reviewing/pushing the Developer entry quickly. QA/Business generation happens
             // elsewhere — the history panel's own per-audience generate flow — never here, so
             // this never spends an AI call on an audience the user hasn't asked to see yet.
+            // strict=false is intentional: production generation walks the provider's
+            // model chain when the picked model is slow/dead. The strict single-model path is
+            // reserved for the benchmark, where a silent fallback would fake a success.
             for (String audience : List.of("developer")) {
                 try {
                     // commit=false: this is a preview the user reviews before choosing to push —
                     // see /changelog-push, which is the only place a generation gets persisted now.
-                    AiResult result = generationService.ensureAudience(project, repo, version, provider, audience, model, true, finalData, inputHash, force, false, computed);
+                    AiResult result = generationService.ensureAudience(project, repo, version, provider, audience, model, false, finalData, inputHash, force, false, computed);
                     AiUsage usage = result.getUsage();
                     if (usage != null) {
                         totalTokens += usage.getTotalTokens();
@@ -535,11 +538,16 @@ public class AzureDevOpsResource {
                     payload.put("audience", audience);
                     payload.put("text", result.getText());
                     payload.put("usage", usage);
+                    payload.put("model", result.getModel());
                     String json = SSE_MAPPER.writeValueAsString(payload);
                     writer.write("event: audience\ndata: " + json + "\n\n");
                     writer.flush();
                 } catch (Exception e) {
                     hadError = true;
+                    LOG.log(java.util.logging.Level.WARNING,
+                            "Generation failed for " + project + "/" + repo
+                                    + " (provider=" + provider + ", model=" + model
+                                    + ", audience=" + audience + ")", e);
                     String errJson = SSE_MAPPER.writeValueAsString(Map.of(
                             "error", "generation_failed",
                             "message", "We couldn't finish generating that changelog. Please try again."));

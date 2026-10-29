@@ -112,9 +112,17 @@ public class AiProviderRegistry {
         // Auto-enable: a well-known provider whose conventional API key is configured but that
         // nobody listed in ai.providers — e.g. GROQ_API_KEY alone turns Groq on. A key is
         // required either way (buildProvider still marks keyless providers disabled).
-        for (String id : KNOWN_DEFAULTS.keySet()) {
-            if (!ids.contains(id) && apiKeyValue(config, id).filter(k -> !k.isBlank()).isPresent()) {
-                ids.add(id);
+        //
+        // An explicit ai.providers list is authoritative: if the admin left a provider out, a
+        // leftover key must not silently resurrect it. That is how a deployment hides a provider
+        // that is unreachable from its network (Groq from Azure) while still keeping the key in
+        // the environment for local use.
+        boolean explicitList = declared.isPresent() && !declared.get().isBlank();
+        if (!explicitList) {
+            for (String id : KNOWN_DEFAULTS.keySet()) {
+                if (!ids.contains(id) && apiKeyValue(config, id).filter(k -> !k.isBlank()).isPresent()) {
+                    ids.add(id);
+                }
             }
         }
         return ids;
@@ -140,13 +148,14 @@ public class AiProviderRegistry {
                 : apiKeyValue(config, id).orElse("");
         String model = value(config, prefix + "model")
                 .or(() -> known != null ? Optional.of(known.model()) : Optional.empty())
-                .orElse(legacy ? "meta/llama-3.2-11b-vision-instruct" : "");
+                .orElse(legacy ? "nvidia/nemotron-3.5-bolt-e4b" : "");
         Optional<String> fallbackModels = legacy
                 ? value(config, prefix + "fallback-models")
-                        .or(() -> Optional.of("nvidia/nemotron-3-super-120b-a12b,"
-                                + "meta/muse-glimmer-30b,"
+                        .or(() -> Optional.of("nvidia/nemotron-3-ultra-550b-a55b,"
+                                + "openai/gpt-oss-20b,"
+                                + "meta/llama-3.2-11b-vision-instruct,"
                                 + "nvidia/nemotron-3.5-lightning-30b-a3b,"
-                                + "openai/gpt-oss-20b"))
+                                + "meta/muse-glimmer-30b"))
                 : value(config, prefix + "fallback-models")
                         .or(() -> known != null ? Optional.of(known.fallbackModels()) : Optional.empty());
         Optional<String> allowedModels = value(config, prefix + "models")

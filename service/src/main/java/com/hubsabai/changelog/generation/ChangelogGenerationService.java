@@ -69,9 +69,14 @@ public class ChangelogGenerationService {
                 ? aiProvider.generateForAudienceStrict(items, data.getRelease(), audience, model)
                 : aiProvider.generateForAudience(items, data.getRelease(), audience, model, null);
         if (commit) {
-            cacheService.put(project, repo, version, audience, strict ? model : "auto", result.getText(), inputHash);
+            // Record the model that actually answered. On a fallback that is deliberately not the
+            // one the user picked, and storing the picker value would misattribute the text.
+            String recordedModel = result.getModel() != null && !result.getModel().isBlank()
+                    ? result.getModel()
+                    : model;
+            cacheService.put(project, repo, version, audience, recordedModel, result.getText(), inputHash);
             long vid = changelogService.getOrCreateVersion(project, repo, version, null, null, null, null, null).id;
-            changelogService.createSnapshot(vid, audience, result.getText(), "ai", strict ? model : "auto",
+            changelogService.createSnapshot(vid, audience, result.getText(), "ai", recordedModel,
                     result.getUsage() != null ? result.getUsage().getTotalTokens() : 0, 0, null);
         }
         computed.put(audience, result);
