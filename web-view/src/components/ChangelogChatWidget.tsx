@@ -3,50 +3,19 @@ import { ArrowDown, Loader2, MessageCircle, Send, Square, Trash2, X } from 'luci
 
 import { sendChangelogChatMessageStream } from '@/api/client';
 import type { ChatTurn, PreviewAudience } from '@/api/types';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { AiProviderModelSelect } from '@/components/AiProviderModelSelect';
 import { clearChatHistory, loadChatHistory, saveChatHistory, sweepExpiredChatHistory } from '@/lib/chatStorage';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { useAiModels } from '@/hooks/useAiModels';
 
 interface ChangelogChatWidgetProps {
   project: string;
   repo: string;
   audience: PreviewAudience;
   version: string;
-}
-
-/** Curated chat models, fastest first — ordered by TIME TO FIRST VISIBLE ANSWER TOKEN measured
- * against the production VM (Azure egress) with a realistic changelog-sized prompt. All these
- * models are "reasoning" models: they think first (hidden — never shown as the answer), then
- * answer; the latency below is to the first real answer token, not the raw request round trip.
- * Groq is absent entirely: Groq/Cloudflare blocks Azure datacenter IPs (403 on every model,
- * any key), so every Groq entry would 403 in prod. Retired/dead models are absent too —
- * nvidia/nemotron-3-super-120b-a12b returns 404 and its :free OpenRouter alias is paid-only.
- * ZAI glm absent: ~50s to first token. Provider+model travel together as one choice. */
-const CHAT_MODEL_OPTIONS = [
-  { provider: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b', label: 'Nemotron 3.5 Bolt', tag: 'Fastest' },
-  { provider: 'openrouter', model: 'dots-studio/dots-3-note-preview:free', label: 'DOTS-3 Note', tag: 'Fast' },
-  { provider: 'nvidia', model: 'nvidia/nemotron-3-ultra-550b-a55b', label: 'Nemotron 3 Ultra 550B', tag: 'Smart' },
-  { provider: 'openrouter', model: 'nvidia/nemotron-3.5-lightning:free', label: 'Nemotron 3.5 Lightning', tag: 'Light' },
-  { provider: 'nvidia', model: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: null },
-  { provider: 'nvidia', model: 'meta/llama-3.2-11b-vision-instruct', label: 'Llama 3.2 11B Vision', tag: null },
-] as const;
-
-const DEFAULT_CHAT_MODEL = 'nvidia:nvidia/nemotron-3.5-bolt-e4b';
-const CHAT_MODEL_STORAGE_KEY = 'changelog-chat-model';
-
-function chatModelChoice(stored: string): { provider: string; model: string; key: string } {
-  const fromList = CHAT_MODEL_OPTIONS.find((o) => `${o.provider}:${o.model}` === stored);
-  if (fromList) return { provider: fromList.provider, model: fromList.model, key: stored };
-  return { provider: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b', key: DEFAULT_CHAT_MODEL };
 }
 
 /** Backstop for a connection that went dead without telling us — the server enforces its own
@@ -60,9 +29,8 @@ const CHAT_STALL_MS = 75_000;
  * backend re-fetches its own grounding text from cache, so this widget only ever needs to send
  * the question + prior turns — no changelog text is passed in as a prop.
  *
- * Model selection is a single curated list of the fastest working models ({@link CHAT_MODEL_OPTIONS})
- * — chat is latency-sensitive, so there's no provider picker and no full catalog; just the
- * vetted-fast set, each carrying its provider with it. The choice travels with the request. */
+ * Model selection uses the same provider + full-catalog picker as the generation pages, so every
+ * enabled model is available here too. The chosen provider and model travel with each request. */
 export function ChangelogChatWidget({ project, repo, audience, version }: ChangelogChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -79,13 +47,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
   const activeRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  // Single curated fast-model choice — persists across sessions, defaults to the balanced
-  // Groq Qwen if unset or if a stored entry no longer exists in the curated list.
-  const [chatModel, setChatModel] = useState<string>(() => {
-    if (typeof window === 'undefined') return DEFAULT_CHAT_MODEL;
-    return localStorage.getItem(CHAT_MODEL_STORAGE_KEY) ?? DEFAULT_CHAT_MODEL;
-  });
-  const choice = chatModelChoice(chatModel);
+  const ai = useAiModels();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   function clearStall() {
@@ -169,11 +131,6 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
     sweepExpiredChatHistory();
   }, []);
 
-  // Persist the curated model choice across sessions.
-  useEffect(() => {
-    localStorage.setItem(CHAT_MODEL_STORAGE_KEY, chatModel);
-  }, [chatModel]);
-
   // Always appends onto the LATEST state via the updater form — onDone/onError fire
   // asynchronously after the user's question was already appended, so building the next array
   // from the `messages` variable captured back when handleSend ran would silently drop that
@@ -194,7 +151,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
 
   function handleSend() {
     const question = input.trim();
-    if (!question || sending) return;
+    if (!question || sending || !ai.model) return;
 
     // Unconditional — has to run every time send fires, not just when the UI shows a request as
     // active: a double-click or an Enter-press while the first request is still spinning up
@@ -252,8 +209,8 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
         },
       },
       controller.signal,
-      choice.provider,
-      choice.model,
+      ai.provider,
+      ai.model,
     );
   }
 
@@ -333,29 +290,21 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
           </div>
         </CardHeader>
 
-        {/* Curated fast-model picker — one flat list of vetted models (fastest first), no
-            provider selector. Chat is latency-sensitive; the full catalog lives on the
-            generate page, not here. */}
+        {/* Same provider + full-catalog picker as the generation pages, so every enabled
+            model is selectable in chat too. */}
         <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-3 py-2">
-          <Select value={chatModel} onValueChange={setChatModel} disabled={sending}>
-            <SelectTrigger className="h-7 w-full min-w-0 gap-1.5 overflow-hidden text-xs font-medium sm:w-full [&_span]:min-w-0 [&_span]:truncate">
-              <SelectValue placeholder="Model" />
-            </SelectTrigger>
-            <SelectContent side="top" align="start" className="max-h-72">
-              {CHAT_MODEL_OPTIONS.map((o) => (
-                <SelectItem key={`${o.provider}:${o.model}`} value={`${o.provider}:${o.model}`} className="pr-8 text-xs">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 truncate">{o.label}</span>
-                    {o.tag && (
-                      <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                        {o.tag}
-                      </span>
-                    )}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <AiProviderModelSelect
+            provider={ai.provider}
+            providers={ai.providerOptions}
+            onProviderChange={ai.setProvider}
+            models={ai.models}
+            modelsStatus={ai.modelsStatus}
+            model={ai.model}
+            onModelChange={ai.setModel}
+            disabled={sending}
+            variant="inline"
+            className="w-full"
+          />
         </div>
 
       <div className="relative flex-1 overflow-hidden">
@@ -418,7 +367,7 @@ export function ChangelogChatWidget({ project, repo, audience, version }: Change
             <Square className="size-4" />
           </Button>
         ) : (
-          <Button onClick={handleSend} size="icon" disabled={!input.trim()} className="size-10 shrink-0" aria-label="Send">
+          <Button onClick={handleSend} size="icon" disabled={!input.trim() || !ai.model} className="size-10 shrink-0" aria-label="Send">
             <Send className="size-4" />
           </Button>
         )}
