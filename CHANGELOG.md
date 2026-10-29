@@ -1,3 +1,7 @@
+## 2026-10-29 — dev (run 71)
+
+- fix(ai): restore reliable generation and expose provider selection
+
 ## 2026-10-20 — dev (run 70)
 
 - fix(history): refresh live repo changelog data
