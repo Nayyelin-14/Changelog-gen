@@ -1,3 +1,8 @@
+## v1.0.35 — 2026-10-29 (promoted build.72)
+
+
+- feat(chat): expose full provider and model selection
+
 ## v1.0.34 — 2026-10-29 (promoted build.71)
 
 
