@@ -1,3 +1,8 @@
+## v1.0.34 — 2026-10-29 (promoted build.71)
+
+
+- fix(ai): restore reliable generation and expose provider selection
+
 ## v1.0.33 — 2026-10-20 (promoted build.70)
 
 
