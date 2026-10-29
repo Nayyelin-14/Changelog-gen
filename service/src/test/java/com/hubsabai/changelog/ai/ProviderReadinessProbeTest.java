@@ -54,7 +54,7 @@ public class ProviderReadinessProbeTest {
                     dotEnv("AI_PROVIDERS_" + id.toUpperCase() + "_PROMPT_DEVELOPER"));
             NimAiProvider provider = new NimAiProvider(
                     baseUrl,
-                    model == null || model.isBlank() ? "meta/llama-3.2-11b-vision-instruct" : model,
+                    model == null || model.isBlank() ? "nvidia/nemotron-3.5-bolt-e4b" : model,
                     apiKey,
                     fallback, allowed, devPrompt, Optional.empty(), Optional.empty());
 
@@ -70,7 +70,7 @@ public class ProviderReadinessProbeTest {
 
             String chatState;
             try {
-                String target = model == null || model.isBlank() ? "meta/llama-3.2-11b-vision-instruct" : model;
+                String target = model == null || model.isBlank() ? "nvidia/nemotron-3.5-bolt-e4b" : model;
                 AiResult result = runMinimalChat(provider, target);
                 chatState = "chat OK (" + result.getText().length()
                         + " chars, " + (result.getUsage() != null ? result.getUsage().getCompletionTokens() : "?") + " out-tok)";

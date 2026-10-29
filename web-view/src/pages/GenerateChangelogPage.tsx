@@ -47,7 +47,7 @@ import { RepoHeaderBar } from "@/components/RepoHeaderBar";
 import { RestoreConfirmDialog } from "@/components/RestoreConfirmDialog";
 import { ErrorView } from "@/components/StatusView";
 import { VersionTable } from "@/components/VersionTable";
-import { AiModelSelect } from "@/components/AiModelSelect";
+import { AiProviderModelSelect } from "@/components/AiProviderModelSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -365,7 +365,9 @@ export function GenerateChangelogPage() {
     model,
     setModel,
     models,
-    providerLabel,
+    provider,
+    setProvider,
+    providerOptions,
     developerOverride,
     generated,
     checked,
@@ -941,14 +943,16 @@ export function GenerateChangelogPage() {
                                   Generate an AI summary for v{displayEntry.version ?? "?"} — it only takes a few seconds.
                                 </p>
                               </div>
-                              <div className="flex items-center gap-2">
-                                <AiModelSelect
+                              <div className="flex flex-wrap items-center justify-center gap-2">
+                                <AiProviderModelSelect
+                                  provider={provider}
+                                  providers={providerOptions}
+                                  onProviderChange={setProvider}
                                   models={models.status === "success" ? models.data : []}
-                                  status={models.status}
-                                  value={model}
-                                  onChange={setModel}
+                                  modelsStatus={models.status}
+                                  model={model}
+                                  onModelChange={setModel}
                                   disabled={generating !== null || !!selectedHistoryRow}
-                                  providerLabel={providerLabel}
                                 />
                                 {/* Generating mutates the CURRENT text — blocked while browsing any
                                     past revision (whichever audience it belongs to), since that's a
@@ -1046,14 +1050,16 @@ export function GenerateChangelogPage() {
                             </Button>
                           </div>
                           <div className="flex items-center gap-1">
-                            <AiModelSelect
+                            <AiProviderModelSelect
+                              provider={provider}
+                              providers={providerOptions}
+                              onProviderChange={setProvider}
                               models={models.data}
-                              status={models.status}
-                              value={model}
-                              onChange={setModel}
+                              modelsStatus={models.status}
+                              model={model}
+                              onModelChange={setModel}
                               disabled={generating !== null || !!selectedHistoryRow}
-                              providerLabel={providerLabel}
-                              triggerClassName="h-7 text-xs font-medium"
+                              variant="inline"
                             />
                             {/* Blocked while browsing any past revision, even one belonging to
                                 a DIFFERENT audience than this tab — selectedHistoryRow doesn't
@@ -1087,14 +1093,16 @@ export function GenerateChangelogPage() {
                               </Button>
                             </div>
                             <div className="flex items-center gap-1">
-                              <AiModelSelect
+                              <AiProviderModelSelect
+                                provider={provider}
+                                providers={providerOptions}
+                                onProviderChange={setProvider}
                                 models={models.data}
-                                status={models.status}
-                                value={model}
-                                onChange={setModel}
+                                modelsStatus={models.status}
+                                model={model}
+                                onModelChange={setModel}
                                 disabled={generating !== null || !!selectedHistoryRow}
-                                providerLabel={providerLabel}
-                                triggerClassName="h-7 text-xs font-medium"
+                                variant="inline"
                               />
                               {/* Same cross-tab guard as Developer's Regen above — blocked while
                                   ANY audience's past revision is selected, not just this tab's. */}

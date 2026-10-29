@@ -55,7 +55,7 @@ public final class ModelBenchmark {
         String baseUrl = System.getenv().getOrDefault("AI_BASE_URL",
                 "https://integrate.api.nvidia.com/v1/chat/completions");
         String defaultModel = System.getenv().getOrDefault("AI_MODEL",
-                "meta/llama-3.2-11b-vision-instruct");
+                "nvidia/nemotron-3.5-bolt-e4b");
         int trials = args.length > 0 ? Integer.parseInt(args[0]) : 1;
         Set<String> restricted = args.length > 1
                 ? new LinkedHashSet<>(java.util.Arrays.stream(args[1].split(","))

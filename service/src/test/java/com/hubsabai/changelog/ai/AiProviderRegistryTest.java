@@ -130,6 +130,27 @@ class AiProviderRegistryTest {
                 () -> provider.ensureRequestedModelAllowed("meta-llama/llama-prompt-guard-2-86m"));
     }
 
+    /** An explicit AI_PROVIDERS list is authoritative: a conventional key left in the environment
+     * must not silently re-register a provider the deployment deliberately omitted (prod hides
+     * Groq this way because its Azure egress IP is 403'd). */
+    @Test
+    void explicitProviderListDoesNotAutoEnableConventionalKeyProvider() {
+        System.setProperty("ai.api-key", "test");
+        System.setProperty("ai.providers", "openrouter");
+        System.setProperty("ai.providers.openrouter.base-url", "https://example.test/v1/chat/completions");
+        System.setProperty("ai.providers.openrouter.api-key", "openrouter-key");
+        System.setProperty("groq.api-key", "gsk-test");
+
+        AiProviderRegistry registry = registry();
+        List<AiProviderInfo> list = registry.list();
+        assertEquals(2, list.size());
+        assertTrue(list.stream().noneMatch(p -> p.id().equals("groq")), list.toString());
+
+        AiException ex = assertThrows(AiException.class, () -> registry.resolve("groq"));
+        assertTrue(ex.getMessage().contains("Unknown AI provider"), ex.getMessage());
+        assertNotNull(registry.resolve("openrouter"));
+    }
+
     /** An explicit ai.providers.groq.* block overrides every known default, and the block's key
      * wins over the conventional env key. */
     @Test

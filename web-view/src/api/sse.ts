@@ -34,7 +34,7 @@ export async function* readSseEvents(response: Response): AsyncGenerator<{ event
 }
 
 export interface GenerateStreamCallbacks {
-  onAudience: (audience: string, text: string, usage?: AiUsage | null) => void;
+  onAudience: (audience: string, text: string, usage?: AiUsage | null, model?: string | null) => void;
   onDone: (durationMs: number, totalTokens: number) => void;
   onError: (error: Error) => void;
 }

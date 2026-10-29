@@ -928,7 +928,8 @@ export function GenerateNewChangelogPage() {
         project!,
         repo!,
         {
-          onAudience: (audience, text) => {
+          onAudience: (audience, text, _usage, usedModel) => {
+            if (usedModel) setResultModel(usedModel);
             setAudienceTexts((prev) => ({ ...prev, [audience]: text }));
             setAudienceLoading((prev) => {
               const next = new Set(prev);
