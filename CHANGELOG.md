@@ -1,3 +1,7 @@
+## 2026-10-29 — dev (run 72)
+
+- feat(chat): expose full provider and model selection
+
 ## 2026-10-29 — dev (run 71)
 
 - fix(ai): restore reliable generation and expose provider selection
